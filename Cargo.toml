@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/open-web-server-core",
+    "crates/open-web-server-wire",
+    "crates/open-web-server-ledger",
+    "crates/open-web-server-gateway",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+poem = { version = "3", features = ["rustls"] }
+poem-openapi = "5"
+async-trait = "0.1"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bytes = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# 第1層: 伝送路暗号化 (TLS)
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+
+# 第2層: 相互認証
+rand = "0.8"
+subtle = "2"
+
+# 第3層: アプリケーション層ペイロード暗号化
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+
+# 連携先クライアント
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

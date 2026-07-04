@@ -1,0 +1,26 @@
+[package]
+name = "open-web-server-gateway"
+description = "open-web-server: Poem製 Webゲートウェイ (REST/GraphQL/3D Game API 前段)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "open-web-server"
+path = "src/main.rs"
+
+[dependencies]
+open-web-server-core = { path = "../open-web-server-core" }
+open-web-server-wire = { path = "../open-web-server-wire" }
+open-web-server-ledger = { path = "../open-web-server-ledger" }
+tokio.workspace = true
+poem.workspace = true
+poem-openapi.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true

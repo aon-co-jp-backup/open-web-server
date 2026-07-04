@@ -1,0 +1,15 @@
+[package]
+name = "open-web-server-ledger"
+description = "open-web-server: 課金アイテム/金融データの消失防止レジャー (WAL + 冪等性 + 3-way commit)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+open-web-server-core = { path = "../open-web-server-core" }
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
