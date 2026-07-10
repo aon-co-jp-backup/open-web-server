@@ -68,6 +68,21 @@ Client → open-web-server → open-runo → aruaru-db
 詳細は [`docs/architecture.md`](docs/architecture.md) と
 [`docs/integration.md`](docs/integration.md) を参照してください。
 
+### 4. OpenTelemetry によるトレーシング (`open-web-server-gateway::telemetry`)
+
+`grant_item`/`charge` の各ハンドラは `tracing::instrument` でスパン化されており、
+`tracing-opentelemetry` を通じて OpenTelemetry のトレースとしてエクスポートされます。
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` を設定すると OTLP/HTTP (protobuf) で
+  Collector へ送信します(本番/ステージング向け)。
+- 未設定の場合は標準出力にスパンを書き出します(ローカル開発・Collector
+  未起動時のフォールバック)。
+
+`Client → open-web-server → open-runo → aruaru-db` の一連の呼び出しを
+分散トレースとして追跡する土台であり、`open-runo`/`aruaru-db` 側が同様の
+Exporter 設定に対応すればエンドツーエンドのトレースにつながります(両リポジトリ
+側の対応状況は未確認)。
+
 ---
 
 ## クイックスタート
@@ -114,9 +129,12 @@ open-web-server/
 ## ロードマップ
 
 - [ ] `open-cosmo` 共通クレートへの `MutationRequest`/`MutationReceipt` 切り出し
-- [ ] GraphQL エンドポイント (`poem-openapi` / `async-graphql`) の追加
-- [ ] Tauri製の管理画面（open-runo/aruaru-db の管理UIと統一デザイン）
-- [ ] OpenTelemetry連携によるE2Eトレーシング
+  (着手前に `open-runo`/`aruaru-db` 側の対応状況を確認する方針)
+- [ ] GraphQL エンドポイント (`async-graphql` 等) の追加
+- [ ] Rust → WASM 製の管理画面（open-runo/aruaru-db の管理UIと統一デザイン。
+  2026-07-10のスタック転換により Tauri ではなく Rust/WASM で実装する）
+- [x] OpenTelemetry連携によるトレーシング(`open-web-server-gateway` 側は実装済み。
+  `open-runo`/`aruaru-db` 側の対応込みのE2Eトレースは今後の課題)
 
 ## ライセンス
 

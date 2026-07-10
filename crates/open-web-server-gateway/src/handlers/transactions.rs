@@ -19,6 +19,11 @@ pub struct ChargeRequest {
 }
 
 #[handler]
+#[tracing::instrument(
+    name = "charge",
+    skip(state, body),
+    fields(account_id = %body.account_id, amount_cents = body.amount_cents, currency = %body.currency)
+)]
 pub async fn charge(Data(state): Data<&AppState>, Json(body): Json<ChargeRequest>) -> Response {
     let req = MutationRequest {
         idempotency_key: IdempotencyKey(body.idempotency_key),

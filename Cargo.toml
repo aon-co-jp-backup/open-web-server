@@ -45,3 +45,10 @@ sha2 = "0.10"
 
 # 連携先クライアント
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# 可観測性 (OpenTelemetry)
+opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-blocking-client"] }
+opentelemetry-stdout = { version = "0.32", features = ["trace"] }
+tracing-opentelemetry = "0.33"

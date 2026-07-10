@@ -70,6 +70,21 @@ Client → open-web-server → open-runo → aruaru-db
 See [`docs/architecture.md`](docs/architecture.md) and
 [`docs/integration.md`](docs/integration.md) for details.
 
+### 4. OpenTelemetry tracing (`open-web-server-gateway::telemetry`)
+
+The `grant_item`/`charge` handlers are instrumented with `tracing::instrument`
+spans, which are exported as OpenTelemetry traces via `tracing-opentelemetry`.
+
+- If `OTEL_EXPORTER_OTLP_ENDPOINT` is set, spans are shipped to a Collector
+  over OTLP/HTTP (protobuf) — intended for production/staging.
+- If unset, spans are written to stdout instead (a local-dev fallback for
+  when no Collector is running).
+
+This is the groundwork for tracing the full
+`Client → open-web-server → open-runo → aruaru-db` call chain as a single
+distributed trace once `open-runo`/`aruaru-db` wire up compatible exporters
+(their current status here is unverified).
+
 ---
 
 ## Quick Start
@@ -116,9 +131,13 @@ open-web-server/
 ## Roadmap
 
 - [ ] Extract `MutationRequest`/`MutationReceipt` into a shared `open-cosmo` crate
-- [ ] Add GraphQL endpoints (`poem-openapi` / `async-graphql`)
-- [ ] Tauri-based admin console matching the open-runo/aruaru-db admin UI
-- [ ] End-to-end tracing via OpenTelemetry
+  (check `open-runo`/`aruaru-db` progress on this before starting)
+- [ ] Add GraphQL endpoints (e.g. `async-graphql`)
+- [ ] Rust-to-WASM admin console matching the open-runo/aruaru-db admin UI
+  (the 2026-07-10 stack pivot means this is Rust/WASM, not Tauri)
+- [x] Tracing via OpenTelemetry (implemented on the `open-web-server-gateway`
+  side; true end-to-end tracing still depends on `open-runo`/`aruaru-db`
+  adopting compatible exporters)
 
 ## License
 

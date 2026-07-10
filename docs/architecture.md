@@ -52,3 +52,20 @@ open-runo→aruaru-db) は同一方針の3層で保護する。
 
 これにより、途中経路の瞬断やリトライが発生しても、書き込みは
 **exactly-once相当（at-least-once送信 + 冪等キーによる重複排除）** として扱われる。
+
+## 可観測性 (`open-web-server-gateway::telemetry`)
+
+`grant_item`/`charge` ハンドラは `#[tracing::instrument]` でスパン化されており、
+`tracing-opentelemetry` レイヤー経由で OpenTelemetry の Tracer に橋渡しされる。
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` が設定されていれば OTLP/HTTP (protobuf) で
+  その Collector へバッチエクスポートする。
+- 未設定時は `opentelemetry-stdout` で標準出力にスパンを書き出す
+  (Collector 未起動のローカル開発環境向けフォールバック)。
+- `main()` の末尾で `TelemetryGuard::shutdown()` を呼び、プロセス終了前に
+  バッファ済みスパンを確実にフラッシュする。
+
+現時点では `open-web-server-gateway` 単体でのスパン生成のみ。
+`open-runo`/`aruaru-db` 側が同じ Trace Context を伝播・エクスポートするように
+なれば、`Client → open-web-server → open-runo → aruaru-db` 全体を1本の
+分散トレースとして追跡できるようになる(両リポジトリの対応状況は未確認)。

@@ -7,6 +7,7 @@
 mod handlers;
 mod middleware;
 mod state;
+mod telemetry;
 
 use poem::{
     listener::TcpListener, middleware::Tracing, EndpointExt, Route, Server,
@@ -16,7 +17,7 @@ use state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let telemetry_guard = telemetry::init()?;
 
     let state = AppState::from_env()?;
 
@@ -31,6 +32,11 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = std::env::var("OPEN_WEB_SERVER_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     tracing::info!(%bind_addr, "open-web-server listening");
 
-    Server::new(TcpListener::bind(bind_addr)).run(app).await?;
+    let result = Server::new(TcpListener::bind(bind_addr)).run(app).await;
+
+    // プロセス終了前にバッファ済みスパンを確実にフラッシュする。
+    telemetry_guard.shutdown();
+
+    result?;
     Ok(())
 }

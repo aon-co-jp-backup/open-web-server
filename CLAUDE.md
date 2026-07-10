@@ -1,23 +1,53 @@
 # 技術スタック・開発ルール(open-web-server)
 
 このリポジトリ、および関連プロジェクト(`open-runo`/`aruaru-db`/`aruaru-web`/
-`open-raid-z`)で開発・保守を行う際は、以下を基本方針とする。作業ドライブは
-`F:\open-runo`(E:ドライブは2026-07-10に消失、以後Fが実体)。この節は
-[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z) の `CLAUDE.md`
-を正本とし、各プロジェクトへコピーして同期する。
+`open-raid-z`/`poem-cosmo-tauri`)で開発・保守を行う際は、以下を基本方針とする。
+作業ドライブは `F:\open-runo`(E:ドライブは2026-07-10に消失、以後Fが実体)。
+この節は [`open-raid-z`](https://github.com/aon-co-jp/open-raid-z) の
+`CLAUDE.md` を正本とし、各プロジェクトへコピーして同期する
+(最終同期: 2026-07-11、open-raid-z側の2026-07-10方針転換を反映)。
 
-## フロントエンド
+## 方針転換(2026-07-10、最終確定)
 
-- **Tauri**(メインフレームワーク): https://v2.tauri.app/ | https://github.com/tauri-apps/tauri
-- HTML5 / CSS3
-- **TypeScript**: 必要最低限・最小限の範囲に留める(ロジックはRust側に置き、
-  TypeScript側はDOM操作・`invoke()`呼び出し等の薄い配線のみとする方針)
-- **Bootstrap**
+ユーザー指示により以下へ転換・確定。**Tauri・Poem・WunderGraph Cosmo(有料版
+含む)を外部パッケージ/ライブラリとして直接依存させることはしない**。ただし
+各ツールが提供する**機能・API形状・体験には互換性を保ち**、Rust標準ライブラリ
++ tokio/hyper で自前実装して置き換える(依存だけを断ち、機能面の互換性は
+維持する)。**`poem-cosmo-tauri` と `open-runo` は2リポジトリを同時並行で
+開発する**(2026-07-10、再確定)。どちらもTauri/Poemを含まない構成。
+実装(例: crates/open-runo-routerのPoem→tokio/hyper移行)はpoem-cosmo-tauri
+側で先行させ、動作確認できたファイルをopen-runoへミラーする運用とする。
+
+**このリポジトリ固有の既知ギャップ**: `open-web-server-gateway` クレートは
+本節執筆時点(2026-07-11)でまだ `poem`/`poem-openapi` パッケージに直接依存
+したままで、tokio/hyper直接実装への移行は未着手。フロントエンド
+(aruaru-web ネイティブUI相当)を持たないバックエンド専用リポジトリのため、
+上記の「WASMフロントエンド」方針は直接は適用されないが、バックエンドの
+Poem依存除去は他リポジトリと同じ方針に従うべき残作業として認識している。
+
+## フロントエンド(2026-07-10、方針更新)
+
+- Tauriパッケージには直接依存しない。ただしTauriのデスクトップUI体験・
+  `invoke()`的なコマンド呼び出しインターフェースとは互換性を保つ。
+- **HTML5/CSS3・TypeScript・Bootstrap・Node.jsのスタックは廃止**。
+  Rustをメイン言語としてフロントエンドとバックエンドを統合し、
+  **WebAssembly (WASM)** に置き換える(コンパイル対象はRust →
+  `wasm32-unknown-unknown`)。DOM操作・`invoke()`相当の呼び出しは
+  Rust製WASMモジュール側で行い、TypeScript/Node.jsのビルドチェーンには
+  依存しない。https://webassembly.org/ | https://rustwasm.github.io/
+- open-web-server自体はバックエンド専用リポジトリのため直接のWASM UIは
+  持たないが、将来の管理画面(ロードマップ参照)はこの方針に従いRust/WASMで
+  実装する(Tauriは使わない)。
 
 ## バックエンド・コア
 
-- **Rust**(メイン言語): https://www.rust-lang.org/ja/ | https://github.com/rust-lang/rust
-- **Poem**(Webフレームワーク): https://docs.rs/poem/latest/poem/ | https://github.com/poem-web/poem
+- **Rust**(メイン言語、標準ライブラリ中心): https://www.rust-lang.org/ja/ | https://github.com/rust-lang/rust
+- **tokio** + **hyper**(Webフレームワークなしで直接HTTPサーバを自前実装):
+  https://tokio.rs/ | https://docs.rs/hyper/latest/hyper/
+- Poemパッケージには依存しないが、Poemのルーティング/ハンドラAPI形状とは
+  互換性のあるインターフェースを維持しながらtokio/hyper直接実装へ移行する
+  (本リポジトリの `open-web-server-gateway` は上記「既知ギャップ」の通り
+  この移行がまだ未実施)。
 
 ## このリポジトリ固有の役割
 
@@ -29,37 +59,92 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 ## API設計思想(参考・概念のみ)
 
 - **VersionLess API**という考え方を参考にする(WunderGraphのブログ/podcast参照)。
-- **WunderGraph Cosmo**: あくまで**参考・着想元としてのみ**参照する。
-  **実装には絶対に使用しない**。https://github.com/wundergraph/cosmo
+- **WunderGraph Cosmo**: パッケージとしては直接依存させない。GraphQL
+  Federation / VersionlessAPI というAPI形状・コンセプトのみ参考にし、
+  Rust標準+tokio/hyperで互換性を保ちつつ自前実装する。
+  https://github.com/wundergraph/cosmo
 
 ## 関連プロジェクト
 
-- **open-runo**: https://github.com/aon-co-jp/open-runo
+- **open-runo**(poem-cosmo-tauriと同時並行開発。2026-07-10付けで開発再開):
+  https://github.com/aon-co-jp/open-runo
 - **open-web-server**(このリポジトリ): https://github.com/aon-co-jp/open-web-server
 - **aruaru-db**: https://github.com/aon-co-jp/aruaru-db
 - **aruaru-web**: https://github.com/aon-co-jp/aruaru-web
 - **open-raid-z**(開発ルールの正本): https://github.com/aon-co-jp/open-raid-z
 - **rs-to-readme**: https://github.com/aon-co-jp/rs-to-readme
+- **poem-cosmo-tauri**(open-runoと同時並行開発。Poem→tokio/hyper移行の
+  実装先行地点): https://github.com/aon-co-jp/poem-cosmo-tauri
 
 ## 運用ルール
 
 - **開発中はこの`CLAUDE.md`を、コード変更のコミット/pushと必ず一緒に push する**。
 - 実装で迷った場合は、学習データからの推測より公式ドキュメントを優先して参照する。
 - 作業ドライブが変わった場合は、この節と関連プロジェクトの引き継ぎ資料を更新する。
+- **無人自動開発(確認不要・自動デバッグ)のタイミングでは、スケジュール実行待ちに
+  せず、1パス内でできる限り連続して作業を進める**こと。小さく検証可能な単位
+  (1ハンドラ/1機能ごとに `cargo test` → commit → push)を保ちながらも、
+  次の増分に進む前にバックグラウンド待機で止まらない。
 
 ## 現状(このリポジトリ固有)
 
-- `cargo check --workspace` / `cargo test --workspace` は成功する(4クレート構成、
-  テストは `open-web-server-ledger` の冪等性ショートサーキット1件)。
+- `cargo check --workspace` / `cargo test --workspace` は成功する(4クレート構成)。
 - 4クレートの実装(`core`/`wire`/`auth`/`payload_crypto`/`tls`/`ledger`/`gateway`の
   各handler・middleware)はスタブなし。`todo!()`/`unimplemented!()`/`TODO`/`FIXME`は
-  リポジトリ全体で0件(2026-07-10巡回時点)。`handlers/wal.rs` の `InMemoryWal` は
-  本番実装(sled/RocksDB/aruaru-db)への差し替え前提の参照実装であることをdocコメントで
-  明示済み — これは「隠れたスタブ」ではなく意図した設計。
+  リポジトリ全体で0件(2026-07-11巡回時点でも再確認済み)。`handlers/wal.rs` の
+  `InMemoryWal` は本番実装(sled/RocksDB/aruaru-db)への差し替え前提の参照実装で
+  あることをdocコメントで明示済み — これは「隠れたスタブ」ではなく意図した設計。
+- `open-web-server-gateway` に OpenTelemetry 連携(`src/telemetry.rs`)を追加済み
+  (2026-07-11)。`grant_item`/`charge` ハンドラがスパン化され、
+  `OTEL_EXPORTER_OTLP_ENDPOINT` の有無で OTLP/HTTP エクスポートと標準出力
+  フォールバックを切り替える。テストはインメモリエクスポータで検証。
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
-- **2026-07-10 (今回)**: ビルド/テストは既に green であることを確認
+- **2026-07-11 (今回)**: git健全性を確認(壊れたref修復済み、`origin/main` の
+  `2fd70a4` を正しく追跡、作業ツリークリーン)。`cargo check --workspace` /
+  `cargo test --workspace --no-run` / `cargo test --workspace` すべて成功を再確認。
+  `todo!()`/`unimplemented!()`/TODO/FIXME/stub/placeholder を再走査し0件を再確認。
+  **実装**: `open-web-server-gateway` に OpenTelemetry 連携を追加。
+  `crates/open-web-server-gateway/src/telemetry.rs` で `SdkTracerProvider` を構築し、
+  `OTEL_EXPORTER_OTLP_ENDPOINT` が設定されていれば OTLP/HTTP (protobuf) へ、
+  未設定なら `opentelemetry-stdout` で標準出力へスパンをエクスポートするよう
+  切り替える構成にした。`tracing-opentelemetry` レイヤーを `tracing_subscriber`
+  の `registry()` に `fmt` レイヤーと併せて登録し、`main.rs` はプロセス終了直前に
+  `TelemetryGuard::shutdown()` でバッファをフラッシュする。`grant_item`
+  (`handlers/items.rs`)・`charge`(`handlers/transactions.rs`)の各ハンドラに
+  `#[tracing::instrument]` を追加(`#[handler]` の下に置く必要がある点に注意 —
+  属性マクロは下から上へ適用されるため、`#[handler]` が先に素のasync fnではなく
+  instrument後の関数を見るようにする)。動作検証用の単体テストを追加
+  (`telemetry::tests::spans_are_recorded_and_exported_with_service_resource`):
+  `opentelemetry_sdk` の `InMemorySpanExporter`(`testing` feature、dev-dependency)
+  でネットワーク送信なしにスパン生成・Resource属性付与・エクスポートを検証。
+  `cargo test --workspace` で新規テスト含め全件パス。
+  **ドキュメント**: `docs/architecture.md` に「可観測性」節を追加。
+  `README.md`(ルート)に4本目の柱として一言追記。`README-Japan.md`/
+  `README-English.md`(この2つが唯一ロードマップ節を持つ詳細版)を更新し、
+  OpenTelemetryのロードマップ項目を完了([x])にし、管理画面ロードマップ項目の
+  「Tauri製」という古い表記を2026-07-10のスタック転換に合わせて「Rust→WASM製」
+  に修正。他8言語版(`README-France.md`等)は元々ロードマップ節を持たない短縮版
+  であり、今回の変更で不正確になる記述が無かったため変更していない。
+  この`CLAUDE.md`のフロントエンド/バックエンド節をopen-raid-z側の2026-07-10
+  最新版と同期し、関連プロジェクトに`poem-cosmo-tauri`を追加。
+  **既知の残課題として明記**: `open-web-server-gateway` は依然として `poem`/
+  `poem-openapi` に直接依存しており、tokio/hyper直接実装への移行(open-raid-z
+  方針)はまだ未着手 — 次回以降の巡回候補として残す(スコープが大きいため
+  今回は着手せず、GraphQLエンドポイント追加時にPoem脱却を併せて検討するのが
+  効率的と判断)。
+- **次回の巡回で見るべき点**: (1) `open-web-server-gateway` のPoem依存除去
+  (tokio/hyper直接実装への移行、open-raid-z方針)。(2) GraphQLエンドポイント
+  追加(`async-graphql` 等、Poem脱却と同時に検討すると手戻りが少ない)。
+  (3) `open-cosmo` 共通クレート切り出しは、着手前に必ず `open-runo`/
+  `aruaru-db` 側のCLAUDE.md HANDOFFログを確認し、互換性のある地ならしが
+  既にあるかを確認すること(未確認のまま単独で着手しない)。(4) 管理画面
+  (Rust→WASM、Tauriではない)。(5) OpenTelemetryは本リポジトリ側は実装済みだが、
+  `open-runo`/`aruaru-db` 側が同じTrace Contextを伝播・エクスポートするように
+  なって初めてエンドツーエンドのトレースになる — 両リポジトリの対応状況は
+  今回未確認なので、次回以降に確認すること。
+- 2026-07-10: ビルド/テストは既に green であることを確認
   (`cargo check --workspace` / `cargo test --workspace --no-run` / `cargo test --workspace`
   すべて成功)。リポジトリ全体を `todo!()`/`unimplemented!()`/TODO/FIXME/stub/placeholder
   で走査し、該当0件を確認(実装は完了しており追加のスタブ実装作業は無し)。
@@ -70,11 +155,6 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
   日本語・英語版には無く、他8言語版は日本語/英語の2つしかリンクしていなかったため、
   全10ファイルで10言語すべてへの相互リンクに統一。CLAUDE.mdにこのHANDOFF節を追加。
   コミット・push済み(このコミットハッシュは `git log` 参照)。
-- **次回の巡回で見るべき点**: 現状ロードマップ項目(`open-cosmo`共通クレート切り出し、
-  GraphQLエンドポイント、Tauri管理画面、OpenTelemetry連携)はまだ未実装。これらは
-  「既存ドキュメントが示す構造を超えた投機的機能」ではなく明示的にREADME/ROADMAPに
-  記載済みの計画なので、次回以降に着手する場合は対象として妥当。着手前に
-  `open-runo`/`aruaru-db` 側の対応状況(特に `open-cosmo` 切り出し)を確認すること。
 - 2026-07-10: `open-web-server-ledger` がビルド不能だった問題を修正
   (Cargo.toml に `async-trait`/`chrono` の依存が抜けていた)。冪等性
   ショートサーキットの単体テストを追加(以前はこのクレートにテストが

@@ -19,6 +19,11 @@ pub struct GrantItemRequest {
 }
 
 #[handler]
+#[tracing::instrument(
+    name = "grant_item",
+    skip(state, body),
+    fields(account_id = %body.account_id, item_id = %body.item_id, quantity = body.quantity)
+)]
 pub async fn grant_item(Data(state): Data<&AppState>, Json(body): Json<GrantItemRequest>) -> Response {
     let req = MutationRequest {
         idempotency_key: IdempotencyKey(body.idempotency_key),

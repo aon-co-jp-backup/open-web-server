@@ -24,3 +24,11 @@ serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-stdout.workspace = true
+tracing-opentelemetry.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
