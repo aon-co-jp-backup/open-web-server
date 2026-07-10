@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 open-web-server-core = { path = "../open-web-server-core" }
+async-trait.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true

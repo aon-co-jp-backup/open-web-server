@@ -134,3 +134,72 @@ impl Ledger {
             .ok_or_else(|| anyhow::anyhow!("open-runo did not return a db_commit_id"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use open_web_server_core::IdempotencyKey;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MockWal {
+        processed: Mutex<Option<MutationReceipt>>,
+        appended: Mutex<u32>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteAheadLog for MockWal {
+        async fn append(&self, _req: &MutationRequest) -> anyhow::Result<()> {
+            *self.appended.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        async fn mark_committed(&self, _key: &str, _commit_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn is_already_processed(
+            &self,
+            _key: &str,
+        ) -> anyhow::Result<Option<MutationReceipt>> {
+            Ok(self.processed.lock().unwrap().clone())
+        }
+    }
+
+    fn test_config() -> LedgerConfig {
+        LedgerConfig {
+            open_runo_endpoint: "http://127.0.0.1:0".to_string(),
+            max_retries: 1,
+            retry_backoff: Duration::from_millis(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_idempotency_key_short_circuits_without_reappending() {
+        let key = IdempotencyKey("11111111-1111-1111-1111-111111111111".to_string());
+        let existing = MutationReceipt {
+            idempotency_key: key.clone(),
+            committed: true,
+            db_commit_id: Some("commit-1".to_string()),
+            committed_at: Some(chrono::Utc::now()),
+        };
+        let wal = Arc::new(MockWal {
+            processed: Mutex::new(Some(existing.clone())),
+            appended: Mutex::new(0),
+        });
+        let ledger = Ledger::new(test_config(), wal.clone());
+
+        let req = MutationRequest {
+            idempotency_key: key,
+            account_id: "user-1".to_string(),
+            target: "items".to_string(),
+            payload: serde_json::json!({"item_id": "sword", "quantity": 1}),
+            requested_at: chrono::Utc::now(),
+        };
+
+        let receipt = ledger.commit(req).await.expect("commit should succeed");
+
+        assert_eq!(receipt.db_commit_id, existing.db_commit_id);
+        assert_eq!(*wal.appended.lock().unwrap(), 0, "must not re-append a duplicate mutation");
+    }
+}
