@@ -7,7 +7,10 @@ open-web-server는 3D 온라인 게임 아이템 결제, 신용카드 결제 같
 제작되었으며, aruaru-db·open-runo와 3중 방어 아키텍처로 연동되어
 재전송·프로세스 재시작·네트워크 순단이 있어도 이중 과금이나 데이터 유실이 없습니다.
 
-📖 다른 언어: [日本語](README-Japan.md) / [English](README-English.md)
+📖 다른 언어: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
 ## 3대 기둥
 

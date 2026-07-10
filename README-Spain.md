@@ -8,7 +8,10 @@ Construido con **Rust + Poem**, trabaja junto a aruaru-db y open-runo mediante u
 arquitectura de defensa en tres capas, de modo que los cortes de red, reinicios de
 proceso y reintentos nunca causan doble cobro ni pérdida silenciosa de datos.
 
-📖 Otros idiomas: [日本語](README-Japan.md) / [English](README-English.md)
+📖 Otros idiomas: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
 ## Tres pilares
 

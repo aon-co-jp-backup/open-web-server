@@ -8,7 +8,10 @@ arbeitet er über eine dreischichtige Verteidigungsarchitektur mit aruaru-db und
 open-runo zusammen, sodass Netzwerkaussetzer, Prozessneustarts und Wiederholungen
 niemals zu Doppelbuchungen oder stillem Datenverlust führen.
 
-📖 Weitere Sprachen: [日本語](README-Japan.md) / [English](README-English.md)
+📖 Weitere Sprachen: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
 ## Drei Säulen
 

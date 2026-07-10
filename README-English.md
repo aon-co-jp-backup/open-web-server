@@ -8,6 +8,11 @@ open-web-server is a mission-critical, 24/7/365 web server designed for workload
 defense architecture, so that network hiccups, process restarts, and retries never
 cause double-charging or silent data loss.
 
+📖 Other languages: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
+
 ---
 
 ## Why open-web-server Exists

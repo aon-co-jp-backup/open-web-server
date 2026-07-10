@@ -6,7 +6,10 @@ open-web-server 是面向 3D 网游道具购买、信用卡支付等关键业务
 使用 **Rust + Poem** 构建，通过三层防御架构与 aruaru-db、open-runo 协同工作，
 确保网络抖动、进程重启、重试都不会导致重复扣款或数据静默丢失。
 
-📖 其他语言: [日本語](README-Japan.md) / [English](README-English.md)
+📖 其他语言: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
 ## 三大支柱
 

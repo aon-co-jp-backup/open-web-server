@@ -9,7 +9,10 @@ open-runo via une architecture de défense à trois couches, garantissant qu'auc
 coupure réseau, redémarrage de processus ou nouvelle tentative ne provoque de
 double facturation ni de perte silencieuse de données.
 
-📖 Autres langues : [日本語](README-Japan.md) / [English](README-English.md)
+📖 Autres langues : [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
 ## Trois piliers
 
