@@ -81,11 +81,43 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
    部分が既に提供)としつつ、データそのものは `aruaru-db`(Git-on-SQL、
    コミット単位の変更履歴)でバージョン管理する——APIはバージョンレス、
    データは完全な変更履歴を保持、というハイブリッド。(変更なし)
-2. **Git管理 + ディスク冗長化基盤**: `aruaru-db` の Git-on-SQL 特性を使い、
-   課金アイテム/金融/証券データの全変更をコミットとして記録し、任意時点への
+2. **Git管理 + ディスク冗長化基盤(2026-07-11、ZFS↔DATABASEの関連性を
+   ネット調査の上で追記)**: `aruaru-db` の Git-on-SQL 特性を使い、課金
+   アイテム/金融/証券データの全変更をコミットとして記録し、任意時点への
    復元・差分監査を可能にする。`open-raid-z`(RAID-Z2/Z3相当のディスク
-   冗長化)をこのGit履歴・データ本体の永続化層の冗長化基盤として組み合わせる。
-   (変更なし)
+   冗長化、実体はZFS類似設計)をこのGit履歴・データ本体の永続化層の冗長化
+   基盤として組み合わせる。**ZFS系ストレージとDATABASE(PostgreSQL/
+   aruaru-db)の読み書きには実務上の裏付けのある関連性があり、単なる
+   「ディスク冗長化」以上の直接的なメリットがある**:
+   - **チェックサムの多層防御**: ZFSは全ブロックを読み取り時に検証し、
+     ext4等では見逃されるサイレント破損を検出できる。PostgreSQL自身の
+     チェックサムとは異なる障害モードを捕捉するため、両方を有効にする
+     ことが推奨される([PostgreSQL on ZFS: Tuning, Snapshots,
+     Pitfalls](https://sumguy.com/postgresql-on-zfs-tuning-snapshots/))。
+   - **Copy-on-Writeによるpartial write対策**: ZFSは既存データを
+     決してその場で上書きしないため、部分書き込み(torn page)への
+     天然の防御になる——ZFSの上で動かす場合、PostgreSQLの
+     `full_page_writes`を無効化しても安全という実務知見がある(同上)。
+   - **ZIL/SLOGによる同期書き込みの耐久性**: ZFS Intent Log(ZIL)は
+     同期書き込み(DBのトランザクションコミットが典型例)のデータを
+     確定応答前にログへ書き込み、専用の高速デバイス(SLOG)で
+     オフロードできる——PostgreSQLのWAL・aruaru-dbのコミット確定という
+     「同期書き込みで確実性を保証する」場面と直接関係する
+     ([Workload Tuning, OpenZFS
+     documentation](https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Workload%20Tuning.html))。
+   - **recordsizeチューニングによる書き込み増幅の回避**: ZFSは
+     recordsize単位でCopy-on-Writeするため、DBの実際のページ/ブロック
+     サイズ(PostgreSQLは8KB等)とrecordsizeが不一致だと書き込み増幅が
+     発生する。DBデータセットのrecordsizeをDB側のブロックサイズに
+     合わせることが推奨される
+     ([ZFS on Postgres: Recordsize Mismatch and Write
+     Amplification](https://tech-champion.com/database/postgresql/zfs-on-postgres-recordsize-mismatch-and-write-amplification/))。
+   - これらは`open-raid-z`側の実装(スナップショット・チェックサム・
+     recordsize相当の設定)を、単なる「下にあるディスク冗長化層」ではなく
+     「DB書き込みパスと積極的に協調させるべき層」として扱うべき根拠となる。
+     具体的な実装(recordsize設定の露出、ZIL/SLOG相当の同期書き込み
+     経路の追加等)は今後のパスで検討する(今回はドキュメント上の関連性
+     整理のみ、コード変更なし)。
 3. **通信層の四重化(TCP-IP・UDP-IP・QUIC/MPQUIC・MPTCPまたはSCTP)**:
    単純な「TCP1系+UDP1系」の二種類ではなく、**性質の異なる4つの伝送方式**
    を並行させることで、単一プロトコル・単一経路の欠陥(輻輳制御の弱さ・

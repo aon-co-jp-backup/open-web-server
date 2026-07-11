@@ -114,6 +114,41 @@ verifiable receiving implementation for tests. See
 [`docs/architecture.md`](docs/architecture.md#冗長化された伝送経路-tcp-ip--udp-ip-open-web-server-wireudp_channel-2026-07-11)
 for details.
 
+### 6. Target architecture: quadruple-redundant transport and DB writes
+
+(Revised 2026-07-11: the original "triple-redundant TCP+UDP" concept was
+expanded to "quadruple-redundant" after research showed that a TCP+UDP-only
+approach isn't sufficient by current standards. This is a target
+architecture to be implemented incrementally, per user instruction — the
+following is the full end-state picture. See
+[`CLAUDE.md`](CLAUDE.md#拡張要件2026-07-11ユーザー指示目標アーキテクチャ実装は段階的に)
+for details and cited sources.)
+
+To keep billed items, financial data, securities data, and credit-card data
+in 3D online games from being lost over the network, `open-web-server`
+combines with `poem-cosmo-tauri` (or `open-runo`), `PostgreSQL`,
+`aruaru-db`, and `open-raid-z` toward the following target:
+
+- **Quadruple-redundant transport**: four transport methods with different
+  failure characteristics running in parallel — ① TCP-IP, ② UDP-IP,
+  ③ QUIC (ideally Multipath QUIC / MPQUIC), and ④ Multipath TCP (MPTCP) or
+  SCTP.
+- **Quadruple-redundant database writes**: the same transaction reflected
+  to four independent persistence targets — ① PostgreSQL (ACID —
+  atomicity, consistency, isolation, and durability transaction
+  guarantees), ② aruaru-db, ③ multi-region synchronous replication,
+  and ④ an independent audit/reconciliation transaction log.
+
+**Honest status as of 2026-07-11**: on the transport side, only
+① TCP-IP and ② UDP-IP are implemented (this repo's
+[UDP-IP redundant transport path](#5-udp-ip-redundant-transport-path-open-web-server-wireudp_channel-2026-07-11),
+fire-and-forget with no retransmit). ③ QUIC/MPQUIC and ④ MPTCP/SCTP have
+not been started. Quadruple-redundant DB writes (PostgreSQL, aruaru-db,
+multi-region synchronous replication, an independent audit log) have also
+not been started. The VersionLessAPI + Git-versioning hybrid and
+integration with `open-raid-z` are likewise not yet started; all of these
+are planned to be implemented incrementally in future passes.
+
 ---
 
 ## Quick Start

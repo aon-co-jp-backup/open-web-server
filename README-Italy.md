@@ -13,12 +13,13 @@ processo e nuovi tentativi non causino mai doppi addebiti o perdite silenziose d
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## Quattro pilastri
+## Cinque pilastri
 
 1. **Trasporto a difesa su tre livelli** (`open-web-server-wire`) — TLS 1.3 + autenticazione reciproca HKDF + ChaCha20-Poly1305
 2. **Scritture a prova di perdita** (`open-web-server-ledger`) — WAL preventivo con `Idempotency-Key` obbligatoria + commit in 3 hop
 3. **Integrazione stretta con aruaru-db e open-runo** — `Client → open-web-server → open-runo → aruaru-db`
 4. **Percorso ridondante UDP-IP** (`open-web-server-wire::udp_channel`, 2026-07-11) — invia in parallelo al commit TCP autoritativo una notifica UDP cifrata e autenticata (HMAC) con best-effort, senza ritrasmissione (prima versione)
+5. **Architettura target: trasporto e scritture DB a quadrupla ridondanza** (rivisto 2026-07-11) — obiettivo finale: trasporto via TCP-IP + UDP-IP + QUIC/MPQUIC + MPTCP/SCTP, scritture verso PostgreSQL (proprietà transazionali ACID: atomicità, coerenza, isolamento, durabilità) + aruaru-db + replica sincrona multi-regione + log di audit indipendente. Ad oggi sono implementati solo TCP-IP e UDP-IP (senza ritrasmissione); il resto non è ancora iniziato (dettagli: [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化), [CLAUDE.md](CLAUDE.md)).
 
 ## Avvio rapido
 

@@ -13,12 +13,13 @@ niemals zu Doppelbuchungen oder stillem Datenverlust führen.
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## Vier Säulen
+## Fünf Säulen
 
 1. **Dreischichtige Verteidigungsübertragung** (`open-web-server-wire`) — TLS 1.3 + HKDF-basierte gegenseitige Authentifizierung + ChaCha20-Poly1305
 2. **Verlustsichere Schreibvorgänge** (`open-web-server-ledger`) — Vorab-WAL mit Pflicht-`Idempotency-Key` + Commit über 3 Hops
 3. **Enge Integration mit aruaru-db und open-runo** — `Client → open-web-server → open-runo → aruaru-db`
 4. **Redundanter UDP-IP-Pfad** (`open-web-server-wire::udp_channel`, 2026-07-11) — sendet parallel zum TCP-Commit eine verschlüsselte, HMAC-authentifizierte UDP-Benachrichtigung nach Best-Effort-Prinzip (kein Retransmit, erste Version)
+5. **Zielarchitektur: vierfach redundanter Transport und vierfach redundante DB-Schreibvorgänge** (überarbeitet 2026-07-11) — Zielbild: Transport über TCP-IP + UDP-IP + QUIC/MPQUIC + MPTCP/SCTP, DB-Schreibvorgänge über PostgreSQL (ACID-Transaktionseigenschaften: Atomarität, Konsistenz, Isolation, Dauerhaftigkeit) + aruaru-db + synchrone Multi-Region-Replikation + unabhängiges Audit-Log. Aktuell sind nur TCP-IP und UDP-IP (ohne Retransmit) implementiert; der Rest ist noch offen (Details: [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化), [CLAUDE.md](CLAUDE.md)).
 
 ## Schnellstart
 
