@@ -17,7 +17,7 @@ open-web-server 是面向 3D 网游道具购买、信用卡支付等关键业务
 2. **不丢失的写入**(`open-web-server-ledger`)— 强制 Idempotency-Key 的 WAL 预写 + 三跳提交
 3. **与 aruaru-db / open-runo 紧密集成** — `客户端 → open-web-server → open-runo → aruaru-db`
 4. **UDP-IP 冗余通道**(`open-web-server-wire::udp_channel`,2026-07-11)— 与 TCP 权威提交并行,以加密+HMAC 方式尽力发送 UDP 即时通知(无重传,第一版实现)
-5. **目标架构:通信层与数据库写入的四重冗余**(2026-07-11修订)— 最终目标:通信层采用 TCP-IP + UDP-IP + QUIC/MPQUIC + MPTCP/SCTP 四种方式,数据库写入采用 PostgreSQL(ACID,即原子性、一致性、隔离性、持久性的事务保证特性) + aruaru-db + 多区域同步复制 + 独立审计日志四条路径。目前仅实现了 TCP-IP 与 UDP-IP(无重传),其余尚未开始(详见 [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化) 与 [CLAUDE.md](CLAUDE.md))。
+5. **目标架构:通信层与数据库写入的四重冗余**(2026-07-11修订)— 最终目标:通信层采用 TCP-IP + UDP-IP + QUIC/MPQUIC + MPTCP/SCTP 四种方式,数据库写入采用 PostgreSQL(ACID,即原子性、一致性、隔离性、持久性的事务保证特性) + aruaru-db + 多区域同步复制 + 独立审计日志四条路径。目前仅实现了 TCP-IP 与 UDP-IP(无重传),其余尚未开始(详见 [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化) 与 [CLAUDE.md](CLAUDE.md))。**下一步新开发计划**:将 aruaru-db 的提交与 ZFS(open-raid-z)快照联动——虽未找到现成技术,但判断为可实现的新发现,计划下一阶段着手。
 
 ## 快速开始
 

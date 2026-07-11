@@ -149,6 +149,20 @@ not been started. The VersionLessAPI + Git-versioning hybrid and
 integration with `open-raid-z` are likewise not yet started; all of these
 are planned to be implemented incrementally in future passes.
 
+**Planned next new development: pairing aruaru-db commits with ZFS
+snapshots (2026-07-11, researched, user-directed)**: no established
+technique was found in the literature that directly integrates
+`aruaru-db`'s Raft-consensus replication with `open-raid-z` (ZFS-like)
+snapshots — but **this is treated as a novel, implementable finding, not
+a dead end, and is planned as a genuine new-development item for a
+future pass.** The idea: take a ZFS-like snapshot in step with each
+`aruaru-db` Raft log entry (commit) being finalized, giving the two
+independent versioning mechanisms — the application layer (Git commit
+history) and the filesystem layer (ZFS snapshots) — a transaction-level
+correspondence. See
+[`CLAUDE.md`](CLAUDE.md#拡張要件2026-07-11ユーザー指示目標アーキテクチャ実装は段階的に)
+for detail.
+
 ---
 
 ## Quick Start

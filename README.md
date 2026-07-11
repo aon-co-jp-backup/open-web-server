@@ -20,7 +20,7 @@
 3. **open-runo / aruaru-db との密結合** — `Client → open-web-server → open-runo → aruaru-db`
 4. **OpenTelemetry トレーシング**(`open-web-server-gateway`) — 各ハンドラのスパンを OTLP または標準出力へエクスポート(詳細は [README-Japan.md](README-Japan.md#4-opentelemetry-によるトレーシング-open-web-server-gatewaytelemetry))
 5. **UDP-IP 冗長経路**(`open-web-server-wire::udp_channel`, 2026-07-11) — TCP経由の権威コミットと並行して、暗号化+HMAC付きのUDP即時通知をベストエフォートで送出(再送なし・第一実装。詳細は [README-Japan.md](README-Japan.md#5-udp-ip-冗長経路-open-web-server-wireudp_channel-2026-07-11))
-6. **目標アーキテクチャ: 通信層・DB書き込みの四重化**(2026-07-11改訂) — 課金/金融/証券/クレジットカードデータをネットワーク上で失わないため、通信層は TCP-IP・UDP-IP・QUIC/MPQUIC・MPTCP/SCTP の4方式、DB書き込みは PostgreSQL(ACID＝原子性・一貫性・独立性・永続性を保証するトランザクション特性)・aruaru-db・マルチリージョン同期レプリケーション・独立監査ログの4系統を目標とする。現状は①②(TCP-IP・UDP-IP、再送なしfire-and-forget)のみ実装済みで、③④および四重DB書き込みは未着手(詳細は [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化) と [CLAUDE.md](CLAUDE.md#拡張要件2026-07-11ユーザー指示目標アーキテクチャ実装は段階的に))
+6. **目標アーキテクチャ: 通信層・DB書き込みの四重化**(2026-07-11改訂) — 課金/金融/証券/クレジットカードデータをネットワーク上で失わないため、通信層は TCP-IP・UDP-IP・QUIC/MPQUIC・MPTCP/SCTP の4方式、DB書き込みは PostgreSQL(ACID＝原子性・一貫性・独立性・永続性を保証するトランザクション特性)・aruaru-db・マルチリージョン同期レプリケーション・独立監査ログの4系統を目標とする。現状は①②(TCP-IP・UDP-IP、再送なしfire-and-forget)のみ実装済みで、③④および四重DB書き込みは未着手(詳細は [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化) と [CLAUDE.md](CLAUDE.md#拡張要件2026-07-11ユーザー指示目標アーキテクチャ実装は段階的に))。**次回新規開発予定**: aruaru-dbコミット×ZFSスナップショット(open-raid-z)の連携——確立技術は無いが新規性ある実装可能なアイデアとして次回パスで着手予定(詳細は同上)。
 
 ## クイックスタート
 
