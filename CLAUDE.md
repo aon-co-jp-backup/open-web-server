@@ -112,12 +112,33 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
      合わせることが推奨される
      ([ZFS on Postgres: Recordsize Mismatch and Write
      Amplification](https://tech-champion.com/database/postgresql/zfs-on-postgres-recordsize-mismatch-and-write-amplification/))。
+   - **aruaru-db(Git-on-SQL)とZFSスナップショット/クローンの概念的親和性**:
+     ZFSのスナップショットはCopy-on-Writeブロックへの参照であり、
+     `zfs clone`はスナップショットを起点に分岐(Gitのブランチに相当する
+     操作)でき、`zfs send`/増分sendでリモートプールへ複製できる——
+     Gitのコンテンツアドレス指向な履歴管理とは実装が異なるが、
+     「変更前のブロックを保持したまま新しい版を作る」という設計思想は
+     共通する([Using ZFS to Version Control Large
+     Datasets](https://gist.github.com/CMCDragonkai/1a4860671145b295fe7a4d8bc3968e87)、
+     [ZFS Essentials: Copy-on-write &
+     Snapshots](https://www.open-e.com/blog/copy-on-write-snapshots/))。
+     これにより、aruaru-dbのGitコミット履歴(アプリケーション層の版管理)
+     とは**独立した**、ファイルシステム層のスナップショット/複製という
+     もう1系統の冗長性を追加できる——片方(Gitコミット履歴)が壊れても
+     もう片方(ZFSスナップショット)から復元できる、という二重化。
+     **正直な限界の記載**: aruaru-dbが使うRaft分散合意によるレプリケーション
+     とZFSスナップショットを直接統合する確立された技術・実装は調査時点
+     (2026-07-11)で見つからなかった——これは既存の別々の仕組み
+     (アプリケーション層のRaft複製 + ファイルシステム層のZFS複製)を
+     並行して活用する「独立した冗長化」の話であり、両者を単一機構として
+     統合するというより高度な主張ではない。
    - これらは`open-raid-z`側の実装(スナップショット・チェックサム・
      recordsize相当の設定)を、単なる「下にあるディスク冗長化層」ではなく
      「DB書き込みパスと積極的に協調させるべき層」として扱うべき根拠となる。
      具体的な実装(recordsize設定の露出、ZIL/SLOG相当の同期書き込み
-     経路の追加等)は今後のパスで検討する(今回はドキュメント上の関連性
-     整理のみ、コード変更なし)。
+     経路の追加、aruaru-dbコミットとZFSスナップショットのタイミング連携等)
+     は今後のパスで検討する(今回はドキュメント上の関連性整理のみ、
+     コード変更なし)。
 3. **通信層の四重化(TCP-IP・UDP-IP・QUIC/MPQUIC・MPTCPまたはSCTP)**:
    単純な「TCP1系+UDP1系」の二種類ではなく、**性質の異なる4つの伝送方式**
    を並行させることで、単一プロトコル・単一経路の欠陥(輻輳制御の弱さ・
