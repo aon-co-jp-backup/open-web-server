@@ -4,7 +4,7 @@
 
 open-web-server is a mission-critical, 24/7/365 web server designed for workloads like
 3D online game item purchases and credit-card financial transactions. Built with
-**Rust + Poem**, it works together with aruaru-db and open-runo through a three-layer
+**Rust + Poem**, it works together with aruaru-db and open-runo through a four-layer
 defense architecture, so that network hiccups, process restarts, and retries never
 cause double-charging or silent data loss.
 
@@ -31,16 +31,17 @@ open-web-server addresses every one of these explicitly.
 
 ## Three Pillars
 
-### 1. Three-layer defense transport (`open-web-server-wire`)
+### 1. Four-layer defense transport (`open-web-server-wire`)
 
 Following the same approach as aruaru-db's `aruaru-wire`, every service-to-service
-call is protected by three independent layers.
+call is protected by four independent layers.
 
 | Layer | Technology | Purpose |
 |---|---|---|
 | Layer 1 | TLS 1.3 (rustls) | Transport encryption |
 | Layer 2 | HKDF-based challenge/response | Mutual service authentication (anti-impersonation) |
 | Layer 3 | ChaCha20-Poly1305 (AEAD) | Application-layer payload encryption (stays encrypted even after TLS termination) |
+| Layer 4 | seq/timestamp replay guard (`replay_guard`, added 2026-07-11) | Rejects replay of already-valid ciphertext (prevents double-charging/double-granting) |
 
 ### 2. Loss-proof writes (`open-web-server-ledger`)
 
@@ -60,7 +61,7 @@ double-charging or double-granting cannot happen.
 
 ```text
 Client → open-web-server → open-runo → aruaru-db
-        (3-layer defense)  (3-layer defense)
+        (4-layer defense)  (4-layer defense)
 ```
 
 - **open-web-server**: the client-facing entry point (REST/GraphQL, WAL pre-write)
@@ -89,8 +90,8 @@ distributed trace once `open-runo`/`aruaru-db` wire up compatible exporters
 
 To make billing/financial transactions harder to lose in flight, mutations
 are now also sent over a best-effort UDP side channel **in parallel** with
-the existing TCP-authoritative path. This does not replace the three-layer
-defense transport (TLS / mutual auth / payload encryption) — it's an
+the existing TCP-authoritative path. This does not replace the four-layer
+defense transport (TLS / mutual auth / payload encryption / replay guard) — it's an
 orthogonal capability: redundancy of the transport path itself.
 
 - `open-web-server-ledger::Ledger::commit()` fires the UDP send via
@@ -197,7 +198,7 @@ curl -X POST http://localhost:8080/api/v1/items/grant \
 open-web-server/
 ├── crates/
 │   ├── open-web-server-core/     # domain models and error types
-│   ├── open-web-server-wire/     # 3-layer defense transport (TLS / mutual auth / payload encryption)
+│   ├── open-web-server-wire/     # 4-layer defense transport (TLS / mutual auth / payload encryption / replay guard)
 │   ├── open-web-server-ledger/   # idempotent WAL + 3-hop commit pipeline
 │   └── open-web-server-gateway/  # Poem-based web gateway (binary)
 ├── docs/

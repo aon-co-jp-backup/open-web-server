@@ -1,11 +1,13 @@
-//! open-web-server-wire: 3層防御 (Defense in Depth) の通信基盤
+//! open-web-server-wire: 4層防御 (Defense in Depth) の通信基盤
 //!
 //! 3Dオンラインゲームの課金アイテムや、金融/クレジットカード情報を扱う
-//! ミッションクリティカルなノンストップサーバー向けに、以下3層を独立して積む。
-//! 1層が破られても即座に情報漏洩・データ消失に直結しない設計とする。
+//! ミッションクリティカルなノンストップサーバー向けに、以下4層を独立して積む。
+//! 1層が破られても即座に情報漏洩・データ消失・二重処理に直結しない設計とする。
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────┐
+//! │ 第4層  replay_guard: seq+timestamp リプレイ対策 │  再送(二重適用)防止
+//! ├─────────────────────────────────────────────┤
 //! │ 第3層  payload_crypto: ChaCha20-Poly1305 AEAD │  アプリ層ペイロード暗号化
 //! │        (TLS終端後も、更に平文が流れない)         │
 //! ├─────────────────────────────────────────────┤
@@ -15,26 +17,38 @@
 //! └─────────────────────────────────────────────┘
 //! ```
 //!
+//! 第4層 ([`replay_guard`]) は、第3層のAEADが検知しない「正規の暗号文の
+//! そのままの再送」を防ぐ。送信ごとに単調増加するシーケンス番号と
+//! UNIXタイムスタンプをAEADのAssociated Dataとして暗号文に暗号学的に
+//! 紐付け、受信側が既知シーケンス番号の再受信と許容時刻窓外のタイムスタンプ
+//! を拒否する。[`replay_guard::SecureChannel`] は第3層+第4層を1本にまとめた
+//! 送受信ヘルパーであり、単体で使う場合は [`payload_crypto::PayloadCipher`]
+//! の代わりにこちらを使うことでリプレイ対策込みの暗号化が得られる
+//! (課金・決済確定など非冪等な操作の送信に強く推奨)。
+//!
 //! aruaru-db の `aruaru-wire` crate と同一方針で実装しており、
-//! open-web-server ⇔ open-runo ⇔ aruaru-db 間の通信はすべてこの3層を通す。
+//! open-web-server ⇔ open-runo ⇔ aruaru-db 間の通信はすべてこの4層を通す。
 //!
 //! ## `udp_channel` について (2026-07-11 追加、重要な区別)
 //!
-//! 上記3層は現状すべて**単一のTCPコネクション上のセキュリティレイヤー**
-//! (TLS → 相互認証 → ペイロード暗号化) であり、これは変更していない。
-//! 別途追加した [`udp_channel`] モジュールは、これとは**直交する新しい能力**
-//! ── **伝送経路そのものの冗長化** (単一経路の障害・パケットロスでデータが
-//! 失われないようにする) を提供する。3層防御を置き換えるものではなく、
-//! UDP経路上でも `payload_crypto::PayloadCipher` によるAEAD暗号化 + 独自HMAC
-//! による完全性検証を適用したうえで、TCP経路と並行して使う副系として設計
+//! 上記4層は現状すべて**単一のTCPコネクション上のセキュリティレイヤー**
+//! (TLS → 相互認証 → ペイロード暗号化 → リプレイ対策) であり、これは変更
+//! していない。別途追加した [`udp_channel`] モジュールは、これとは
+//! **直交する新しい能力** ── **伝送経路そのものの冗長化** (単一経路の障害・
+//! パケットロスでデータが失われないようにする) を提供する。4層防御を
+//! 置き換えるものではなく、UDP経路上でも `payload_crypto::PayloadCipher`
+//! によるAEAD暗号化 + 独自HMAC + `seq`によるデデュープ(リプレイ対策と
+//! 同種の再送保護)を適用したうえで、TCP経路と並行して使う副系として設計
 //! している。詳細・スコープの限界は `udp_channel` モジュールのdocを参照。
 
 pub mod auth;
 pub mod payload_crypto;
+pub mod replay_guard;
 pub mod tls;
 pub mod udp_channel;
 
 pub use auth::MutualAuthConfig;
 pub use payload_crypto::PayloadCipher;
+pub use replay_guard::{ReplayGuard, SecureChannel};
 pub use tls::TlsServerConfig;
 pub use udp_channel::{Deduplicator, UdpChannelKeys, UdpReceiver, UdpSender};
