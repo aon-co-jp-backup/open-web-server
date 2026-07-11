@@ -11,11 +11,12 @@ open-web-server 是面向 3D 网游道具购买、信用卡支付等关键业务
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## 三大支柱
+## 四大支柱
 
 1. **三层防御通信**(`open-web-server-wire`)— TLS 1.3 + HKDF 双向认证 + ChaCha20-Poly1305
 2. **不丢失的写入**(`open-web-server-ledger`)— 强制 Idempotency-Key 的 WAL 预写 + 三跳提交
 3. **与 aruaru-db / open-runo 紧密集成** — `客户端 → open-web-server → open-runo → aruaru-db`
+4. **UDP-IP 冗余通道**(`open-web-server-wire::udp_channel`,2026-07-11)— 与 TCP 权威提交并行,以加密+HMAC 方式尽力发送 UDP 即时通知(无重传,第一版实现)
 
 ## 快速开始
 

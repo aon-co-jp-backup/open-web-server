@@ -13,11 +13,12 @@ proceso y reintentos nunca causan doble cobro ni pérdida silenciosa de datos.
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## Tres pilares
+## Cuatro pilares
 
 1. **Transporte de defensa en tres capas** (`open-web-server-wire`) — TLS 1.3 + autenticación mutua HKDF + ChaCha20-Poly1305
 2. **Escrituras a prueba de pérdidas** (`open-web-server-ledger`) — WAL previo con `Idempotency-Key` obligatoria + commit en 3 saltos
 3. **Integración estrecha con aruaru-db y open-runo** — `Cliente → open-web-server → open-runo → aruaru-db`
+4. **Ruta redundante UDP-IP** (`open-web-server-wire::udp_channel`, 2026-07-11) — envía en paralelo una notificación UDP cifrada y autenticada (HMAC) de mejor esfuerzo, sin reintentos (primera versión)
 
 ## Inicio rápido
 

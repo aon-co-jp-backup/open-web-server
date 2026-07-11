@@ -85,6 +85,35 @@ This is the groundwork for tracing the full
 distributed trace once `open-runo`/`aruaru-db` wire up compatible exporters
 (their current status here is unverified).
 
+### 5. UDP-IP redundant transport path (`open-web-server-wire::udp_channel`, 2026-07-11)
+
+To make billing/financial transactions harder to lose in flight, mutations
+are now also sent over a best-effort UDP side channel **in parallel** with
+the existing TCP-authoritative path. This does not replace the three-layer
+defense transport (TLS / mutual auth / payload encryption) — it's an
+orthogonal capability: redundancy of the transport path itself.
+
+- `open-web-server-ledger::Ledger::commit()` fires the UDP send via
+  `tokio::spawn` right after the WAL pre-write, as pure fire-and-forget.
+  The TCP-authoritative commit (`forward_with_retry`) is never blocked by
+  it, and the commit still succeeds even if the UDP send fails or the
+  destination is unreachable.
+- Datagrams are encrypted with `PayloadCipher` (ChaCha20-Poly1305 AEAD) and
+  authenticated with an HMAC-SHA256 tag per datagram, since UDP has no TLS
+  of its own.
+- The receiving side deduplicates by `IdempotencyKey` (`Deduplicator`), so
+  a mutation arriving over both TCP and UDP is never double-applied.
+
+**Honest scope limits**: there is no UDP retransmit — it is a pure
+send-and-hope "advance notice." Of the target "primary TCP + secondary TCP
++ UDP" triple-redundancy, this is a first cut covering only the single UDP
+path; a secondary TCP path is not implemented yet. Wiring an actual
+receiving-side listener into open-runo is also out of scope for this
+repository right now — this crate provides the sending side plus a
+verifiable receiving implementation for tests. See
+[`docs/architecture.md`](docs/architecture.md#冗長化された伝送経路-tcp-ip--udp-ip-open-web-server-wireudp_channel-2026-07-11)
+for details.
+
 ---
 
 ## Quick Start
@@ -138,6 +167,9 @@ open-web-server/
 - [x] Tracing via OpenTelemetry (implemented on the `open-web-server-gateway`
   side; true end-to-end tracing still depends on `open-runo`/`aruaru-db`
   adopting compatible exporters)
+- [x] First cut of the UDP-IP redundant transport path
+  (`open-web-server-wire::udp_channel`; retransmit, a secondary TCP path,
+  and an open-runo-side receiving listener remain future work)
 
 ## License
 

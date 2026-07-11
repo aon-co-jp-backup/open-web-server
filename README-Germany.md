@@ -13,11 +13,12 @@ niemals zu Doppelbuchungen oder stillem Datenverlust führen.
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## Drei Säulen
+## Vier Säulen
 
 1. **Dreischichtige Verteidigungsübertragung** (`open-web-server-wire`) — TLS 1.3 + HKDF-basierte gegenseitige Authentifizierung + ChaCha20-Poly1305
 2. **Verlustsichere Schreibvorgänge** (`open-web-server-ledger`) — Vorab-WAL mit Pflicht-`Idempotency-Key` + Commit über 3 Hops
 3. **Enge Integration mit aruaru-db und open-runo** — `Client → open-web-server → open-runo → aruaru-db`
+4. **Redundanter UDP-IP-Pfad** (`open-web-server-wire::udp_channel`, 2026-07-11) — sendet parallel zum TCP-Commit eine verschlüsselte, HMAC-authentifizierte UDP-Benachrichtigung nach Best-Effort-Prinzip (kein Retransmit, erste Version)
 
 ## Schnellstart
 

@@ -13,11 +13,12 @@ processo e nuovi tentativi non causino mai doppi addebiti o perdite silenziose d
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## Tre pilastri
+## Quattro pilastri
 
 1. **Trasporto a difesa su tre livelli** (`open-web-server-wire`) — TLS 1.3 + autenticazione reciproca HKDF + ChaCha20-Poly1305
 2. **Scritture a prova di perdita** (`open-web-server-ledger`) — WAL preventivo con `Idempotency-Key` obbligatoria + commit in 3 hop
 3. **Integrazione stretta con aruaru-db e open-runo** — `Client → open-web-server → open-runo → aruaru-db`
+4. **Percorso ridondante UDP-IP** (`open-web-server-wire::udp_channel`, 2026-07-11) — invia in parallelo al commit TCP autoritativo una notifica UDP cifrata e autenticata (HMAC) con best-effort, senza ritrasmissione (prima versione)
 
 ## Avvio rapido
 

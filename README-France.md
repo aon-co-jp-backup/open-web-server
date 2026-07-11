@@ -14,11 +14,12 @@ double facturation ni de perte silencieuse de données.
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## Trois piliers
+## Quatre piliers
 
 1. **Transport de défense à trois couches** (`open-web-server-wire`) — TLS 1.3 + authentification mutuelle HKDF + ChaCha20-Poly1305
 2. **Écritures à l'épreuve des pertes** (`open-web-server-ledger`) — WAL préalable avec `Idempotency-Key` obligatoire + commit en 3 sauts
 3. **Intégration étroite avec aruaru-db et open-runo** — `Client → open-web-server → open-runo → aruaru-db`
+4. **Voie redondante UDP-IP** (`open-web-server-wire::udp_channel`, 2026-07-11) — envoie en parallèle une notification UDP chiffrée + authentifiée (HMAC) au mieux, sans nouvelle tentative (première version)
 
 ## Démarrage rapide
 

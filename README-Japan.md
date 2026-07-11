@@ -83,6 +83,31 @@ Client → open-web-server → open-runo → aruaru-db
 Exporter 設定に対応すればエンドツーエンドのトレースにつながります(両リポジトリ
 側の対応状況は未確認)。
 
+### 5. UDP-IP 冗長経路 (`open-web-server-wire::udp_channel`, 2026-07-11)
+
+課金・金融トランザクションがネットワーク上で消失しないよう、既存のTCP経由
+権威パスと**並行して**同じミューテーションをUDPでも即時送出する冗長経路を
+追加しました。3層防御通信(TLS/相互認証/ペイロード暗号化)を置き換えるもの
+ではなく、それとは別の「伝送経路そのものの複線化」です。
+
+- `open-web-server-ledger::Ledger::commit()` は WAL 先行書き込み直後に
+  `tokio::spawn` でUDP送信をfire-and-forget発火し、TCP経由の権威コミット
+  (`forward_with_retry`)は一切ブロックしません。UDP送出が失敗・宛先未到達
+  でもコミット自体は成功します。
+- データグラムは `PayloadCipher` (ChaCha20-Poly1305 AEAD) で暗号化し、
+  HMAC-SHA256でデータグラム単位の完全性・認証を付与します(UDPにはTLSが
+  無いため)。
+- 受信側は `IdempotencyKey` によるデデュープ (`Deduplicator`) を行うため、
+  同じミューテーションがTCP・UDP双方で届いても二重処理にはなりません。
+
+**スコープの限界(正直な記載)**: UDP側の再送機構は未実装で「送りっぱなしの
+即時通知」に留まります。目標アーキテクチャの「主系TCP+副系TCP+UDP」の
+三重化のうち今回はUDP1系のみの第一実装であり、副系TCPは未着手です。
+受信側の実配置(open-runo側でのUDPリスナー実装)も別スコープで、本リポジトリ
+は送信側の結線と検証用受信ロジックの提供までです。詳細は
+[`docs/architecture.md`](docs/architecture.md#冗長化された伝送経路-tcp-ip--udp-ip-open-web-server-wireudp_channel-2026-07-11)
+を参照してください。
+
 ---
 
 ## クイックスタート
@@ -135,6 +160,8 @@ open-web-server/
   2026-07-10のスタック転換により Tauri ではなく Rust/WASM で実装する）
 - [x] OpenTelemetry連携によるトレーシング(`open-web-server-gateway` 側は実装済み。
   `open-runo`/`aruaru-db` 側の対応込みのE2Eトレースは今後の課題)
+- [x] UDP-IP冗長経路の第一実装(`open-web-server-wire::udp_channel`。再送機構・
+  副系TCP・open-runo側受信リスナーは未着手で今後の課題)
 
 ## ライセンス
 

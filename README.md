@@ -13,12 +13,13 @@
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
 [Русский](README-Russia.md) / [العربية](README-Arabic.md)
 
-## 3 本柱
+## 5 本柱
 
 1. **3 層防御通信**(`open-web-server-wire`) — TLS 1.3 + HKDF 相互認証 + ChaCha20-Poly1305
 2. **消失しない書き込み**(`open-web-server-ledger`) — Idempotency-Key 必須の WAL 先行書き込み + 3 ホップコミット
 3. **open-runo / aruaru-db との密結合** — `Client → open-web-server → open-runo → aruaru-db`
 4. **OpenTelemetry トレーシング**(`open-web-server-gateway`) — 各ハンドラのスパンを OTLP または標準出力へエクスポート(詳細は [README-Japan.md](README-Japan.md#4-opentelemetry-によるトレーシング-open-web-server-gatewaytelemetry))
+5. **UDP-IP 冗長経路**(`open-web-server-wire::udp_channel`, 2026-07-11) — TCP経由の権威コミットと並行して、暗号化+HMAC付きのUDP即時通知をベストエフォートで送出(再送なし・第一実装。詳細は [README-Japan.md](README-Japan.md#5-udp-ip-冗長経路-open-web-server-wireudp_channel-2026-07-11))
 
 ## クイックスタート
 
