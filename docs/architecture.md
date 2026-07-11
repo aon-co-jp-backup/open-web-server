@@ -69,3 +69,54 @@ open-runo→aruaru-db) は同一方針の3層で保護する。
 `open-runo`/`aruaru-db` 側が同じ Trace Context を伝播・エクスポートするように
 なれば、`Client → open-web-server → open-runo → aruaru-db` 全体を1本の
 分散トレースとして追跡できるようになる(両リポジトリの対応状況は未確認)。
+
+## 冗長化された伝送経路: TCP-IP + UDP-IP (`open-web-server-wire::udp_channel`, 2026-07-11)
+
+`CLAUDE.md` の拡張要件 (3) 「TCP-IP・UDP-IPの三層三重通信」に対する**最初の
+具体的な実装**。上記「3層防御通信」はTLS/相互認証/ペイロード暗号化という
+**セキュリティレイヤー**のスタックであり、単一のTCPコネクション上に積む
+ものだった。今回追加した `udp_channel` はこれと直交する、別の性質の冗長化
+──**伝送経路そのものの複線化**である。
+
+```text
+open-web-server-ledger::Ledger::commit()
+  │
+  ├─ ① WAL 先行書き込み (fsync相当)
+  │
+  ├─ ② TCP経由 open-runo forward  ─────────► 権威パス (db_commit_id を発行)
+  │     (3層防御通信、既存)                     失敗時はリトライ、最終的に失敗なら
+  │                                            commit 自体が失敗として返る
+  │
+  └─ ③ UDP経由 即時通知 (新規、副系)  ─────────► ベストエフォート
+        tokio::spawn の fire-and-forget。
+        PayloadCipher (ChaCha20-Poly1305) で暗号化 +
+        HMAC-SHA256 でデータグラム単位の完全性・認証を付与。
+        失敗・タイムアウトしても②をブロック・失敗させない。
+```
+
+### スコープと限界 (正直な記載)
+
+- **再送は実装していない**。UDPは「送りっぱなしの即時通知」として扱う。
+  本体データの確定 (`db_commit_id` の発行) は今まで通りTCP経由の3ホップ
+  コミットのみが担う。目標アーキテクチャの「主系TCP+副系TCP+UDP」の
+  三重化のうち、UDP1系のみの第一実装であり、副系TCPは未実装。
+- **冪等キーによるデデュープ**: 同一 `IdempotencyKey` のミューテーションが
+  TCP経由・UDP経由の両方で届いても実害がない設計 (既存の冪等性設計をUDPの
+  重複・順序入れ替わりにもそのまま適用)。`udp_channel::Deduplicator` が
+  受信側の集合管理を担う。
+- **暗号化・認証**: UDPにはTLSが無いため、AEAD暗号化 (`PayloadCipher`) を
+  機密性の主体とし、HMAC-SHA256を完全性・認証に用いる (鍵は
+  `auth::MutualAuthConfig` と同じ長期共有シークレットからHKDFで導出する
+  運用を想定)。
+- **受信側の実配置は未接続**: 実際にどのプロセス (open-runo側) がUDP
+  ソケットをlistenし、`aruaru-db`側WALと結合するかは別スコープ。本リポジトリ
+  内では `open-web-server-ledger::Ledger` が UDP送信側のみを結線しており、
+  `enable_udp_redundant_path()` で任意に有効化できる (未呼び出しなら従来通り
+  TCPのみで動作)。
+- **検証**: `open-web-server-wire::udp_channel` の単体テストに加え、実
+  `tokio::net::UdpSocket` (127.0.0.1 loopback) を使った結合テストで
+  (a) 暗号化・HMAC検証・デデュープの一連の流れ、(b) 改ざんデータグラムの
+  拒否、を実証。`open-web-server-ledger` 側では実TCPソケットのモック
+  open-runoサーバを使い、(c) UDP経由通知がTCP確定と並行して正しく届き
+  デデュープされること、(d) UDP宛先が完全に到達不能でもTCP経由の権威
+  パスは影響を受けずコミットが成功すること、を実証済み。

@@ -97,6 +97,15 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 各段階で実バイナリ・実ネットワーク通信による検証を行い、型チェックのみで
 「完了」と報告しない。詳細な進捗は本ファイルのHANDOFF節に記録する。
 
+**進捗(2026-07-11)**: 上記(3)のうちUDP-IP経路の**第一実装**が完了。
+`open-web-server-wire::udp_channel` モジュールを新規追加し、
+`open-web-server-ledger::Ledger` の commit パイプラインに
+`enable_udp_redundant_path()` (任意有効化) として結線した。**スコープは
+「UDP1系のみのfire-and-forget即時通知」に限定**しており、副系TCPの追加・
+UDP側の再送機構は未実装(目標の「三層三重通信」全体にはまだ届いていない)。
+詳細は本ファイルのHANDOFFと `docs/architecture.md` の該当節を参照。
+(1)(2)(4)は引き続き未着手。
+
 ## API設計思想(参考・概念のみ)
 
 - **VersionLess API**という考え方を参考にする(WunderGraphのブログ/podcast参照)。
@@ -129,7 +138,8 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 
 ## 現状(このリポジトリ固有)
 
-- `cargo check --workspace` / `cargo test --workspace` は成功する(4クレート構成)。
+- `cargo check --workspace` / `cargo test --workspace` は成功する(4クレート構成、
+  2026-07-11時点で全13テストがgreen: gateway 4件 / ledger 3件 / wire 6件)。
 - 4クレートの実装(`core`/`wire`/`auth`/`payload_crypto`/`tls`/`ledger`/`gateway`の
   各handler・middleware)はスタブなし。`todo!()`/`unimplemented!()`/`TODO`/`FIXME`は
   リポジトリ全体で0件(2026-07-11巡回時点でも再確認済み)。`handlers/wal.rs` の
@@ -142,7 +152,48 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
-- **2026-07-11 (今回)**: git健全性を確認(壊れたref修復済み、`origin/main` の
+- **2026-07-11 (今回、UDP-IP冗長経路の第一実装)**: 拡張要件(3)「TCP-IP・
+  UDP-IPの三層三重通信」のうち、UDP側の最初の具体的な実装を追加。
+  **実装**: `crates/open-web-server-wire/src/udp_channel.rs` を新規作成。
+  データグラム形式は `[seq:u64][HMAC-SHA256タグ:32B][PayloadCipher
+  ciphertext(nonce12B+AEAD)]`。送信は `UdpSender::send_mutation`
+  (fire-and-forget、再送なし)、受信は `UdpReceiver::recv_mutation`
+  (HMAC検証→AEAD復号→`Deduplicator`によるIdempotencyKeyデデュープ)。
+  `open-web-server-ledger::Ledger` に `enable_udp_redundant_path(bind_addr,
+  dest, keys)` (任意呼び出しのasyncビルダー) を追加し、`commit()` の
+  `fire_udp_redundant_notice()` が WAL先行書き込み直後に `tokio::spawn` で
+  UDP送信を非同期発火、TCP経由の権威パス(既存の`forward_with_retry`)は
+  一切ブロックしない設計。**スコープの限界(正直な記載)**:
+  UDPの再送機構は実装せず「送りっぱなしの即時通知」のみ。副系TCP(TCP2系)は
+  未実装。受信側の実配置(open-runo側でのUDP listenとaruaru-db WALとの結合)
+  は別リポジトリのスコープで今回未着手 — 本リポジトリはUDP送信側の結線と、
+  検証用の受信ロジック(`UdpReceiver`)の提供までに留まる。
+  **テスト(実ソケット・実ネットワーク)**: `open-web-server-wire` に単体
+  テスト6件を追加(フレームのround-trip、改ざん検知、鍵不一致拒否、
+  デデュープ、および `tokio::net::UdpSocket` を `127.0.0.1:0` に実バインドし
+  実送受信する結合テスト2件——1件は正常系の暗号化/HMAC/デデュープの実証、
+  もう1件は未listenの宛先へ送ってもハング・panicしないことの実証)。
+  `open-web-server-ledger` にも実TCPソケットのモックopen-runoサーバ
+  (`tokio::net::TcpListener`、固定JSONレスポンス)を使った統合テスト2件を
+  追加: (a) UDP経由の通知がTCP確定コミットと並行して正しく届きデデュープ
+  される実証、(b) UDP宛先(`127.0.0.1:1`、未listen)が完全に到達不能でも
+  TCP経由の権威パスは`tokio::time::timeout(5s)`内で問題なくコミット成功する
+  実証(UDP障害がTCP経路を一切ブロック・破壊しないという設計保証の直接検証)。
+  `cargo check --workspace` / `cargo test --workspace` は全13テストgreenを
+  確認(gateway 4 / ledger 3 / wire 6)。
+  **未実施(正直な記載)**: 実バイナリ(`open-web-server-gateway`等)の
+  プロセス起動によるエンドツーエンド検証は、本リポジトリに
+  Makefile/docker-compose等の実行手順が無く、`aruaru-db`/PostgreSQL相当の
+  依存インフラもこの環境には無いため未実施。上記のクレートレベル実UDP
+  ソケット統合テストをその代替とした。
+  **ドキュメント**: `docs/architecture.md` に「冗長化された伝送経路」節を
+  追加(3層防御通信=セキュリティレイヤーとの違いを明記)。
+  `crates/open-web-server-wire/src/lib.rs` のモジュールdocに
+  `udp_channel` との関係を追記。この`CLAUDE.md`の拡張要件(3)節に
+  進捗ノートを追加(他3項目は未着手のまま明記)。
+  **次回以降の候補**: 副系TCPの追加、UDP側の再送/ACK機構(必要性を再検討の
+  うえ)、open-runo側でのUDP受信リスナー実装との結合。
+- **2026-07-11**: git健全性を確認(壊れたref修復済み、`origin/main` の
   `2fd70a4` を正しく追跡、作業ツリークリーン)。`cargo check --workspace` /
   `cargo test --workspace --no-run` / `cargo test --workspace` すべて成功を再確認。
   `todo!()`/`unimplemented!()`/TODO/FIXME/stub/placeholder を再走査し0件を再確認。

@@ -17,11 +17,24 @@
 //!
 //! aruaru-db の `aruaru-wire` crate と同一方針で実装しており、
 //! open-web-server ⇔ open-runo ⇔ aruaru-db 間の通信はすべてこの3層を通す。
+//!
+//! ## `udp_channel` について (2026-07-11 追加、重要な区別)
+//!
+//! 上記3層は現状すべて**単一のTCPコネクション上のセキュリティレイヤー**
+//! (TLS → 相互認証 → ペイロード暗号化) であり、これは変更していない。
+//! 別途追加した [`udp_channel`] モジュールは、これとは**直交する新しい能力**
+//! ── **伝送経路そのものの冗長化** (単一経路の障害・パケットロスでデータが
+//! 失われないようにする) を提供する。3層防御を置き換えるものではなく、
+//! UDP経路上でも `payload_crypto::PayloadCipher` によるAEAD暗号化 + 独自HMAC
+//! による完全性検証を適用したうえで、TCP経路と並行して使う副系として設計
+//! している。詳細・スコープの限界は `udp_channel` モジュールのdocを参照。
 
 pub mod auth;
 pub mod payload_crypto;
 pub mod tls;
+pub mod udp_channel;
 
 pub use auth::MutualAuthConfig;
 pub use payload_crypto::PayloadCipher;
 pub use tls::TlsServerConfig;
+pub use udp_channel::{Deduplicator, UdpChannelKeys, UdpReceiver, UdpSender};

@@ -1,6 +1,6 @@
 [package]
 name = "open-web-server-gateway"
-description = "open-web-server: Poem製 Webゲートウェイ (REST/GraphQL/3D Game API 前段)"
+description = "open-web-server: tokio/hyper 自前実装 Webゲートウェイ (REST/GraphQL/3D Game API 前段)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,8 +14,11 @@ open-web-server-core = { path = "../open-web-server-core" }
 open-web-server-wire = { path = "../open-web-server-wire" }
 open-web-server-ledger = { path = "../open-web-server-ledger" }
 tokio.workspace = true
-poem.workspace = true
-poem-openapi.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+bytes.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

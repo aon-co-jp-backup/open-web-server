@@ -21,12 +21,25 @@
 //! 各段階は `IdempotencyKey` を伝播させるため、途中で再送されても
 //! 二重課金・二重付与が起きない。③ の commit_id が返るまでクライアントには
 //! 「確定」を返さない (at-least-once + 冪等 = 実質 exactly-once)。
+//!
+//! ## UDP-IP 冗長経路 (2026-07-11 追加、副系・ベストエフォート)
+//!
+//! `open-web-server-wire::udp_channel` を使い、①の直後に**同じ
+//! `MutationRequest` を、TCP経由の②(open-runoへのforward)と並行して
+//! UDPでも即時送出**する (`Ledger::enable_udp_redundant_path` で有効化した
+//! 場合のみ)。UDP送出は `tokio::spawn` した別タスクの fire-and-forget で
+//! あり、失敗・タイムアウトしても TCP経由の権威パスには一切影響しない
+//! (このモジュールの統合テストで実証)。UDP側は「即時通知/advance notice」
+//! に過ぎず、正式なコミット確定 (`db_commit_id` の発行) は今まで通り
+//! TCP経由の3ホップコミットのみが担う。
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use open_web_server_core::{CoreError, CoreResult, MutationReceipt, MutationRequest};
+use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpSender};
 use tracing::{info, warn};
 
 #[derive(Clone)]
@@ -50,6 +63,13 @@ pub struct Ledger {
     config: LedgerConfig,
     wal: Arc<dyn WriteAheadLog>,
     http: reqwest::Client,
+    /// UDP-IP 冗長経路 (副系、ベストエフォート)。未設定ならTCP経路のみで動作する。
+    udp_redundant_path: Option<UdpRedundantPath>,
+}
+
+struct UdpRedundantPath {
+    sender: Arc<UdpSender>,
+    dest: SocketAddr,
 }
 
 impl Ledger {
@@ -58,7 +78,26 @@ impl Ledger {
             config,
             wal,
             http: reqwest::Client::new(),
+            udp_redundant_path: None,
         }
+    }
+
+    /// UDP-IP 冗長経路を有効化する。`bind_addr` はこのプロセスがUDP送信に
+    /// 使うローカルソケット (通常 `0.0.0.0:0` 等の任意ポート)、`dest` は
+    /// 副系の受信先 (open-runo側のUDPリスナー、今回のスコープ外の別実装)。
+    /// 呼び出しは任意であり、有効化しなくてもTCP経路のみで従来通り動作する。
+    pub async fn enable_udp_redundant_path(
+        mut self,
+        bind_addr: SocketAddr,
+        dest: SocketAddr,
+        keys: &UdpChannelKeys,
+    ) -> anyhow::Result<Self> {
+        let sender = UdpSender::bind(bind_addr, keys).await?;
+        self.udp_redundant_path = Some(UdpRedundantPath {
+            sender: Arc::new(sender),
+            dest,
+        });
+        Ok(self)
     }
 
     /// 課金/金融データの書き込みを、消失しない形で確定させる。
@@ -81,6 +120,11 @@ impl Ledger {
             .await
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
+        // UDP-IP 冗長経路: ベストエフォートの即時通知。fire-and-forgetで
+        // spawnし、TCP経由の権威パス (下のforward_with_retry) を
+        // ブロックしない・失敗させない。
+        self.fire_udp_redundant_notice(&req);
+
         // ② open-runo 経由で aruaru-db にコミット要求を送る (3層防御通信を利用)
         let commit_id = self.forward_with_retry(&req).await?;
 
@@ -97,6 +141,23 @@ impl Ledger {
             db_commit_id: Some(commit_id),
             committed_at: Some(chrono::Utc::now()),
         })
+    }
+
+    /// UDP冗長経路が有効なら、同じミューテーションを別タスクで即時送出する。
+    /// 送信失敗・宛先未リッスンは警告ログのみで、`commit` の結果には一切影響しない。
+    fn fire_udp_redundant_notice(&self, req: &MutationRequest) {
+        let Some(path) = &self.udp_redundant_path else {
+            return;
+        };
+        let sender = Arc::clone(&path.sender);
+        let dest = path.dest;
+        let req = req.clone();
+        let key = req.idempotency_key.0.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sender.send_mutation(dest, &req).await {
+                warn!(key = %key, error = %e, "UDP redundant path send failed (best-effort, TCP path unaffected)");
+            }
+        });
     }
 
     async fn forward_with_retry(&self, req: &MutationRequest) -> CoreResult<String> {
@@ -201,5 +262,158 @@ mod tests {
 
         assert_eq!(receipt.db_commit_id, existing.db_commit_id);
         assert_eq!(*wal.appended.lock().unwrap(), 0, "must not re-append a duplicate mutation");
+    }
+
+    fn sample_request(key: &str) -> MutationRequest {
+        MutationRequest {
+            idempotency_key: IdempotencyKey(key.to_string()),
+            account_id: "user-1".to_string(),
+            target: "items".to_string(),
+            payload: serde_json::json!({"item_id": "sword", "quantity": 1}),
+            requested_at: chrono::Utc::now(),
+        }
+    }
+
+    /// 実TCPソケットで待ち受け、どんなリクエストが来ても固定のJSON
+    /// `MutationReceipt` を返すごく単純なモックHTTPサーバ。open-runoの
+    /// 代わりに使い、`Ledger::commit` のTCP経由コミットが実際に成立する
+    /// ことを検証する。
+    async fn spawn_mock_open_runo(commit_id: &str) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let commit_id = commit_id.to_string();
+
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let commit_id = commit_id.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    // リクエスト全体は読み切らず、送られてくる分だけ読み捨てる。
+                    let _ = stream.read(&mut buf).await;
+
+                    let body = serde_json::json!({
+                        "idempotency_key": "placeholder",
+                        "committed": true,
+                        "db_commit_id": commit_id,
+                        "committed_at": chrono::Utc::now(),
+                    })
+                    .to_string();
+                    // idempotency_key はテスト側で使わないため固定値でよい
+                    // (受信側は open-runo からの受領票の db_commit_id のみを見る)。
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    /// UDP冗長経路が有効かつ到達可能な場合、TCP経由の権威パスと並行して
+    /// 送出されたUDP通知が受信側で正しく復号・デデュープされることを、
+    /// 実UDPソケット (loopback) で検証する。
+    #[tokio::test]
+    async fn udp_redundant_path_delivers_and_dedups_against_simulated_tcp_delivery() {
+        use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpReceiver};
+
+        let (endpoint, _server) = spawn_mock_open_runo("commit-udp-1").await;
+        let wal = Arc::new(MockWal::default());
+        let keys = UdpChannelKeys::generate_for_testing();
+
+        let receiver = UdpReceiver::bind("127.0.0.1:0".parse().unwrap(), &keys)
+            .await
+            .unwrap();
+        let recv_addr = receiver.local_addr().unwrap();
+
+        let ledger = Ledger::new(
+            LedgerConfig {
+                open_runo_endpoint: endpoint,
+                max_retries: 1,
+                retry_backoff: Duration::from_millis(1),
+            },
+            wal,
+        )
+        .enable_udp_redundant_path("127.0.0.1:0".parse().unwrap(), recv_addr, &keys)
+        .await
+        .unwrap();
+
+        let req = sample_request("udp-dedup-key-1");
+
+        // TCP経由の権威パスを確定させる (これがidempotency keyの「本採用」)。
+        let receipt = ledger.commit(req.clone()).await.expect("tcp commit must succeed");
+        assert_eq!(receipt.db_commit_id.as_deref(), Some("commit-udp-1"));
+
+        // 並行して spawn されたUDP送出が受信側に届くのを待つ。
+        let first = tokio::time::timeout(Duration::from_secs(2), receiver.recv_mutation())
+            .await
+            .expect("udp notice should arrive within timeout")
+            .expect("udp recv must not error");
+        assert_eq!(
+            first.map(|r| r.idempotency_key.0),
+            Some("udp-dedup-key-1".to_string()),
+            "udp side must deliver the same idempotency key as the tcp-committed mutation"
+        );
+
+        // 同一キーの mutation が UDP 経由でもう一度届いた状況をシミュレートする
+        // (TCPとUDPの二重到達は起こり得るが、デデュープにより実害がないこと)。
+        if let Some(path) = &ledger.udp_redundant_path {
+            path.sender.send_mutation(recv_addr, &req).await.unwrap();
+        }
+        let second = tokio::time::timeout(Duration::from_secs(2), receiver.recv_mutation())
+            .await
+            .expect("second udp datagram should arrive")
+            .expect("udp recv must not error");
+        assert!(
+            second.is_none(),
+            "duplicate idempotency key over udp must be deduplicated"
+        );
+    }
+
+    /// UDP冗長経路の宛先が誰もlistenしていない (閉じたポート相当) 場合でも、
+    /// TCP経由の権威パスは影響を受けず、mutationは正常にコミットされることを
+    /// 実証する。これが「UDP障害はTCP経路をブロック・破壊しない」という
+    /// 設計上の保証の直接的な検証にあたる。
+    #[tokio::test]
+    async fn tcp_authoritative_path_succeeds_even_when_udp_path_is_entirely_unreachable() {
+        use open_web_server_wire::udp_channel::UdpChannelKeys;
+
+        let (endpoint, _server) = spawn_mock_open_runo("commit-udp-2").await;
+        let wal = Arc::new(MockWal::default());
+        let keys = UdpChannelKeys::generate_for_testing();
+
+        // 誰もbindしていない宛先アドレス (UDPは受信側不在でも送信自体は
+        // OSレベルで成功しうるため、意図的に到達不能な設定を模す)。
+        let unreachable_udp_dest: SocketAddr = "127.0.0.1:1".parse().unwrap();
+
+        let ledger = Ledger::new(
+            LedgerConfig {
+                open_runo_endpoint: endpoint,
+                max_retries: 1,
+                retry_backoff: Duration::from_millis(1),
+            },
+            wal,
+        )
+        .enable_udp_redundant_path("127.0.0.1:0".parse().unwrap(), unreachable_udp_dest, &keys)
+        .await
+        .unwrap();
+
+        let req = sample_request("udp-unreachable-key-1");
+
+        let receipt = tokio::time::timeout(Duration::from_secs(5), ledger.commit(req))
+            .await
+            .expect("commit must not hang even if the udp path is unreachable")
+            .expect("tcp-authoritative commit must still succeed");
+
+        assert!(receipt.committed);
+        assert_eq!(receipt.db_commit_id.as_deref(), Some("commit-udp-2"));
     }
 }
