@@ -43,8 +43,10 @@ use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpSender};
 use tracing::{info, warn};
 
 pub mod audit_log;
+pub mod multi_region;
 pub mod postgres_wal;
 pub use audit_log::{AuditRecord, FileAuditLog, ReconciliationReport};
+pub use multi_region::{MultiRegionError, MultiRegionReplicator, Region as ReplicationRegion};
 pub use postgres_wal::PostgresWal;
 
 #[derive(Clone)]
@@ -74,6 +76,11 @@ pub struct Ledger {
     /// 4本目)。WAL/aruaru-db/PostgreSQLのいずれとも技術的に独立した
     /// 追記専用ファイル。未設定なら従来通り記録されない (任意機能)。
     audit_log: Option<Arc<audit_log::FileAuditLog>>,
+    /// マルチリージョン同期レプリケーション (拡張要件(4)-③)。未設定なら
+    /// 従来通りこの経路自体が無効 (任意機能)。設定されている場合、
+    /// `commit()` は全リージョン(既定ポリシー)への同期書き込みが
+    /// `min_acks` を満たすまで待ち、満たさなければコミット全体を失敗させる。
+    multi_region: Option<Arc<multi_region::MultiRegionReplicator>>,
 }
 
 struct UdpRedundantPath {
@@ -89,7 +96,26 @@ impl Ledger {
             http: reqwest::Client::new(),
             udp_redundant_path: None,
             audit_log: None,
+            multi_region: None,
         }
+    }
+
+    /// マルチリージョン同期レプリケーション (拡張要件(4)-③) を有効化する。
+    /// ①PostgreSQL・②aruaru-db・④独立監査ログのいずれとも独立した3本目の
+    /// 永続化先として、`commit()` がWAL先行書き込み直後に**同期的に**
+    /// (全リージョンの結果が揃うまで呼び出し元をブロックして)書き込む。
+    /// 呼び出しは任意であり、有効化しなくても従来通り動作する。
+    pub fn enable_multi_region_replication(
+        mut self,
+        replicator: multi_region::MultiRegionReplicator,
+    ) -> Self {
+        self.multi_region = Some(Arc::new(replicator));
+        self
+    }
+
+    /// 有効化済みのマルチリージョンレプリケータへの参照 (検証用)。
+    pub fn multi_region(&self) -> Option<Arc<multi_region::MultiRegionReplicator>> {
+        self.multi_region.clone()
     }
 
     /// 独立監査ログ (拡張要件(4)-④) を有効化する。①PostgreSQL・②aruaru-db・
@@ -160,6 +186,19 @@ impl Ledger {
             if let Err(e) = audit.append(&record) {
                 warn!(key = %req.idempotency_key.0, error = %e, "audit log append failed (independent of authoritative path)");
             }
+        }
+
+        // マルチリージョン同期レプリケーション (拡張要件(4)-③): UDP冗長経路とは
+        // 対照的に、ここは spawn して即座に返るのではなく `.await` する ——
+        // 全リージョンの書き込み結果が揃うまでこのメソッド自体がブロックされ、
+        // 既定ポリシー (全リージョン必須) を満たさなければコミット全体を
+        // 失敗させる (WALには既に先行書き込み済みなので、再送されれば冪等に
+        // 再試行できる)。
+        if let Some(replicator) = &self.multi_region {
+            replicator.replicate(&req).await.map_err(|e| {
+                warn!(key = %req.idempotency_key.0, error = %e, "multi-region synchronous replication failed policy, commit aborted");
+                CoreError::MultiRegionReplicationFailed(e.to_string())
+            })?;
         }
 
         // ② open-runo 経由で aruaru-db にコミット要求を送る (3層防御通信を利用)
@@ -499,5 +538,110 @@ mod tests {
         assert_eq!(report.total_audit_records, 1);
 
         let _ = std::fs::remove_file(&audit_path);
+    }
+
+    /// `Ledger::commit`経由でマルチリージョン同期レプリケーション(拡張要件
+    /// (4)-③)が実際に2つの独立したSQLiteリージョンファイルへ書き込みを
+    /// 反映することを、実TCPモックopen-runoサーバ+実sqliteファイルI/Oで
+    /// 一気通貫で検証する。
+    #[tokio::test]
+    async fn commit_replicates_synchronously_to_every_real_region_backend() {
+        use multi_region::{MultiRegionReplicator, Region};
+
+        let (endpoint, _server) = spawn_mock_open_runo("commit-mr-1").await;
+        let wal = Arc::new(MockWal::default());
+
+        let mut path_a = std::env::temp_dir();
+        path_a.push(format!("open-web-server-ledger-mr-a-{}.sqlite3", std::process::id()));
+        let mut path_b = std::env::temp_dir();
+        path_b.push(format!("open-web-server-ledger-mr-b-{}.sqlite3", std::process::id()));
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
+        let path_a_str = path_a.to_string_lossy().replace('\\', "/");
+        let path_b_str = path_b.to_string_lossy().replace('\\', "/");
+
+        let region_a = Region::connect("region-a", &path_a_str).await.unwrap();
+        let region_b = Region::connect("region-b", &path_b_str).await.unwrap();
+        let replicator = MultiRegionReplicator::new(vec![region_a, region_b]);
+
+        let ledger = Ledger::new(
+            LedgerConfig {
+                open_runo_endpoint: endpoint,
+                max_retries: 1,
+                retry_backoff: Duration::from_millis(1),
+            },
+            wal,
+        )
+        .enable_multi_region_replication(replicator);
+
+        let req = sample_request("mr-integration-1");
+        let receipt = ledger.commit(req).await.expect("commit should succeed once all regions ack");
+        assert_eq!(receipt.db_commit_id.as_deref(), Some("commit-mr-1"));
+
+        let replicator = ledger.multi_region().expect("replicator must be enabled");
+        for name in ["region-a", "region-b"] {
+            let region = replicator.region(name).unwrap();
+            let stored = region
+                .get("mr-integration-1")
+                .await
+                .unwrap()
+                .expect("the committed mutation must actually be present in this region's real sqlite file");
+            assert!(stored.contains("sword"));
+        }
+
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
+    }
+
+    /// 既定ポリシー(全リージョン必須)の下、1リージョンが実際に書き込みに
+    /// 失敗すると`Ledger::commit`全体が失敗として返り、WALには先行書き込み
+    /// されたままだが`mark_committed`(commit_id確定)には進まないことを
+    /// 実証する(「一部リージョンだけ成功した中途半端な状態を成功として
+    /// 呼び出し元に伝えない」という設計保証の直接検証)。
+    #[tokio::test]
+    async fn commit_fails_entirely_when_a_region_genuinely_fails_under_default_policy() {
+        use multi_region::{MultiRegionReplicator, Region};
+
+        let (endpoint, _server) = spawn_mock_open_runo("commit-mr-2").await;
+        let wal = Arc::new(MockWal::default());
+
+        let mut path_ok = std::env::temp_dir();
+        path_ok.push(format!("open-web-server-ledger-mr-ok-{}.sqlite3", std::process::id()));
+        let mut path_flaky = std::env::temp_dir();
+        path_flaky.push(format!("open-web-server-ledger-mr-flaky-{}.sqlite3", std::process::id()));
+        let _ = std::fs::remove_file(&path_ok);
+        let _ = std::fs::remove_file(&path_flaky);
+        let path_ok_str = path_ok.to_string_lossy().replace('\\', "/");
+        let path_flaky_str = path_flaky.to_string_lossy().replace('\\', "/");
+
+        let region_ok = Region::connect("region-ok", &path_ok_str).await.unwrap();
+        let region_flaky = Region::connect("region-flaky", &path_flaky_str).await.unwrap();
+        // Force a genuine write failure on one region (real sqlite file, its
+        // table has been dropped out from under it).
+        sqlx::query("DROP TABLE region_mutations")
+            .execute(region_flaky.pool_for_test())
+            .await
+            .unwrap();
+        let replicator = MultiRegionReplicator::new(vec![region_ok, region_flaky]);
+
+        let ledger = Ledger::new(
+            LedgerConfig {
+                open_runo_endpoint: endpoint,
+                max_retries: 1,
+                retry_backoff: Duration::from_millis(1),
+            },
+            wal,
+        )
+        .enable_multi_region_replication(replicator);
+
+        let req = sample_request("mr-fail-integration-1");
+        let err = ledger
+            .commit(req)
+            .await
+            .expect_err("commit must fail entirely when default policy (all regions) is not met");
+        assert!(matches!(err, CoreError::MultiRegionReplicationFailed(_)));
+
+        let _ = std::fs::remove_file(&path_ok);
+        let _ = std::fs::remove_file(&path_flaky);
     }
 }

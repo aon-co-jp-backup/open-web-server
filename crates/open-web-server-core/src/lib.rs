@@ -59,6 +59,9 @@ pub enum CoreError {
 
     #[error("validation error: {0}")]
     Validation(String),
+
+    #[error("multi-region synchronous replication failed: {0}")]
+    MultiRegionReplicationFailed(String),
 }
 
 pub type CoreResult<T> = Result<T, CoreError>;

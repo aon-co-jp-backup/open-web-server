@@ -54,7 +54,8 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 rcgen = "0.13"
 
 # DB書き込みの四重化 第1永続化先: PostgreSQL (ACIDトランザクション保証)
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+# + 第3永続化先: マルチリージョン同期レプリケーション (sqliteをリージョン代替として使用)
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid"] }
 
 # 可観測性 (OpenTelemetry)
 opentelemetry = { version = "0.32", features = ["trace"] }

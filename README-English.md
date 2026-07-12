@@ -176,25 +176,28 @@ from the WAL or duplicated within the audit log. Enabled via
 WAL write and never blocks the authoritative path on failure. Verified
 with 4 tests covering round-trip file I/O, corruption detection,
 reconciliation reporting, and end-to-end wiring through
-`Ledger::commit`. ② aruaru-db and ③ multi-region synchronous
-replication remain not started. The VersionLessAPI + Git-versioning
-hybrid and integration with `open-raid-z` are likewise not yet started;
-all of these are planned to be implemented incrementally in future
-passes.
-
-**Planned next new development: pairing aruaru-db commits with ZFS
-snapshots (2026-07-11, researched, user-directed)**: no established
-technique was found in the literature that directly integrates
-`aruaru-db`'s Raft-consensus replication with `open-raid-z` (ZFS-like)
-snapshots — but **this is treated as a novel, implementable finding, not
-a dead end, and is planned as a genuine new-development item for a
-future pass.** The idea: take a ZFS-like snapshot in step with each
-`aruaru-db` Raft log entry (commit) being finalized, giving the two
-independent versioning mechanisms — the application layer (Git commit
-history) and the filesystem layer (ZFS snapshots) — a transaction-level
-correspondence. See
-[`CLAUDE.md`](CLAUDE.md#拡張要件2026-07-11ユーザー指示目標アーキテクチャ実装は段階的に)
-for detail.
+`Ledger::commit`. **③ multi-region synchronous replication is now also
+implemented** (`open-web-server-ledger::multi_region::
+MultiRegionReplicator`, 2026-07-13): two or more real SQLite files stand
+in for "regions," and a commit writes **synchronously to every region,
+waiting for all acknowledgements before returning success** — the
+opposite of the UDP path's fire-and-forget model. The failure policy is
+explicit and chosen: the default is strict (any single region failure
+fails the whole commit), with an opt-in `with_quorum(n)` N-of-M
+degraded mode. Verified with 4 real-file-I/O tests covering the happy
+path, quorum degradation, and total-failure cases. **This means all
+four quadruple-redundant DB-write legs (①②③④) are now implemented**
+(① is the only one not verified against a live instance). **② the
+aruaru-db × ZFS-snapshot pairing is also now implemented**, on the
+`aruaru-db` side (`aruaru-dist::snapshot_pairing`, a real Raft commit
+triggering a real `open-raid-z` snapshot, verified against a real
+RAID-Z2 pool — see `aruaru-db`'s own `CLAUDE.md` for detail). The
+VersionLessAPI + Git-versioning hybrid already works on the write side
+(the `commit_id` is surfaced back to the client via `MutationReceipt`),
+but the read side — querying past state by `commit_id` — doesn't exist
+yet and needs coordination with `open-runo`'s API surface; that's the
+next concrete gap. Integration with `open-raid-z` as open-web-server's
+own disk-redundancy foundation is likewise not yet started.
 
 ---
 
