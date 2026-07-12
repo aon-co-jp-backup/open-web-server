@@ -1,12 +1,16 @@
 # open-web-server
 
-## A Rust + Poem web server built so billed items and financial data are never lost
+## A Rust + tokio/hyper web server built so billed items and financial data are never lost
 
 open-web-server is a mission-critical, 24/7/365 web server designed for workloads like
-3D online game item purchases and credit-card financial transactions. Built with
-**Rust + Poem**, it works together with aruaru-db and open-runo through a four-layer
+3D online game item purchases and credit-card financial transactions. Built directly on
+**Rust + tokio/hyper** (no web framework dependency), it works together with aruaru-db and open-runo through a four-layer
 defense architecture, so that network hiccups, process restarts, and retries never
 cause double-charging or silent data loss.
+
+> Note: the routing/handler API shape is kept compatible with the earlier Poem-based
+> implementation, but the package itself no longer depends on Poem (migrated to a direct
+> tokio/hyper implementation on 2026-07-10).
 
 📖 Other languages: [日本語](README-Japan.md) / [English](README-English.md) /
 [中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
@@ -192,6 +196,72 @@ curl -X POST http://localhost:8080/api/v1/items/grant \
   }'
 ```
 
+Send that same request again with the **same** `Idempotency-Key` and the item will
+not be granted twice — this is the §0 zero-loss mission working as intended. Once
+`db_commit_id` in the response is non-null, the write is durably committed in `aruaru-db`.
+
+Charging a card works the same way:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/transactions/charge \
+  -H "Idempotency-Key: 22222222-2222-2222-2222-222222222222" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "22222222-2222-2222-2222-222222222222",
+    "account_id": "user-42",
+    "amount_cents": 999,
+    "currency": "USD"
+  }'
+```
+
+Health check (no auth required): `curl http://localhost:8080/healthz`
+
+Environment variables: `OPEN_RUNO_ENDPOINT` (default `https://127.0.0.1:8443`),
+`OPEN_WEB_SERVER_BIND` (default `0.0.0.0:8080`).
+
+## Adding a New Endpoint (Minimal Example)
+
+Since there's no web framework, adding an endpoint is three steps: define a
+request/response type, write a handler function, add one line to `dispatch()`
+in `main.rs`. Here's a minimal example adding `GET /api/v1/items/status`:
+
+```rust
+// crates/open-web-server-gateway/src/handlers/items.rs
+
+/// `GET /api/v1/items/status?account_id=user-42`
+pub async fn item_status(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+    let account_id = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("account_id=")))
+        .unwrap_or_default()
+        .to_string();
+
+    // Replace with a real lookup via state.ledger or your own query path
+    json_response(StatusCode::OK, &serde_json::json!({ "account_id": account_id }))
+}
+```
+
+```rust
+// crates/open-web-server-gateway/src/main.rs, inside dispatch()
+
+match (method, path.as_str()) {
+    (Method::POST, "/api/v1/items/grant") => handlers::items::grant_item(state, req).await,
+    (Method::GET, "/api/v1/items/status") => handlers::items::item_status(state, req).await, // new
+    (Method::POST, "/api/v1/transactions/charge") => {
+        handlers::transactions::charge(state, req).await
+    }
+    (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
+    _ => text_response(StatusCode::NOT_FOUND, "not found"),
+}
+```
+
+If your new endpoint is a mutating (POST/PUT) call that touches money or items,
+add its path prefix to the `needs_key` check in
+`crates/open-web-server-gateway/src/middleware/idempotency.rs` — otherwise it
+won't get the mandatory `Idempotency-Key` enforcement that the zero-loss
+mission (§0 in `docs/HYBRID_NETWORK_ARCHITECTURE.md`) depends on.
+
 ## Project Layout
 
 ```text
@@ -200,7 +270,7 @@ open-web-server/
 │   ├── open-web-server-core/     # domain models and error types
 │   ├── open-web-server-wire/     # 4-layer defense transport (TLS / mutual auth / payload encryption / replay guard)
 │   ├── open-web-server-ledger/   # idempotent WAL + 3-hop commit pipeline
-│   └── open-web-server-gateway/  # Poem-based web gateway (binary)
+│   └── open-web-server-gateway/  # tokio/hyper web gateway (binary; Poem-API-compatible, no Poem dependency)
 ├── docs/
 │   ├── architecture.md
 │   └── integration.md
