@@ -34,6 +34,14 @@ hkdf.workspace = true
 quinn.workspace = true
 rcgen.workspace = true
 
+# 通信層の四重化 第4伝送路: カーネルMPTCP/SCTPはこのWindows開発環境では
+# 実現不可能なため(mptcp_channel.rs のモジュールdoc参照)、同じ目的
+# (物理経路マルチホーミングによる伝送路冗長化)をユーザー空間で実現する
+# aggligator を使用する(公式ドキュメントいわく "serves the same purpose
+# as Multipath TCP and SCTP... completely implemented in user space")。
+aggligator = "0.9"
+aggligator-transport-tcp = { version = "0.2", default-features = false }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 chrono.workspace = true

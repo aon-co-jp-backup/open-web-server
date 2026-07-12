@@ -150,8 +150,14 @@ combines with `poem-cosmo-tauri` (or `open-runo`), `PostgreSQL`,
 built-in TLS 1.3 and a dev/test self-signed certificate helper; verified
 with a real TLS handshake and bidirectional stream round-trip over a real
 UDP socket in an integration test — this is single-path QUIC, not
-Multipath QUIC/MPQUIC, which remains out of scope). ④ MPTCP/SCTP has not
-been started. On the DB side, **① PostgreSQL now has a first-cut write
+Multipath QUIC/MPQUIC, which remains out of scope). **④ MPTCP/SCTP was
+investigated and found genuinely infeasible to implement/verify on this
+Windows sandbox** (honest blocker: no native kernel MPTCP on Windows, no
+viable Windows SCTP stack). A user-space substitute serving the same
+purpose (physical-path multihoming) was implemented instead using the
+`aggligator` crate (`open-web-server-wire::mptcp_channel`, explicitly
+documented as not real kernel MPTCP/SCTP), verified with a real loopback
+TCP round-trip integration test (2026-07-13). On the DB side, **① PostgreSQL now has a first-cut write
 path** (`open-web-server-ledger::PostgresWal`, built on `sqlx`, with a
 real `BEGIN`/`COMMIT` transaction boundary and an idempotent
 `INSERT ... ON CONFLICT DO NOTHING` for the write-ahead append — **but

@@ -1,11 +1,12 @@
 # PORTING.md — open-web-server お引越しファイル
 
 > このファイル1枚で、他プロジェクトへ `open-web-server` を導入・移設できます。
-> 対象バージョン: workspace 0.1.0(4クレート / 24テスト(1件は要ライブPostgreSQLの
-> `#[ignore]`)、2026-07-12実測。open-web-server-wireにQUIC(`quinn`)伝送路、
+> 対象バージョン: workspace 0.1.0(4クレート / 26テスト(1件は要ライブPostgreSQLの
+> `#[ignore]`)、2026-07-13実測。open-web-server-wireにQUIC(`quinn`)伝送路、
+> MPTCP/SCTPのユーザー空間代替(`aggligator`)伝送路、
 > open-web-server-ledgerにPostgreSQL WAL(`sqlx`)を追加)。
 > 最新のクレート数・テスト数は `CLAUDE.md` の「現状」節を参照。
-> 最終更新: 2026-07-12
+> 最終更新: 2026-07-13
 
 ---
 
@@ -26,7 +27,7 @@ open-web-server/
 ├── Cargo.toml / Cargo.lock      ← workspace定義(バージョン固定)
 ├── crates/
 │   ├── open-web-server-core/     ← ドメインモデル・エラー型
-│   ├── open-web-server-wire/     ← 4層防御通信 + UDP-IP冗長経路(udp_channel) + QUIC冗長経路(quic_channel)
+│   ├── open-web-server-wire/     ← 4層防御通信 + UDP-IP冗長経路(udp_channel) + QUIC冗長経路(quic_channel) + MPTCP/SCTP代替冗長経路(mptcp_channel、aggligatorベース)
 │   ├── open-web-server-ledger/   ← 冪等WAL + 3ホップコミット + PostgreSQL WAL実装(postgres_wal)
 │   └── open-web-server-gateway/  ← Poem製ゲートウェイ(実行バイナリ)
 ├── docs/                        ← architecture.md / integration.md
@@ -117,7 +118,32 @@ let ack = send_mutation_over_quic(
 1コネクション1双方向ストリームの単純往復のみサポート。受信側の実配置
 (open-runo側での実運用listener)は別スコープ。
 
-### 4.4 PostgreSQL WALを使う(2026-07-12新設、任意)
+### 4.4 MPTCP/SCTP代替冗長経路(mptcp_channel)を追加する(2026-07-13新設、任意)
+
+```rust
+use open_web_server_wire::{MptcpServer, send_mutation_over_mptcp};
+
+// サーバ側 (1接続=1 MutationRequestの単純往復)
+let server = MptcpServer::bind_and_accept_one("0.0.0.0:4434".parse()?).await?;
+let server_addr = server.local_addr();
+let req = server.recv_one().await?;
+
+// クライアント側
+send_mutation_over_mptcp(server_addr, &mutation_request).await?;
+```
+
+**正直な注意(重要)**: これは本物のカーネルMPTCP/SCTPではない。
+Windowsにはネイティブカーネル MPTCP が無く、主要な Rust SCTP クレートは
+Linuxの`lksctp-tools`前提であるため、このWindows開発環境ではカーネル
+MPTCP/SCTPの実装・検証が不可能と判断した(調査の詳細は
+`mptcp_channel`モジュールdoc参照)。代わりに`aggligator`
+(公式docで"serves the same purpose as Multipath TCP and SCTP...
+completely implemented in user space"と明記)により、複数の物理TCPリンクを
+1つの論理ストリームへ集約する**ユーザー空間の代替**を提供する。
+**スコープの限界**: 1接続1メッセージの単純往復のみサポート。単一NIC
+環境での検証のみ(複数物理NICでの真のマルチホーミング効果は未検証)。
+
+### 4.5 PostgreSQL WALを使う(2026-07-12新設、任意)
 
 ```rust
 use open_web_server_ledger::PostgresWal;
@@ -137,7 +163,7 @@ let ledger = Ledger::new(config, Arc::new(wal));
 `cargo test -p open-web-server-ledger -- --ignored` を実行することで
 実際のトランザクション動作を検証できる。
 
-### 4.5 4層防御通信を単体で使う
+### 4.6 4層防御通信を単体で使う
 
 ```rust
 use open_web_server_wire::{PayloadCipher, MutualAuthConfig, TlsServerConfig, SecureChannel};

@@ -206,18 +206,32 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 実ネットワーク通信による検証を行い、型チェックのみで「完了」と報告しない。
 詳細な進捗は本ファイルのHANDOFF節に記録する。
 
-**進捗(2026-07-12更新)**: 上記(3)のうち①TCP-IP・②UDP-IPに加え、
+**進捗(2026-07-13更新)**: 上記(3)のうち①TCP-IP・②UDP-IPに加え、
 **③QUICを実装**(`open-web-server-wire::quic_channel`、`quinn`クレート、
 実TLS1.3ハンドシェイク+双方向ストリームの実UDPソケット結合テストで検証済み。
-単一経路QUICであり、MPQUICへの拡張は範囲外)。④MPTCP/SCTPは未着手。
+単一経路QUICであり、MPQUICへの拡張は範囲外)。
+**④MPTCP/SCTPは調査の上、正直なブロッカーと判断し代替実装を追加**
+(`open-web-server-wire::mptcp_channel`)。このWindows開発環境では
+カーネルMPTCP(Windowsにネイティブサポート無し)・カーネルSCTP
+(主要Rustクレート`lksctp`/`sctp-rs`/`tokio-sctp`はいずれもLinux
+`lksctp-tools`前提、Windows版`sctp-sys`は「実験的」ドライバ依存)の
+いずれも実ソケット検証が不可能であることを確認した。そのため、
+同じ目的(物理経路マルチホーミングによる伝送路冗長化)をユーザー空間で
+実現する`aggligator`/`aggligator-transport-tcp`クレート(公式docに
+"serves the same purpose as Multipath TCP and SCTP... completely
+implemented in user space"と明記)を採用し、実ループバックTCPソケット上の
+集約接続でのラウンドトリップ結合テストで検証した。**これは本物の
+カーネルMPTCP/SCTPではない**——調査の詳細・判断根拠は
+`mptcp_channel`モジュールdocに明記。
 上記(4)のうち**①PostgreSQLのWAL実装を追加**(`open-web-server-ledger::PostgresWal`、
 `sqlx`クレート、実`BEGIN`/`COMMIT`トランザクション境界。**ただしこの
 サンドボックス環境には到達可能なライブPostgreSQLが無く実DB接続検証は
 未実施**——SQL構築ロジックの単体テストと`DATABASE_URL`設定時のみ動く
 `#[ignore]`統合テストで検証可能性を確保)。②aruaru-db・③マルチリージョン
-同期レプリケーション・④独立監査ログは未着手。(1)(2)も引き続き未着手。
-次回パスは④MPTCP/SCTP、またはaruaru-db×ZFSスナップショット連携
-(下記(2)の「次回新規開発予定」)のどちらかから着手するのが妥当。
+同期レプリケーション・④独立監査ログは未着手。(1)は未着手。
+**(2)のaruaru-db×ZFSスナップショット連携は aruaru-db側で第一段実装を
+完了**(`aruaru-dist::snapshot_pairing`+`raid_z_backend`、詳細は
+aruaru-db側のCLAUDE.md HANDOFF参照)。(1)、および(4)の②③④は次回以降。
 
 ## API設計思想(参考・概念のみ)
 
@@ -270,9 +284,9 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 ## 現状(このリポジトリ固有)
 
 - `cargo check --workspace` / `cargo test --workspace` は成功する(4クレート構成、
-  2026-07-12時点で全24テストがgreen(+1件は要ライブPostgreSQLの`#[ignore]`):
+  2026-07-13時点で全26テストがgreen(+1件は要ライブPostgreSQLの`#[ignore]`):
   gateway 4件 / ledger 7件(postgres_wal SQL構築ロジック4件を追加) /
-  wire 13件(quic_channel結合テスト2件を追加)。
+  wire 14件(quic_channel結合テスト2件・mptcp_channel結合テスト1件を追加)。
 - 4クレートの実装(`core`/`wire`/`auth`/`payload_crypto`/`tls`/`ledger`/`gateway`の
   各handler・middleware)はスタブなし。`todo!()`/`unimplemented!()`/`TODO`/`FIXME`は
   リポジトリ全体で0件(2026-07-11巡回時点でも再確認済み)。`handlers/wal.rs` の
@@ -285,7 +299,65 @@ open-web-server は課金アイテム/金融データの消失防止に特化し
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
-- **2026-07-12 (今回、拡張要件(3)③QUICと拡張要件(4)①PostgreSQLの第一実装、
+- **2026-07-13 (今回、拡張要件(3)④MPTCP/SCTPの調査と代替実装、
+  ユーザー指示——四層四重アーキテクチャの継続実装。aruaru-db側の
+  コミット×スナップショット連携第一段実装も並行して実施、詳細は
+  aruaru-db側CLAUDE.md参照)**:
+  **調査**: カーネルMPTCP/SCTPをこのWindows 11開発環境で実装・実ソケット
+  検証することの実現可能性を先に確認した。(a) Windowsには`IPPROTO_MPTCP`
+  相当のネイティブMPTCPソケットAPIが存在しない(Linuxカーネル5.6+限定の
+  機能)。(b) 主要なRust SCTPクレート(`lksctp`/`sctp-rs`/`tokio-sctp`/
+  `async-sctp`)はいずれも`lksctp-tools`というLinuxカーネルSCTPスタックへの
+  バインディングであり、Windows版`sctp-sys`は「SctpDrv binding is
+  experimental」と明記された実験的ドライバに依存する。(c) `sctp-proto`
+  (純Rust Sans-IO実装)はOS非依存だが、相手ノードも同じ非標準実装を
+  要求するため既存SCTPインフラとの相互運用性が無く、「SCTP実装」と
+  称するにはミスリーディングと判断した。**結論: 本物のカーネルMPTCP/SCTP
+  はこの開発環境では実装不可能な正直なブロッカー**。
+  **代替実装**: `CLAUDE.md`運用ルール(未着手を確認だけして見送ることを
+  禁じ、まず着手を試みることを求める)に従い、④の**目的**
+  (物理経路マルチホーミングによる伝送路冗長化)を満たすユーザー空間の
+  代替を調査し、`aggligator`/`aggligator-transport-tcp`クレート(公式docに
+  "serves the same purpose as Multipath TCP and SCTP... completely
+  implemented in user space without the need for any support from the
+  operating system"と明記)を採用した。`crates/open-web-server-wire/src/
+  mptcp_channel.rs`を新規作成し、`MptcpServer::bind_and_accept_one`
+  (集約TCPサーバ、1接続=1メッセージの最小実装)・
+  `send_mutation_over_mptcp`(クライアント側)を実装。ワイヤ形式は
+  4バイトLE長プレフィクス+`MutationRequest`のJSON(①②③と同じ「1論理
+  メッセージ往復」のスコープに揃えた)。**本物のカーネルMPTCP/SCTPでは
+  ないことをモジュールdoc冒頭に明記**(偽って主張しない)。
+  **テスト(実ソケット)**: `real_aggligator_roundtrip_over_loopback`
+  (127.0.0.1のループバックで実TCPソケット上に実aggligator集約接続を張り、
+  実データ往復を実証)。単一NIC環境(ループバック)のため、複数物理NICでの
+  真のマルチホーミング効果自体はこのサンドボックスでは検証できない旨も
+  正直に明記した。`cargo test -p open-web-server-wire`は新規1件を含む
+  全14件green、`cargo check --workspace`/`cargo test --workspace`も
+  全26テスト(25 green + 1 ignored)を確認。
+  **依存追加**: `aggligator`0.9・`aggligator-transport-tcp`0.2
+  (`default-features = false`、TLS機能は既存の4層防御通信と重複するため
+  無効化)を`open-web-server-wire/Cargo.toml`へ追加。
+  **並行実施(aruaru-db側)**: 拡張要件(2)の「次回新規開発予定」
+  (aruaru-dbコミット×open-raid-zスナップショット連携)の第一段実装を
+  aruaru-db側で実施——`aruaru-dist::raft::node::RaftNode`に
+  `set_commit_hook`(commit+適用完了ごとに呼ばれるフック)を追加し、
+  新設`aruaru-dist::snapshot_pairing`(`SnapshotBackend`トレイト・
+  `SnapshotPairingRegistry`・`wire_to_node`配線関数)と、`open_raid_z`
+  feature有効時のみコンパイルされる`aruaru-dist::raid_z_backend::
+  OpenRaidZSnapshotBackend`(実際に`open_raid_z_core::pool::Pool`
+  ・`create_snapshot`を呼ぶ)を実装。実Raft commit(`RaftNode::propose`→
+  `try_commit_to`→`apply_committed`)が実RAID-Z2プール(6台の
+  `FileBackedDevice`)上の実スナップショット作成をトリガーし、
+  commit_index↔snapshot_idの対応関係を問い合わせられることを
+  `real_raft_commit_triggers_real_raid_z_snapshot`統合テストで実証済み
+  (詳細はaruaru-db側CLAUDE.md参照)。
+  **未着手として明記**: 拡張要件(1)VersionLessAPI×Git管理のハイブリッド
+  バージョン管理は今回も未着手。拡張要件(4)の②aruaru-db・③マルチ
+  リージョン同期レプリケーション・④独立監査トランザクションログも未着手。
+  aruaru-db側のコミット×スナップショット連携は「第一段」であり、
+  永続化(プロセス再起動で対応表が失われる)・双方向リカバリは
+  スコープ外として明記済み(aruaru-db側CLAUDE.md参照)。
+- **2026-07-12 (前回、拡張要件(3)③QUICと拡張要件(4)①PostgreSQLの第一実装、
   ユーザー指示——四層四重アーキテクチャの継続実装)**:
   **① QUIC (`open-web-server-wire::quic_channel`)**: `quinn` 0.11
   (runtime-tokio + rustls features)を新規追加。`QuicServerConfig::self_signed`

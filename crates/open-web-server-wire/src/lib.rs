@@ -49,8 +49,19 @@
 //! (複数物理経路への分散)は範囲外——単一経路QUICの実装であり、物理経路の
 //! マルチホーミングは④ (MPTCP/SCTP、未着手) の担当とする。詳細・スコープの
 //! 限界は `quic_channel` モジュールのdocを参照。
+//!
+//! ## `mptcp_channel` について (2026-07-13 追加、正直な代替実装)
+//!
+//! 拡張要件(3)「通信層の四重化」の**④(当初 MPTCP/SCTP)**。この
+//! Windows開発環境ではカーネルMPTCP/SCTPソケットの作成自体が不可能
+//! (Windowsにネイティブサポートが無い)ことを確認した。その代わり、
+//! カーネルMPTCP/SCTPと同じ目的(物理経路マルチホーミングによる伝送路
+//! 冗長化)をユーザー空間で実現する `aggligator` クレートを用いた実装を
+//! 提供する。**本物のカーネルMPTCP/SCTPではない**——調査結果・判断根拠の
+//! 詳細は `mptcp_channel` モジュールのdocを参照。
 
 pub mod auth;
+pub mod mptcp_channel;
 pub mod payload_crypto;
 pub mod quic_channel;
 pub mod replay_guard;
@@ -58,6 +69,7 @@ pub mod tls;
 pub mod udp_channel;
 
 pub use auth::MutualAuthConfig;
+pub use mptcp_channel::{send_mutation_over_mptcp, MptcpServer};
 pub use payload_crypto::PayloadCipher;
 pub use quic_channel::{
     insecure_client_config_trusting, send_mutation_over_quic, QuicServer, QuicServerConfig,
