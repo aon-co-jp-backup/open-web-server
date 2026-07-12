@@ -42,7 +42,9 @@ use open_web_server_core::{CoreError, CoreResult, MutationReceipt, MutationReque
 use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpSender};
 use tracing::{info, warn};
 
+pub mod audit_log;
 pub mod postgres_wal;
+pub use audit_log::{AuditRecord, FileAuditLog, ReconciliationReport};
 pub use postgres_wal::PostgresWal;
 
 #[derive(Clone)]
@@ -68,6 +70,10 @@ pub struct Ledger {
     http: reqwest::Client,
     /// UDP-IP 冗長経路 (副系、ベストエフォート)。未設定ならTCP経路のみで動作する。
     udp_redundant_path: Option<UdpRedundantPath>,
+    /// 独立監査/突き合わせログ (拡張要件(4)-④、DATABASE書き込み四重化の
+    /// 4本目)。WAL/aruaru-db/PostgreSQLのいずれとも技術的に独立した
+    /// 追記専用ファイル。未設定なら従来通り記録されない (任意機能)。
+    audit_log: Option<Arc<audit_log::FileAuditLog>>,
 }
 
 struct UdpRedundantPath {
@@ -82,7 +88,23 @@ impl Ledger {
             wal,
             http: reqwest::Client::new(),
             udp_redundant_path: None,
+            audit_log: None,
         }
+    }
+
+    /// 独立監査ログ (拡張要件(4)-④) を有効化する。①PostgreSQL・②aruaru-db・
+    /// ③マルチリージョン同期レプリケーションのいずれとも技術的に独立した
+    /// 4本目の永続化先として、コミット試行ごとに1レコードを追記する。
+    /// 呼び出しは任意であり、有効化しなくても従来通り動作する。
+    pub fn enable_audit_log(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.audit_log = Some(Arc::new(audit_log::FileAuditLog::new(path)));
+        self
+    }
+
+    /// 有効化済みの独立監査ログへの参照 (突き合わせ/検証をアプリ側から
+    /// 呼び出せるようにするため公開する)。
+    pub fn audit_log(&self) -> Option<Arc<audit_log::FileAuditLog>> {
+        self.audit_log.clone()
     }
 
     /// UDP-IP 冗長経路を有効化する。`bind_addr` はこのプロセスがUDP送信に
@@ -127,6 +149,18 @@ impl Ledger {
         // spawnし、TCP経由の権威パス (下のforward_with_retry) を
         // ブロックしない・失敗させない。
         self.fire_udp_redundant_notice(&req);
+
+        // 独立監査ログ (拡張要件(4)-④): WAL/aruaru-db/PostgreSQLとは技術的に
+        // 独立した4本目の永続化先へ、コミット試行の時点で1レコード追記する。
+        // 書き込み失敗は監査ログ自体の不具合であり、権威パス (aruaru-dbへの
+        // 実コミット) をブロック・失敗させてはならないため警告ログのみに留める
+        // (UDP冗長経路と同じ「補助系はブロックしない」設計方針)。
+        if let Some(audit) = &self.audit_log {
+            let record = audit_log::AuditRecord::from_request(&req);
+            if let Err(e) = audit.append(&record) {
+                warn!(key = %req.idempotency_key.0, error = %e, "audit log append failed (independent of authoritative path)");
+            }
+        }
 
         // ② open-runo 経由で aruaru-db にコミット要求を送る (3層防御通信を利用)
         let commit_id = self.forward_with_retry(&req).await?;
@@ -418,5 +452,52 @@ mod tests {
 
         assert!(receipt.committed);
         assert_eq!(receipt.db_commit_id.as_deref(), Some("commit-udp-2"));
+    }
+
+    /// `Ledger::commit` を経由すると、独立監査ログ (拡張要件(4)-④) に
+    /// 実際にレコードが追記され、かつファイル内容がチェックサム検証を
+    /// 通ることを実証する (WAL/TCP権威パスとは別の、実ファイルI/Oを伴う
+    /// 検証)。
+    #[tokio::test]
+    async fn commit_appends_a_verifiable_record_to_the_independent_audit_log() {
+        let (endpoint, _server) = spawn_mock_open_runo("commit-audit-1").await;
+        let wal = Arc::new(MockWal::default());
+
+        let mut audit_path = std::env::temp_dir();
+        audit_path.push(format!(
+            "open-web-server-ledger-audit-integration-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&audit_path);
+
+        let ledger = Ledger::new(
+            LedgerConfig {
+                open_runo_endpoint: endpoint,
+                max_retries: 1,
+                retry_backoff: Duration::from_millis(1),
+            },
+            wal,
+        )
+        .enable_audit_log(&audit_path);
+
+        let req = sample_request("audit-key-1");
+        let receipt = ledger.commit(req).await.expect("commit should succeed");
+        assert_eq!(receipt.db_commit_id.as_deref(), Some("commit-audit-1"));
+
+        let audit = ledger.audit_log().expect("audit log should be enabled");
+        let records = audit
+            .scan_and_verify()
+            .expect("audit log must pass checksum verification");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].idempotency_key, "audit-key-1");
+
+        let report = audit
+            .reconcile(&[IdempotencyKey("audit-key-1".to_string())])
+            .expect("reconcile should succeed");
+        assert!(report.missing_from_wal.is_empty());
+        assert!(report.duplicate_in_audit_log.is_empty());
+        assert_eq!(report.total_audit_records, 1);
+
+        let _ = std::fs::remove_file(&audit_path);
     }
 }

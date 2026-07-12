@@ -164,11 +164,23 @@ real `BEGIN`/`COMMIT` transaction boundary and an idempotent
 this sandbox has no reachable live PostgreSQL instance, so the live-DB
 path itself is unverified**; only the SQL-construction logic is unit
 tested, plus an `#[ignore]`d integration test that runs only when
-`DATABASE_URL` is set). ② aruaru-db, ③ multi-region synchronous
-replication, and ④ an independent audit log remain not started. The
-VersionLessAPI + Git-versioning hybrid and integration with `open-raid-z`
-are likewise not yet started; all of these are planned to be implemented
-incrementally in future passes.
+`DATABASE_URL` is set). **④ an independent audit/reconciliation log is
+now implemented** (`open-web-server-ledger::audit_log::FileAuditLog`,
+2026-07-13): an append-only file, technically independent from
+PostgreSQL/aruaru-db/multi-region replication, that records one
+SHA-256-checksummed record per commit attempt. `scan_and_verify()`
+detects silent corruption; `reconcile()` cross-checks the audit log's
+key set against the WAL's committed-key set to flag entries missing
+from the WAL or duplicated within the audit log. Enabled via
+`Ledger::enable_audit_log(path)`; the append happens right after the
+WAL write and never blocks the authoritative path on failure. Verified
+with 4 tests covering round-trip file I/O, corruption detection,
+reconciliation reporting, and end-to-end wiring through
+`Ledger::commit`. ② aruaru-db and ③ multi-region synchronous
+replication remain not started. The VersionLessAPI + Git-versioning
+hybrid and integration with `open-raid-z` are likewise not yet started;
+all of these are planned to be implemented incrementally in future
+passes.
 
 **Planned next new development: pairing aruaru-db commits with ZFS
 snapshots (2026-07-11, researched, user-directed)**: no established

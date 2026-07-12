@@ -163,6 +163,28 @@ let ledger = Ledger::new(config, Arc::new(wal));
 `cargo test -p open-web-server-ledger -- --ignored` を実行することで
 実際のトランザクション動作を検証できる。
 
+### 4.55 独立監査ログを使う(2026-07-13新設、任意)
+
+```rust
+use open_web_server_ledger::{Ledger, FileAuditLog};
+
+let ledger = Ledger::new(config, wal)
+    .enable_audit_log("/var/log/open-web-server/audit.log");
+
+// commit() のたびに WAL先行書き込み直後、SHA-256チェックサム付きの
+// 1レコードが追記される。権威パス(TCP経由3ホップコミット)には
+// 一切影響しない (書き込み失敗は警告ログのみ)。
+
+let audit = ledger.audit_log().unwrap();
+let report = audit.reconcile(&committed_keys)?; // 突き合わせ
+audit.scan_and_verify()?; // 破損検知(チェックサム再計算)
+```
+
+PostgreSQL/aruaru-db/マルチリージョン同期レプリケーションのいずれとも
+技術的に独立した追記専用ファイル(`open-web-server-ledger::audit_log::
+FileAuditLog`)。金融機関の「主系とは別システムの冗長トランザクション
+ログによる二重処理検知」パターンの最小実装。
+
 ### 4.6 4層防御通信を単体で使う
 
 ```rust
