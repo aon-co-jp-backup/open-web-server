@@ -49,6 +49,13 @@ sha2 = "0.10"
 # 連携先クライアント
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
+# 通信層の四重化 第3伝送路: QUIC (Multipath QUICへの拡張余地を残した第一実装)
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "log"] }
+rcgen = "0.13"
+
+# DB書き込みの四重化 第1永続化先: PostgreSQL (ACIDトランザクション保証)
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+
 # 可観測性 (OpenTelemetry)
 opentelemetry = { version = "0.32", features = ["trace"] }
 opentelemetry_sdk = { version = "0.32", features = ["trace", "rt-tokio"] }

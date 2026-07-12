@@ -144,15 +144,25 @@ combines with `poem-cosmo-tauri` (or `open-runo`), `PostgreSQL`,
   guarantees), ② aruaru-db, ③ multi-region synchronous replication,
   and ④ an independent audit/reconciliation transaction log.
 
-**Honest status as of 2026-07-11**: on the transport side, only
-① TCP-IP and ② UDP-IP are implemented (this repo's
-[UDP-IP redundant transport path](#5-udp-ip-redundant-transport-path-open-web-server-wireudp_channel-2026-07-11),
-fire-and-forget with no retransmit). ③ QUIC/MPQUIC and ④ MPTCP/SCTP have
-not been started. Quadruple-redundant DB writes (PostgreSQL, aruaru-db,
-multi-region synchronous replication, an independent audit log) have also
-not been started. The VersionLessAPI + Git-versioning hybrid and
-integration with `open-raid-z` are likewise not yet started; all of these
-are planned to be implemented incrementally in future passes.
+**Honest status as of 2026-07-12**: on the transport side, ① TCP-IP and
+② UDP-IP remain implemented, and **③ QUIC has now been implemented**
+(`open-web-server-wire::quic_channel`, built on the `quinn` crate, with
+built-in TLS 1.3 and a dev/test self-signed certificate helper; verified
+with a real TLS handshake and bidirectional stream round-trip over a real
+UDP socket in an integration test — this is single-path QUIC, not
+Multipath QUIC/MPQUIC, which remains out of scope). ④ MPTCP/SCTP has not
+been started. On the DB side, **① PostgreSQL now has a first-cut write
+path** (`open-web-server-ledger::PostgresWal`, built on `sqlx`, with a
+real `BEGIN`/`COMMIT` transaction boundary and an idempotent
+`INSERT ... ON CONFLICT DO NOTHING` for the write-ahead append — **but
+this sandbox has no reachable live PostgreSQL instance, so the live-DB
+path itself is unverified**; only the SQL-construction logic is unit
+tested, plus an `#[ignore]`d integration test that runs only when
+`DATABASE_URL` is set). ② aruaru-db, ③ multi-region synchronous
+replication, and ④ an independent audit log remain not started. The
+VersionLessAPI + Git-versioning hybrid and integration with `open-raid-z`
+are likewise not yet started; all of these are planned to be implemented
+incrementally in future passes.
 
 **Planned next new development: pairing aruaru-db commits with ZFS
 snapshots (2026-07-11, researched, user-directed)**: no established

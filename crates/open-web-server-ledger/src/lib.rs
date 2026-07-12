@@ -42,6 +42,9 @@ use open_web_server_core::{CoreError, CoreResult, MutationReceipt, MutationReque
 use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpSender};
 use tracing::{info, warn};
 
+pub mod postgres_wal;
+pub use postgres_wal::PostgresWal;
+
 #[derive(Clone)]
 pub struct LedgerConfig {
     /// open-runo Gateway のエンドポイント (例: https://runo.internal:8443)

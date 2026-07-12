@@ -40,15 +40,28 @@
 //! によるAEAD暗号化 + 独自HMAC + `seq`によるデデュープ(リプレイ対策と
 //! 同種の再送保護)を適用したうえで、TCP経路と並行して使う副系として設計
 //! している。詳細・スコープの限界は `udp_channel` モジュールのdocを参照。
+//!
+//! ## `quic_channel` について (2026-07-12 追加)
+//!
+//! 拡張要件(3)「通信層の四重化」の**③QUIC**の第一実装。`quinn`クレートを
+//! 用いてTLS 1.3組み込みの信頼性のある双方向ストリーム伝送を提供する、
+//! ①TCP・②UDPとは異なる第3の独立した伝送特性を持つ経路。Multipath QUIC
+//! (複数物理経路への分散)は範囲外——単一経路QUICの実装であり、物理経路の
+//! マルチホーミングは④ (MPTCP/SCTP、未着手) の担当とする。詳細・スコープの
+//! 限界は `quic_channel` モジュールのdocを参照。
 
 pub mod auth;
 pub mod payload_crypto;
+pub mod quic_channel;
 pub mod replay_guard;
 pub mod tls;
 pub mod udp_channel;
 
 pub use auth::MutualAuthConfig;
 pub use payload_crypto::PayloadCipher;
+pub use quic_channel::{
+    insecure_client_config_trusting, send_mutation_over_quic, QuicServer, QuicServerConfig,
+};
 pub use replay_guard::{ReplayGuard, SecureChannel};
 pub use tls::TlsServerConfig;
 pub use udp_channel::{Deduplicator, UdpChannelKeys, UdpReceiver, UdpSender};
