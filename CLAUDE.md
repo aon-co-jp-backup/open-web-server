@@ -475,6 +475,29 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
   ③マルチリージョン同期レプリケーションは今回も未着手(理由: いずれも
   他リポジトリ(aruaru-db)または複数ノードの実環境構築を要し、本パス
   ではまず①②③④のうち最も本リポジトリ単体で完結する④を優先した)。
+- **2026-07-13 (今回、WSL2実カーネルMPTCPの再調査——ユーザーが「本物の
+  カーネル未サポートという結論が本当に行き止まりか」を懸念し再検証を
+  明示指示。事前に「先行して裏で調査していたエージェントがいたはず」との
+  申し送りがあったが、`git log`にWSL2/カーネルMPTCPを扱ったコミットは
+  一切無く、`crates/open-web-server-wire/src/mptcp_channel.rs`にも
+  該当する変更は無い——つまりそのような先行調査は実際には着手/着地して
+  いなかった。よって本パスで最初からやり直した)**:
+  **実施した確認(実コマンド出力)**: `wsl -d Ubuntu -- uname -r` →
+  `6.18.33.2-microsoft-standard-WSL2`(MPTCP自体は上流Linux 5.6+で
+  一般提供のはずのバージョン)。しかし `sysctl net.mptcp` →
+  `cannot stat /proc/sys/net/mptcp: No such file or directory`、
+  `ip mptcp limits` → `RTNETLINK answers: No such file or directory`、
+  `/lib/modules/$(uname -r)/` 配下に`mptcp_diag`等のモジュール無し、
+  `modprobe mptcp_diag` → `FATAL: Module mptcp_diag not found`。
+  Microsoft製WSL2カーネルビルドは`CONFIG_MPTCP`を有効化していないと
+  確定した(`/boot/config-*`自体も同梱されていないため設定ファイル上の
+  直接確認は不可だが、上記の実行時証跡で機能欠如は明確)。
+  **結論**: 以前(前回セッション)の「Windows開発環境ではカーネルMPTCP/
+  SCTPに到達不能」という判断は、WSL2という代替経路を実際に試した上でも
+  変わらず——本物の行き止まりであることを実コマンド証跡で確認した
+  (以前は机上調査のみだった点が今回実証に格上げされた)。既存の
+  `aggligator`ベースの代替実装(`mptcp_channel.rs`)はこの結論を踏まえた
+  正しい判断だったとして維持し、コード変更は行っていない。
 - **2026-07-13 (前回、拡張要件(3)④MPTCP/SCTPの調査と代替実装、
   ユーザー指示——四層四重アーキテクチャの継続実装。aruaru-db側の
   コミット×スナップショット連携第一段実装も並行して実施、詳細は
