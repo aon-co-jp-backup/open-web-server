@@ -397,6 +397,19 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-13(実ドメインでのTLS/Let's Encrypt検証完了、ユーザー保有の
+  runo.tokyoドメイン使用)**: ユーザーが実際に取得済みのドメイン
+  `runo.tokyo`と実VPS(ConoHa、既に`aruaru`/`aruaru-easyweb`/nginx/
+  PostgreSQL稼働中)を使い、`open-easyweb`(第二のKUSANAGI)経由での
+  TLS自動化フローを実ドメインで検証した。DNS Aレコード設定→
+  `certbot certonly --webroot`での実証明書取得→443番vhost新設→
+  実インターネット経由での`curl`(証明書検証あり)による疎通確認、
+  まで完了。過程で実バグ1件発見・修正(ACME webrootが`/root`配下に
+  あり nginx ユーザーがトラバース不可、403エラーの原因)。
+  詳細・出典は`open-easyweb`側の同日付CLAUDE.md HANDOFFを参照。
+  これで拡張要件のTLS/HTTPS自動化に関する「実ドメインが無いため未検証」
+  という制約は解消された。
+
 - **2026-07-13(長年の懸案だったライブPostgreSQL検証を実施、成功)**:
   `cargo test --workspace`を再実行し、まず`open-web-server-wire`(14件、
   QUIC/aggligator-MPTCP代替含む)・`open-web-server-ledger`(17件)
