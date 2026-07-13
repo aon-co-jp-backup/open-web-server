@@ -8,6 +8,7 @@
 //! ルーティング/ハンドラの API 形状は元々の Poem 実装と互換性を保ちつつ、
 //! パッケージとしては Poem に依存しない (2026-07-10 スタック方針転換)。
 
+mod app_proxy;
 mod handlers;
 mod middleware;
 mod response;
@@ -46,7 +47,14 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             handlers::transactions::charge(state, req).await
         }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
-        _ => text_response(StatusCode::NOT_FOUND, "not found"),
+        _ => match app_proxy::app_upstream_base() {
+            // Apache→Tomcatと同じ関係: このゲートウェイが処理しないパスは、
+            // 設定されていればアプリケーションサーバー層(open-runo/
+            // poem-cosmo-tauri)へ委譲する。未設定なら従来通り単体で404を返す
+            // (このゲートウェイはアプリサーバー無しでも完全に動作する)。
+            Some(base) => app_proxy::forward(&base, req).await,
+            None => text_response(StatusCode::NOT_FOUND, "not found"),
+        },
     }
 }
 

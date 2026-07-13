@@ -397,6 +397,36 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-14(Apache+Tomcat型のWebサーバー/アプリケーションサーバー連携を追加、
+  ユーザー指示)**: `open-web-server-gateway`が単体動作を保ったまま、設定時のみ
+  アプリケーションサーバー層(`open-runo`/`poem-cosmo-tauri`)へ処理を委譲できる
+  ようにした。新規 `crates/open-web-server-gateway/src/app_proxy.rs`:
+  `OPEN_WEB_SERVER_APP_UPSTREAM` 環境変数(例: `http://127.0.0.1:8080`)が
+  設定されている場合のみ、`main.rs`の`dispatch()`で既存ハンドラ
+  (`grant_item`/`charge`/`healthz`)のどれにも一致しなかったリクエストを
+  `hyper_util::client::legacy::Client`でそのままHTTP転送し、応答をそのまま
+  返す(メソッド・パス・クエリ・ヘッダ・ボディを保持、到達不能なら
+  `502 Bad Gateway`)。環境変数が未設定なら従来通り`404`(=完全に単体動作、
+  Tomcatが無くてもApacheが動くのと同じ関係)。
+  **汎用性の設計判断(ユーザー指示、2026-07-14)**: 転送先はプレーンHTTPの
+  ため、Rust製の`open-runo`/`poem-cosmo-tauri`に限らず、PHP-FPM/Python
+  (ASGI)/Ruby(Puma/Unicorn)/Perl(PSGI/Plack)等、HTTPで応答する任意の
+  言語・フレームワークのアプリケーションサーバーを同じ仕組みで指せる
+  (`open-easyweb`の`gen-vhost.sh --stack=proxy`のUPSTREAMと同じ考え方)。
+  **検証**: `cargo build -p open-web-server-gateway`成功、
+  `cargo test -p open-web-server-gateway`既存4件すべてgreen(新規の
+  結合テストは未追加——実際のapp-server起動を伴う統合テストは次回パスで
+  追加予定、正直な限界として明記)。
+  **open-easyweb側との連携**: `open-easyweb`の`SiteProfile`に
+  `app_server`("none"/"open-runo"/"poem-cosmo-tauri")・
+  `app_server_upstream`(host:port)フィールドを追加し、ドメインごとに
+  アプリケーションサーバーを選択・登録・変更・削除できるUIを追加。
+  新規`scripts/switch-app-server.sh`で、デプロイ済みvhostの転送先を
+  後から書き換え可能(詳細はopen-easyweb側CLAUDE.md参照)。
+  **未着手として明記**: 実際に`open-runo`/`poem-cosmo-tauri`インスタンスを
+  起動した状態でのエンドツーエンド転送検証(実バイナリ2つを同時起動して
+  `curl`で確認)は次回パスの課題。
+
 - **2026-07-13(実ドメインでのTLS/Let's Encrypt検証完了、ユーザー保有の
   runo.tokyoドメイン使用)**: ユーザーが実際に取得済みのドメイン
   `runo.tokyo`と実VPS(ConoHa、既に`aruaru`/`aruaru-easyweb`/nginx/
