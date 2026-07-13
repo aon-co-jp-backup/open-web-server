@@ -315,7 +315,11 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
   https://github.com/aon-co-jp/open-runo
 - **open-web-server**(このリポジトリ): https://github.com/aon-co-jp/open-web-server
 - **aruaru-db**: https://github.com/aon-co-jp/aruaru-db
-- **aruaru-web**: https://github.com/aon-co-jp/aruaru-web
+- **open-easyweb**(第二のKUSANAGI、ドメイン/サブドメイン簡単登録+HTTPS
+  自動監視/発行/更新の易操作ツール。高速化機能は含まない、2026-07-13に
+  aruaru-webから分離): https://github.com/aon-co-jp/open-easyweb
+- **aruaru-web**(2026-07-13廃止。役割はopen-easyweb(易操作)と
+  open-runo/poem-cosmo-tauri(高速化)へ分割継承済み): https://github.com/aon-co-jp/aruaru-web
 - **open-raid-z**(開発ルールの正本): https://github.com/aon-co-jp/open-raid-z
 - **rs-to-readme**: https://github.com/aon-co-jp/rs-to-readme
 - **poem-cosmo-tauri**(open-runoと同時並行開発。Poem→tokio/hyper移行の
