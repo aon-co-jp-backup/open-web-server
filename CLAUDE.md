@@ -397,6 +397,7 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+<<<<<<< HEAD
 - **2026-07-14(Apache+Tomcat型のWebサーバー/アプリケーションサーバー連携を追加、
   ユーザー指示)**: `open-web-server-gateway`が単体動作を保ったまま、設定時のみ
   アプリケーションサーバー層(`open-runo`/`poem-cosmo-tauri`)へ処理を委譲できる
@@ -426,6 +427,65 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
   **未着手として明記**: 実際に`open-runo`/`poem-cosmo-tauri`インスタンスを
   起動した状態でのエンドツーエンド転送検証(実バイナリ2つを同時起動して
   `curl`で確認)は次回パスの課題。
+=======
+**2026-07-14 (続き) マルチテナントルーターの1→3完了(リバースプロキシ転送・
+ルーティング配線・管理API認証)**:
+- `proxy::forward()` 新設: `hyper_util::client::legacy::Client`
+  (プロセス全体で1つを`OnceLock`共有、ドメインが増えてもクライアント自体は
+  増やさない)で`tenant.backend_addr`へリクエストを中継し、応答をそのまま
+  返す。到達不能時は`502 Bad Gateway`。
+- `main::dispatch()`にHostヘッダからの`tenants.resolve()`を配線: 既存の
+  `/api/v1/*`・`/admin/*`・`/healthz`のいずれにも一致しないリクエストを
+  マルチテナントルーティング対象とし、該当ドメイン登録があれば
+  `proxy::forward()`へ、無ければ`404`。
+- `handlers::tenants`に`OPEN_WEB_SERVER_ADMIN_TOKEN`環境変数による簡易
+  共有シークレット認証(`x-admin-token`ヘッダ比較)を追加。未設定時は
+  無検証(開発用途)。本番運用ではmTLS/OAuth等への置き換えを推奨、と
+  コード内docに明記。
+**検証**: 独立クレート(`tokio`/`hyper`/`hyper-util`のみ)で実TCPループバック
+上のE2Eテストを実施——疑似バックエンドを1つ起動し、`forward()`を挟んだ
+"ゲートウェイ役"リスナーへ実際にHTTPリクエストを送り、ステータス・
+ヘッダ・ボディがバックエンドの応答と一致することを確認(green)。
+`tenant_router`単体テスト9件も引き続きgreen。workspace全体の実バイナリ
+起動確認は、前回記載の環境制約(cargo 1.75 + edition2024)により未実施。
+**未着手(次回)**: (1) `backend_addr`が到達不能な場合のリトライ/
+サーキットブレーカー、(2) HTTP/2・WebSocketアップグレードの中継対応
+(現状HTTP/1.1のみ)、(3) 管理APIの認証をトークン比較からmTLS/OAuthへ。
+
+**2026-07-14 マルチテナント・ドメインルーター(open-easyweb構想)第一実装**:
+ユーザーからの提案「ドメイン/サブドメインごとにWebサーバー・バックエンド
+(open-runo/poem-cosmo-tauri)・DBを個別インストールするのは面倒 →
+マルチコア・マルチスレッド・非同期の『分身の術』でもっと賢く」を受けて、
+`open-web-server-gateway`に以下を新設。
+- `tenant_router::TenantRegistry`(`tokio::sync::RwLock<HashMap<host, TenantHandle>>`):
+  ドメイン追加/削除がプロセス再起動・ポート個別割り当てを伴わない設計。
+  「分身の術」はOSプロセス/スレッドの複製ではなく、tokioの
+  マルチコアワークスティーリングランタイム上で自然に分散される軽量
+  非同期タスク単位の複製として実現(新規プロセスは一切増やさない)。
+- `load_from_toml()`: `domains.toml`(例: `domains.toml.example`)1本からの
+  一括宣言的プロビジョニング。個別インストール手順の代替。
+- `handlers::tenants`: `POST /admin/tenants`(追加)・
+  `DELETE /admin/tenants/:host`(削除)・`GET /admin/tenants`(一覧)。
+  無停止での動的追加/削除を管理APIとして配線。
+- `AppState::load_domains_from_env()`: `OPEN_WEB_SERVER_DOMAINS_FILE`環境変数
+  が設定されていれば起動時に一括ロード。
+**検証**: このサンドボックスの`open-web-server`ワークスペース全体は
+既知の環境制約(cargo 1.75では`quinn`/`opentelemetry`等の依存が要求する
+edition2024が原因でロックファイル自体を解決できない、変更前から発生する
+既存の問題であることを`git stash`比較で確認済み)により`cargo check`が
+実行できない。そのため`tenant_router.rs`のロジックを標準ライブラリ+
+`tokio`/`serde`/`toml 0.7`/`thiserror`のみの独立クレートへコピーして検証し、
+`cargo test`で9件全てgreenを確認(追加/検索/重複拒否/削除/削除後の解決不能/
+upsert/TOML一括ロード/一覧取得)。本体クレートへの統合(`toml`は0.7へpin、
+`state.rs`/`main.rs`への配線)はコード上完了しているが、workspace全体の
+実バイナリ起動検証は未実施(環境制約により次回、cargo 1.85以降の環境で
+要実施)。
+**未着手(次回以降)**: (1) 実際のリバースプロキシ処理(現状は
+`TenantHandle`の検索までで、`backend_addr`へのHTTP転送は未実装)、
+(2) 管理API `/admin/tenants` の認証・監査ログ、(3) Host検索結果を
+`dispatch()`のルーティングに実際に組み込む配線(現状`tenant_router`は
+独立モジュールとして追加されたのみで、通常リクエストパスとの接続は次回)。
+>>>>>>> 9f2220d (feat: wire reverse-proxy forwarding + host-based routing + admin token auth for multi-tenant router)
 
 - **2026-07-14 マルチテナント・ドメインルーター(`tenant_router`)を
   `app_proxy`と統廃合・融合(ユーザー指示「良い所取りで統廃合して融合して」)**:
