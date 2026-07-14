@@ -1,0 +1,24 @@
+# open-easyweb構想: ドメイン/サブドメインごとの個別インストールを廃止し、
+# この1ファイルの宣言だけで複数ドメインを1プロセスに立ち上げるための設定例。
+#
+# 使い方:
+#   OPEN_WEB_SERVER_DOMAINS_FILE=./domains.toml.example ./open-web-server
+#
+# 起動後も再起動不要で追加/削除できる(ノーダウンタイム):
+#   curl -X POST http://localhost:8080/admin/tenants \
+#     -H 'content-type: application/json' \
+#     -d '{"host":"new.example.com","backend":"open_runo","backend_addr":"127.0.0.1:9003","db_uri":"postgres://localhost/new"}'
+#   curl -X DELETE http://localhost:8080/admin/tenants/new.example.com
+#   curl http://localhost:8080/admin/tenants
+
+[[domain]]
+host = "shop.example.com"
+backend = "open_runo"
+backend_addr = "127.0.0.1:9001"
+db_uri = "postgres://localhost/shop"
+
+[[domain]]
+host = "app.example.com"
+backend = "poem_cosmo_tauri"
+backend_addr = "127.0.0.1:9002"
+db_uri = "postgres://localhost/app"

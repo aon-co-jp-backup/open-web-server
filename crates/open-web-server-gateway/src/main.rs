@@ -11,9 +11,11 @@
 mod app_proxy;
 mod handlers;
 mod middleware;
+mod proxy;
 mod response;
 mod state;
 mod telemetry;
+mod tenant_router;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -46,18 +48,42 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::POST, "/api/v1/transactions/charge") => {
             handlers::transactions::charge(state, req).await
         }
+        (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
+        (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
+        (Method::DELETE, p) if p.starts_with("/admin/tenants/") => {
+            let host = p.trim_start_matches("/admin/tenants/").to_string();
+            handlers::tenants::remove_tenant(state, &req, &host).await
+        }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
         (Method::GET, p) if p.starts_with("/internal/db/state/") => {
             handlers::state_query::get_state_at_commit(state, p).await
         }
-        _ => match app_proxy::app_upstream_base() {
-            // Apache→Tomcatと同じ関係: このゲートウェイが処理しないパスは、
-            // 設定されていればアプリケーションサーバー層(open-runo/
-            // poem-cosmo-tauri)へ委譲する。未設定なら従来通り単体で404を返す
-            // (このゲートウェイはアプリサーバー無しでも完全に動作する)。
-            Some(base) => app_proxy::forward(&base, req).await,
-            None => text_response(StatusCode::NOT_FOUND, "not found"),
-        },
+        // 上記いずれにも一致しないパスは、①複数ドメインを動的に振り分ける
+        // マルチテナントルーティング(open-easyweb構想、`tenant_router`)を
+        // まず試し、該当ドメイン登録が無ければ②単一アップストリームへの
+        // 委譲(Apache+Tomcat型、`app_proxy`、`OPEN_WEB_SERVER_APP_UPSTREAM`)
+        // にフォールバックする。どちらも該当しなければ従来通り`404`
+        // (=アプリサーバー・マルチテナント設定のいずれも無くても単体で動作)。
+        (_, _) => {
+            let host_header = req
+                .headers()
+                .get(hyper::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+
+            let tenant = match &host_header {
+                Some(h) => state.tenants.resolve(h).await,
+                None => None,
+            };
+
+            match tenant {
+                Some(tenant) => proxy::forward_to(&tenant.config.backend_addr, req).await,
+                None => match app_proxy::app_upstream_base() {
+                    Some(base) => proxy::forward_to(&base, req).await,
+                    None => text_response(StatusCode::NOT_FOUND, "not found"),
+                },
+            }
+        }
     }
 }
 
@@ -117,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
     let telemetry_guard = telemetry::init()?;
 
     let state = Arc::new(AppState::from_env()?);
+    state.load_domains_from_env().await?;
 
     let bind_addr: SocketAddr = std::env::var("OPEN_WEB_SERVER_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())
