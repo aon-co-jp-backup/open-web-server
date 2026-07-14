@@ -4,17 +4,36 @@
 
 | プロジェクト | 役割 | 技術スタック |
 |---|---|---|
-| **open-web-server** | クライアント向け入口。REST/GraphQL API、課金・決済のWAL先行書き込み | Rust + Poem |
-| **open-runo** | Graph Federation Gateway。認証・Rate Limit・監査・AIルーティングの一元管理 | Rust + Poem |
+| **open-web-server** | クライアント向け入口。REST/GraphQL API、課金・決済のWAL先行書き込み | Rust + tokio/hyper(Poem非依存) |
+| **open-runo** | Graph Federation Gateway。認証・Rate Limit・監査・AIルーティングの一元管理 | Rust + tokio/hyper(Poem非依存) |
 | **aruaru-db** | 分散 Git-on-SQL データベース。Raftによる強整合コミット、Git的な変更履歴 | Rust |
 
 ## 連携インターフェース
 
-- open-web-server → open-runo: `POST /internal/db/mutate` (JSON, `MutationRequest`)
+- open-web-server → open-runo(書き込み): `POST /internal/db/mutate` (JSON, `MutationRequest`)
 - open-runo → aruaru-db: `aruaru-wire` (pgwire互換) 経由でSQL実行、または
   `aruaru-graphql` 経由でGraphQL Mutation実行
 - 応答は必ず `MutationReceipt { idempotency_key, committed, db_commit_id, committed_at }`
   の形で返し、`db_commit_id` が入って初めて「確定」とみなす
+- **open-web-server → open-runo(読み出し、2026-07-14実装)**:
+  `GET /internal/db/state/:target/:key/at/:commit_id` — VersionLessAPI +
+  Git-on-SQLハイブリッドの読み出し側。拡張要件(1)がこれまで書き込み側
+  (`db_commit_id`の配線)のみ実質完成しており、「commit_idを指定して
+  過去状態を問い合わせる」読み出し側が`open-web-server`に一切存在
+  しなかったギャップを解消する。内部で
+  `open-runo`の`GET /api/db/:table/:key/at/:commit_id`(`aruaru-db`
+  バックエンドのみ実対応、他バックエンドは501)へプロキシする
+  (`open-web-server-ledger::DbStateReader`)。認証は
+  `POST /api/keys/self-issue`による自動キー発行+キャッシュ+期限切れ時
+  の透過的再発行(CLIやWASMフロントエンドと同じ「人間がAPIキーを
+  意識しない」方針)。応答が無い場合(`404`)は`Ok(None)`として扱われ
+  (コミット不明、またはその時点でキー未存在)、それ以外の想定外
+  ステータス(バックエンド未対応の`501`含む)はこのゲートウェイの
+  `502 Bad Gateway`として呼び出し元へ伝える。実バイナリ2つ
+  (`open-runo-router`+`open-web-server`)を実際に起動し、
+  self-issueキー取得→`GET /internal/db/state/...`→open-runoの
+  実`501`(in-memoryバックエンドはコミット履歴非対応)が
+  `502`として正しく伝播することを実HTTPで確認済み。
 
 ## 型の共有方針
 

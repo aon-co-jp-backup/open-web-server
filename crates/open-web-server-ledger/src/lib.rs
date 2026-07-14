@@ -45,9 +45,11 @@ use tracing::{info, warn};
 pub mod audit_log;
 pub mod multi_region;
 pub mod postgres_wal;
+pub mod state_reader;
 pub use audit_log::{AuditRecord, FileAuditLog, ReconciliationReport};
 pub use multi_region::{MultiRegionError, MultiRegionReplicator, Region as ReplicationRegion};
 pub use postgres_wal::PostgresWal;
+pub use state_reader::DbStateReader;
 
 #[derive(Clone)]
 pub struct LedgerConfig {

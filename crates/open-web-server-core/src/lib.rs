@@ -49,6 +49,22 @@ pub struct MutationReceipt {
     pub committed_at: Option<DateTime<Utc>>,
 }
 
+/// `GET /internal/db/state/:target/:key/at/:commit_id` の応答。
+///
+/// VersionLessAPI + Git-on-SQL ハイブリッドの「読み出し側」——
+/// `MutationRequest.target`/`account_id` が書き込み側で使うのと同じ
+/// target/key の組に対し、指定コミット時点の値を返す。open-runo の
+/// `GET /api/db/:table/:key/at/:commit_id`(2026-07-13実装済み)への
+/// プロキシとして実装される(`open-web-server-ledger::DbStateReader`)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbStateAtCommitResponse {
+    /// aruaru-db 上のテーブル/コレクション名(`MutationRequest.target`と同一の空間)
+    pub target: String,
+    pub key: String,
+    pub commit_id: String,
+    pub value: serde_json::Value,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error("duplicate idempotency key: {0:?} (既に処理済み。二重書き込みを拒否)")]

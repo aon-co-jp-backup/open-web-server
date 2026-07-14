@@ -397,6 +397,55 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-14 拡張要件(1)「VersionLessAPI + Git管理ハイブリッド」の
+  読み出し側をopen-web-server側にも実装 — これで書き込み側・読み出し側
+  両方が揃った**: open-runo側は2026-07-13に`GET /api/db/:table/:key/
+  at/:commit_id`を実装・検証済みだったが、`open-web-server`側に対応する
+  エンドポイントが無く「未接続」のまま残っていた(前回HANDOFFで
+  明記されていたギャップ)。ユーザー指示(ハイスピード・ハイセキュリティ・
+  4層4重の通信/DB連携の実用性向上)を受けて着手。
+  **新規実装**: (1)`open-web-server-core::DbStateAtCommitResponse`
+  (`target`/`key`/`commit_id`/`value`、`MutationRequest.target`と同じ
+  target空間を使う)。(2)`open-web-server-ledger::DbStateReader`
+  (`Ledger`の書き込みパス`forward_once`とは独立したHTTPクライアント。
+  open-runoの`GET /api/db/:table/:key/at/:commit_id`へプロキシ。
+  **認証は`POST /api/keys/self-issue`による自動キー発行+キャッシュ+
+  `401`時の透過的再発行**——`open-runo-cli`/WASMフロントエンドと同じ
+  「人間がAPIキーを意識しない」方針をここでも踏襲。404は`Ok(None)`
+  (正常、エラーではない)として扱う)。(3)
+  `open-web-server-gateway`に`GET /internal/db/state/:target/:key/
+  at/:commit_id`ハンドラ(`handlers/state_query.rs`)——このゲートウェイの
+  ディスパッチャは動的パスパラメータの無い素のmatch式のため、
+  `path.starts_with(...)`ガード+手動パースで対応。open-runo側が
+  想定外のステータス(バックエンド未対応の501含む)を返した場合は
+  このゲートウェイの`502 Bad Gateway`として伝える(404=「このゲートウェイ
+  自体にリソースが無い」とは区別)。
+  **検証**: `DbStateReader`の単体テスト3本(実HTTPモックopen-runoサーバー
+  相手に、既知target/key/commit→実際の値取得・未知commit→`Ok(None)`・
+  self-issueキーが複数リクエストにまたがってキャッシュされ1回しか
+  発行されないことを確認)、ハンドラのパス解析テスト4本、
+  `cargo test --workspace`全体green。**さらに型チェックのみで終わらせず、
+  実バイナリ2つ(`open-runo-router`+`open-web-server`)を実際に起動して
+  検証**: `open-runo-router`(in-memoryバックエンド、コミット履歴クエリ
+  自体に未対応)に対しself-issueキー取得→`open-web-server`をその
+  `OPEN_RUNO_ENDPOINT`で起動→`GET /internal/db/state/game_items/
+  player-1/at/some-commit`を叩き、open-runo側の実`501 Not Implemented`
+  (`"AS OF COMMIT reads are not supported by the 'in-memory' backend"`)
+  がこのゲートウェイの`502 Bad Gateway`として正しく伝播することを実HTTP
+  で確認(検証中、最初に誤ってpoem-cosmo-tauri側の`open-runo-router`
+  バイナリを起動してしまい——このエンドポイントはopen-runo固有で
+  poem-cosmo-tauriにはまだミラーされていない——`404`のみ返る実バグ
+  ではない誤操作に気づき、正しいopen-runo側バイナリで再検証した)。
+  `docs/integration.md`(古い「Rust + Poem」スタック表記も合わせて修正)
+  を更新。
+  次回パスがすべきこと: (1)このエンドポイントをpoem-cosmo-tauri側にも
+  ミラーするか判断(現状open-runo固有、`aruaru-db`バックエンド連携が
+  前提の機能のため、poem-cosmo-tauriのスコープに合うか要検討)、
+  (2)レートリミット/セッション状態のマルチインスタンス間共有
+  (open-runo/poem-cosmo-tauri側の既知ギャップ、Redis等への移行)、
+  (3)`app_proxy`と本エンドポイントの責務分離の見直し(現状は別々の
+  ハンドラだが、将来的に統一的なプロキシ層にまとめる余地がある)。
+
 - **2026-07-14(Apache+Tomcat型のWebサーバー/アプリケーションサーバー連携を追加、
   ユーザー指示)**: `open-web-server-gateway`が単体動作を保ったまま、設定時のみ
   アプリケーションサーバー層(`open-runo`/`poem-cosmo-tauri`)へ処理を委譲できる

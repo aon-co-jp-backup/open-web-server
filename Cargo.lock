@@ -1404,7 +1404,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "chrono",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "open-web-server-core",
  "open-web-server-wire",
  "reqwest 0.12.28",

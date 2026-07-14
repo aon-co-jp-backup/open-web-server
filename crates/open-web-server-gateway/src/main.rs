@@ -47,6 +47,9 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             handlers::transactions::charge(state, req).await
         }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
+        (Method::GET, p) if p.starts_with("/internal/db/state/") => {
+            handlers::state_query::get_state_at_commit(state, p).await
+        }
         _ => match app_proxy::app_upstream_base() {
             // Apache→Tomcatと同じ関係: このゲートウェイが処理しないパスは、
             // 設定されていればアプリケーションサーバー層(open-runo/
