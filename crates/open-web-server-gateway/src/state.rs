@@ -2,10 +2,15 @@ use std::sync::Arc;
 
 use open_web_server_ledger::{Ledger, LedgerConfig};
 
+use crate::tenant_router::TenantRegistry;
+
 /// アプリケーション全体の共有状態。
 #[derive(Clone)]
 pub struct AppState {
     pub ledger: Arc<Ledger>,
+    /// ドメイン/サブドメインごとのマルチテナントルーティングレジストリ
+    /// (open-easyweb構想、`tenant_router`参照)。
+    pub tenants: Arc<TenantRegistry>,
 }
 
 impl AppState {
@@ -22,6 +27,22 @@ impl AppState {
         let wal = Arc::new(crate::handlers::wal::InMemoryWal::default());
         let ledger = Arc::new(Ledger::new(config, wal));
 
-        Ok(Self { ledger })
+        let tenants = Arc::new(TenantRegistry::new());
+        Ok(Self { ledger, tenants })
+    }
+
+    /// `OPEN_WEB_SERVER_DOMAINS_FILE` で指定された `domains.toml` があれば
+    /// 起動時に一括ロードする(個別インストールの代わりに宣言的設定1本で
+    /// 複数ドメインを立ち上げるための入口)。指定が無ければ何もしない
+    /// (管理API `/admin/tenants` による動的追加のみで運用可能)。
+    pub async fn load_domains_from_env(&self) -> anyhow::Result<()> {
+        let Ok(path) = std::env::var("OPEN_WEB_SERVER_DOMAINS_FILE") else {
+            return Ok(());
+        };
+        let toml_str = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("failed to read domains file '{path}': {e}"))?;
+        let count = self.tenants.load_from_toml(&toml_str).await?;
+        tracing::info!(count, path, "loaded tenant domains from file");
+        Ok(())
     }
 }

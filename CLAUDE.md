@@ -427,6 +427,49 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
   起動した状態でのエンドツーエンド転送検証(実バイナリ2つを同時起動して
   `curl`で確認)は次回パスの課題。
 
+- **2026-07-14 マルチテナント・ドメインルーター(`tenant_router`)を
+  `app_proxy`と統廃合・融合(ユーザー指示「良い所取りで統廃合して融合して」)**:
+  同日、別セッションが上記の`app_proxy.rs`(単一アップストリームへの委譲、
+  `OPEN_WEB_SERVER_APP_UPSTREAM`)を実装済みだったところに、こちらの
+  セッションが独立に「ドメイン/サブドメインごとに複数バックエンドを
+  動的振り分けするマルチテナントルーター」(`tenant_router::TenantRegistry`)
+  を実装しており、機能が重複していた。ユーザー確認の上、両者を統合:
+  - `tenant_router::TenantRegistry`(`tokio::sync::RwLock<HashMap<host,
+    TenantHandle>>`): ドメイン追加/削除がプロセス再起動・ポート個別割り当てを
+    伴わない設計。「分身の術」はOSプロセス/スレッドの複製ではなく、tokioの
+    マルチコアワークスティーリングランタイム上で自然に分散される軽量
+    非同期タスク単位の複製として実現。
+  - `load_from_toml()`: `domains.toml`(例: `domains.toml.example`)1本からの
+    一括宣言的プロビジョニング。
+  - `handlers::tenants`: `POST /admin/tenants`・`DELETE /admin/tenants/:host`・
+    `GET /admin/tenants`。`OPEN_WEB_SERVER_ADMIN_TOKEN`環境変数による
+    簡易共有シークレット認証(`x-admin-token`ヘッダ、未設定時は無検証)。
+  - **統合方針**: `proxy.rs`にプロセス全体で共有する`Client`
+    (`OnceLock`)と、汎用転送関数`forward_to(base_url, req)`を集約。
+    `app_proxy.rs`は独自にクライアントを都度生成していたのをやめ、
+    `proxy::forward_to()`を呼ぶだけの薄いラッパーに変更(コード重複解消)。
+  - **`dispatch()`のフォールバック優先順位**(重複を解消しつつ両方の
+    ユースケースを維持): ①既存ハンドラ(`/api/v1/*`・`/admin/*`・
+    `/healthz`)、②Hostヘッダでの`tenant_router`解決(マルチドメイン、
+    複数バックエンドを同時に運用したい場合)、③`OPEN_WEB_SERVER_APP_UPSTREAM`
+    (単一バックエンドのみで運用するシンプルな場合、Apache+Tomcat型の
+    後方互換フォールバック)、④どれにも一致しなければ`404`。
+  - これにより「1ドメイン1バックエンドの単純運用(`app_proxy`由来)」と
+    「複数ドメイン/サブドメインを1プロセスで動的に振り分ける運用
+    (`tenant_router`由来)」を、クライアント実装を重複させずに両立させた。
+  **検証**: 独立クレート(`tokio`/`hyper`/`hyper-util`のみ)で実TCPループバック
+  上のE2Eテストを実施——疑似バックエンドを1つ起動し、`forward_to()`を挟んだ
+  "ゲートウェイ役"リスナーへ実際にHTTPリクエストを送り、ステータス・
+  ヘッダ・ボディがバックエンドの応答と一致することを確認(green)。
+  `tenant_router`単体テスト9件も引き続きgreen。workspace全体の実バイナリ
+  起動確認は、環境制約(cargo 1.75 + edition2024)により未実施。
+  **未着手(次回)**: (1) `backend_addr`が到達不能な場合のリトライ/
+  サーキットブレーカー、(2) HTTP/2・WebSocketアップグレードの中継対応
+  (現状HTTP/1.1のみ)、(3) 管理APIの認証をトークン比較からmTLS/OAuthへ、
+  (4) `open-easyweb`の`SiteProfile`/`gen-vhost.sh`側からも`tenant_router`の
+  管理APIを直接叩けるようにする連携(現状`open-easyweb`はNginx/Apache vhost
+  生成のみで、本リポジトリのマルチテナントAPIの存在を前提にしていない)。
+
 - **2026-07-13(実ドメインでのTLS/Let's Encrypt検証完了、ユーザー保有の
   runo.tokyoドメイン使用)**: ユーザーが実際に取得済みのドメイン
   `runo.tokyo`と実VPS(ConoHa、既に`aruaru`/`aruaru-easyweb`/nginx/

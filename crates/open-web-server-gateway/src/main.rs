@@ -14,6 +14,7 @@ mod middleware;
 mod response;
 mod state;
 mod telemetry;
+mod tenant_router;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -45,6 +46,12 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::POST, "/api/v1/items/grant") => handlers::items::grant_item(state, req).await,
         (Method::POST, "/api/v1/transactions/charge") => {
             handlers::transactions::charge(state, req).await
+        }
+        (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
+        (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state).await,
+        (Method::DELETE, p) if p.starts_with("/admin/tenants/") => {
+            let host = p.trim_start_matches("/admin/tenants/");
+            handlers::tenants::remove_tenant(state, host).await
         }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
         _ => match app_proxy::app_upstream_base() {
@@ -114,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let telemetry_guard = telemetry::init()?;
 
     let state = Arc::new(AppState::from_env()?);
+    state.load_domains_from_env().await?;
 
     let bind_addr: SocketAddr = std::env::var("OPEN_WEB_SERVER_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())
