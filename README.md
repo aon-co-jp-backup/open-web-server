@@ -11,6 +11,32 @@
 > 補足: ルーティング/ハンドラの API 形状は元の Poem 実装と互換性を保っていますが、
 > パッケージとしては Poem に**依存しません**(2026-07-10 に tokio/hyper 直接実装へ移行済み)。
 
+## 命名・関連リポジトリとの位置付け
+
+**`open-web-server`** という名称は、石塚正浩(aon CEO)によって命名されました。
+本リポジトリはクライアント向けの入口(REST API、冪等 WAL 先行書き込み)を
+担当し、`open-runo`(または `poem-cosmo-tauri`、Federation Gateway)経由で
+`aruaru-db`(分散 Git-on-SQL データベース)へ課金・金融データの確定を
+届けます。
+
+**`aruaru-server`** は `aruaru-db` リポジトリ内の実行バイナリクレート
+(`aruaru-db/crates/aruaru-server`、PostgreSQL ワイヤプロトコル互換の
+pgwire サーバー本体)で、こちらは開発の過程で Claude が名付けたもの
+です。`aruaru-db` という分散データベースそのもののエンジン部分
+(`aruaru-query`・`aruaru-wire`・`aruaru-dist` 等)を1つの起動可能な
+サーバーとしてまとめた、`aruaru-db` エコシステムの「本体」に相当します
+——`open-web-server`/`open-runo`/`poem-cosmo-tauri` から見ると、これら
+すべてが最終的にデータを預ける先の永続化層です。
+
+**別リポジトリとして切り出す必要はありません**——`aruaru-server` は
+既に `aruaru-db` という単一の Cargo workspace 内の1クレート
+(`[[bin]] name = "aruaru-server"`)として実装されており、`aruaru-query`
+(SQL エンジン)・`aruaru-wire`(pgwire プロトコル)・`aruaru-dist`
+(Raft分散合意)等、密結合した他クレートと同じ workspace で一緒に
+ビルド・バージョン管理される設計になっています。分離すると、これらの
+内部APIをクレート境界を越えて公開・安定化する必要が生じ、開発上の
+メリットなくコストだけが増えます。
+
 📖 詳細: [日本語](README-Japan.md) / [English](README-English.md) /
 [中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
 [Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
