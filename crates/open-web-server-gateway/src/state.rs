@@ -47,6 +47,7 @@ impl AppState {
         let toml_str = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("failed to read domains file '{path}': {e}"))?;
         let count = self.tenants.load_from_toml(&toml_str).await?;
+        self.tenants.set_persist_path(std::path::PathBuf::from(&path)).await;
         tracing::info!(count, path, "loaded tenant domains from file");
         Ok(())
     }

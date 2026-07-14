@@ -15,10 +15,18 @@
 //!   個別インストール手順を無くすことを狙う。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+
+/// `domains.toml` の直列化用ラッパー(`load_from_toml`の読み込み形式と対称)。
+#[derive(Serialize, Deserialize)]
+struct DomainsFile {
+    #[serde(rename = "domain", default)]
+    domains: Vec<TenantConfig>,
+}
 
 /// このドメインが使うバックエンドの種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +66,11 @@ pub struct TenantHandle {
 #[derive(Debug, Default)]
 pub struct TenantRegistry {
     tenants: RwLock<HashMap<String, Arc<TenantHandle>>>,
+    /// 設定済みの場合、`add`/`remove`/`upsert`のたびに現在の全テナントを
+    /// このパスへTOMLとして書き戻す(Apacheの`a2ensite`相当の永続化。
+    /// 管理APIでの変更がプロセス再起動後も残るようにするための実用性
+    /// 向上——従来はメモリ内のみで、再起動すると消えていた)。
+    persist_path: RwLock<Option<PathBuf>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +85,44 @@ impl TenantRegistry {
     pub fn new() -> Self {
         Self {
             tenants: RwLock::new(HashMap::new()),
+            persist_path: RwLock::new(None),
+        }
+    }
+
+    /// 以後の`add`/`remove`/`upsert`を、指定パスのTOMLファイルへ自動的に
+    /// 書き戻すようにする(`OPEN_WEB_SERVER_DOMAINS_FILE`起動時ロードと
+    /// 対にして使う想定)。
+    pub async fn set_persist_path(&self, path: PathBuf) {
+        *self.persist_path.write().await = Some(path);
+    }
+
+    /// 現在のテナント一覧を、設定済みの永続化パスへ原子的に(一時ファイル
+    /// →rename)書き戻す。パス未設定なら何もしない。書き込み失敗は
+    /// 呼び出し元のadd/remove自体を失敗させない(リクエストパスの
+    /// 可用性を優先し、警告ログのみ残す)。
+    async fn persist(&self, tenants: &HashMap<String, Arc<TenantHandle>>) {
+        let Some(path) = self.persist_path.read().await.clone() else {
+            return;
+        };
+
+        let domains: Vec<TenantConfig> = tenants.values().map(|h| h.config.clone()).collect();
+        let file = DomainsFile { domains };
+
+        let toml_str = match toml::to_string_pretty(&file) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize domains.toml for persistence");
+                return;
+            }
+        };
+
+        let tmp_path = path.with_extension("toml.tmp");
+        if let Err(e) = tokio::fs::write(&tmp_path, toml_str).await {
+            tracing::warn!(error = %e, path = %tmp_path.display(), "failed to write domains.toml tmp file");
+            return;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
+            tracing::warn!(error = %e, path = %path.display(), "failed to persist domains.toml (rename)");
         }
     }
 
@@ -104,6 +155,7 @@ impl TenantRegistry {
             return Err(TenantError::AlreadyExists(config.host));
         }
         guard.insert(config.host.clone(), Arc::new(TenantHandle { config }));
+        self.persist(&guard).await;
         Ok(())
     }
 
@@ -111,15 +163,18 @@ impl TenantRegistry {
     pub async fn upsert(&self, config: TenantConfig) {
         let mut guard = self.tenants.write().await;
         guard.insert(config.host.clone(), Arc::new(TenantHandle { config }));
+        self.persist(&guard).await;
     }
 
     /// ドメインを削除する。
     pub async fn remove(&self, host: &str) -> Result<(), TenantError> {
         let mut guard = self.tenants.write().await;
-        guard
-            .remove(host)
-            .map(|_| ())
-            .ok_or_else(|| TenantError::NotFound(host.to_string()))
+        let removed = guard.remove(host);
+        if removed.is_none() {
+            return Err(TenantError::NotFound(host.to_string()));
+        }
+        self.persist(&guard).await;
+        Ok(())
     }
 
     /// Hostヘッダ(ポート番号が付いている場合は除去して)からテナントを引く。

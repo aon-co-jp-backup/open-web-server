@@ -382,6 +382,25 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 - **poem-cosmo-tauri**(open-runoと同時並行開発。Poem→tokio/hyper移行の
   実装先行地点): https://github.com/aon-co-jp/poem-cosmo-tauri
 
+### テナント別方針: audiocafe.tokyo(2026-07-14、ユーザー指示)
+
+- **現状(2026-07中旬)**: PHPベース。ApacheがCONOHA VPS上で稼働している
+  想定(具体的なポート/構成は未調査、PC版で`apache2ctl -S`等により
+  次回調査予定)。
+- **当面の方針**: PHPをいきなり置き換えるのではなく、**Apache配下で
+  `open-runo`を高速化ミドルウェアとして動かす**構成にする(open-runoは
+  高速化担当、`open-easyweb`はドメイン/vhost管理担当という役割分担に
+  沿う)。`open-web-server`のTenantRegistryには、まず既存PHP
+  (Apache)への単一アップストリームプロキシとして登録する想定
+  (`app_proxy.rs`側の単一アップストリーム方式を使う、TenantRegistryの
+  `backend_addr`をApache側へ向ける)。
+- **将来方針**: なるべく早い段階でRust + Poemベースへ移行し、AIによって
+  動的に変化するサイトにする。移行後はTenantRegistry側の
+  `backend_addr`をPoem実装側に切り替える形を想定(PHPからの切り替えは
+  設定変更のみで完結させたい)。
+- 次回(PC版)調査事項: CONOHA VPS上のApache/PHPの実配置(ポート、
+  `sites-enabled`構成)。
+
 ## 運用ルール
 
 - **開発中はこの`CLAUDE.md`を、コード変更のコミット/pushと必ず一緒に push する**。
@@ -429,6 +448,12 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
   つかない場合は自分の工学的判断で最も妥当な選択をして実装を進める。
   「〜については確認が必要です」と言って作業を止め、ユーザーの回答を
   待つことを既定の振る舞いにしない。
+- **ユーザーが開発方針・開発環境ルールを口頭で示した場合、それを記憶だけに
+  頼らず必ずこの`CLAUDE.md`(該当リポジトリのHANDOFF/運用ルール/関連
+  プロジェクト等の適切な節)に書き込み、その場でコミット/pushすること**
+  (ユーザー指示、2026-07-14)。「毎回保存」とは、方針が更新されるたびに
+  都度反映することを指し、セッション末尾やHANDOFFタイミングまで
+  まとめて後回しにしない。
 
 ## 現状(このリポジトリ固有)
 
