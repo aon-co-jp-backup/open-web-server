@@ -382,24 +382,22 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 - **poem-cosmo-tauri**(open-runoと同時並行開発。Poem→tokio/hyper移行の
   実装先行地点): https://github.com/aon-co-jp/poem-cosmo-tauri
 
-### テナント別方針: audiocafe.tokyo(2026-07-14、ユーザー指示)
+### テナント別方針: aruaru.tokyo / audiocafe.tokyo(2026-07-14、ユーザー指示・訂正あり)
 
-- **現状(2026-07中旬)**: PHPベース。ApacheがCONOHA VPS上で稼働している
-  想定(具体的なポート/構成は未調査、PC版で`apache2ctl -S`等により
-  次回調査予定)。
-- **当面の方針**: PHPをいきなり置き換えるのではなく、**Apache配下で
-  `open-runo`を高速化ミドルウェアとして動かす**構成にする(open-runoは
-  高速化担当、`open-easyweb`はドメイン/vhost管理担当という役割分担に
-  沿う)。`open-web-server`のTenantRegistryには、まず既存PHP
-  (Apache)への単一アップストリームプロキシとして登録する想定
-  (`app_proxy.rs`側の単一アップストリーム方式を使う、TenantRegistryの
-  `backend_addr`をApache側へ向ける)。
-- **将来方針**: なるべく早い段階でRust + Poemベースへ移行し、AIによって
-  動的に変化するサイトにする。移行後はTenantRegistry側の
-  `backend_addr`をPoem実装側に切り替える形を想定(PHPからの切り替えは
-  設定変更のみで完結させたい)。
-- 次回(PC版)調査事項: CONOHA VPS上のApache/PHPの実配置(ポート、
-  `sites-enabled`構成)。
+- **aruaru.tokyo** — `open-easyweb`用に用意されたドメイン。TenantRegistryへの
+  登録対象はこちら。
+- **audiocafe.tokyo** — 実在するドメインだが、`open-easyweb`のテナントとして
+  登録する対象**ではない**(2026-07-14、ユーザー訂正)。別の使い道として
+  以下の構成方針のみ記録しておく(TenantRegistryへの登録は行わない)。
+  - **現状(2026-07中旬)**: PHPベース。ApacheがCONOHA VPS上で稼働している
+    想定(具体的なポート/構成は未調査)。
+  - **当面の方針**: PHPをいきなり置き換えるのではなく、**Apache配下で
+    `open-runo`を高速化ミドルウェアとして動かす**構成にする(open-runoは
+    高速化担当)。
+  - **将来方針**: なるべく早い段階でRust + Poemベースへ移行し、AIによって
+    動的に変化するサイトにする。
+  - 次回(PC版)調査事項: CONOHA VPS上のApache/PHPの実配置(ポート、
+    `sites-enabled`構成)。
 
 ## 運用ルール
 
