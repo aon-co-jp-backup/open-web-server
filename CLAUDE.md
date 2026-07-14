@@ -397,6 +397,33 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-14(続き) 前回HANDOFFの未決事項「poem-cosmo-tauri側への
+  ミラー要否」を調査・決着 — このリポジトリ側のコード変更は不要と判明**:
+  前回、`GET /internal/db/state/...`プロキシがopen-runo固有のまま
+  だった件について「poem-cosmo-tauriのスコープに合うか要検討」と
+  未決のまま残していた。調査の結果、根本原因は**poem-cosmo-tauri側に
+  `GET /api/db/:table/:key/at/:commit_id`自体が実装されていなかった
+  こと**であり(該当パスはpoem-cosmo-tauri側のCLAUDE.md参照——同日中に
+  修正済み。ついでにAruaruDbBackendが実aruaru-serverに対して一度も
+  動作しない実バグを抱えていたことも判明・修正された)、
+  **このリポジトリの`DbStateReader`/`GET /internal/db/state/...`
+  ハンドラは`OPEN_RUNO_ENDPOINT`環境変数だけでopen-runo/
+  poem-cosmo-tauriどちらの実装も指せる設計になっている**ため、
+  こちら側に追加のコード変更は一切不要と判断。
+  **実証**: 実バイナリ3つ(`open-runo-router`・`poem-cosmo-tauri`版
+  `open-runo-router`・`open-web-server`)を用意し、`open-web-server`を
+  `OPEN_RUNO_ENDPOINT=http://127.0.0.1:<poem-cosmo-tauriのポート>`で
+  起動、コード変更なしに同じ`GET /internal/db/state/game_items/
+  player-1/at/some-commit`が正しく`502`
+  (`"...returned unexpected status 501 Not Implemented..."`)を返す
+  ことを確認——open-runo版に対する検証(前回HANDOFFエントリ)と
+  バイト単位で同一の結果。
+  次回パスがすべきこと: 特に緊急の課題は無い。残る既知ギャップは
+  (1)レートリミット/セッション状態のマルチインスタンス間共有、
+  (2)`aruaru-wire`の拡張プロトコル(prepared statement)非対応
+  (多くのORM/ドライバのデフォルト経路が失敗する実用性ギャップ、
+  aruaru-db側のスコープ)。
+
 - **2026-07-14 拡張要件(1)「VersionLessAPI + Git管理ハイブリッド」の
   読み出し側をopen-web-server側にも実装 — これで書き込み側・読み出し側
   両方が揃った**: open-runo側は2026-07-13に`GET /api/db/:table/:key/

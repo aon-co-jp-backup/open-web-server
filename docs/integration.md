@@ -34,6 +34,14 @@
   self-issueキー取得→`GET /internal/db/state/...`→open-runoの
   実`501`(in-memoryバックエンドはコミット履歴非対応)が
   `502`として正しく伝播することを実HTTPで確認済み。
+  **`OPEN_RUNO_ENDPOINT`はopen-runo/poem-cosmo-tauriどちらも指せる**
+  (2026-07-14確認) — `DbStateReader`はエンドポイントのURLだけで動作し、
+  どちらの実装かを区別するコードを持たない。poem-cosmo-tauri側に同じ
+  `GET /api/db/:table/:key/at/:commit_id`が実装された時点で(同日
+  ミラー完了、詳細はpoem-cosmo-tauri側CLAUDE.md参照)、`open-web-server`
+  側のコード変更なしにそちらへも接続できることを実バイナリ3つ
+  (`open-runo-router`・poem-cosmo-tauri版`open-runo-router`・
+  `open-web-server`)で実証済み。
 
 ## 型の共有方針
 
