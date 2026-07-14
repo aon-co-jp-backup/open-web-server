@@ -149,6 +149,12 @@ impl TenantRegistry {
     }
 
     /// ドメインを1件追加する(ノーダウンタイム、既存接続には影響しない)。
+    /// 指定ホスト(サブドメイン含むフルホスト名)が既に登録済みか。
+    /// `update_tenant`ハンドラで「変更」と「新規追加」を区別するために使う。
+    pub async fn exists(&self, host: &str) -> bool {
+        self.tenants.read().await.contains_key(host)
+    }
+
     pub async fn add(&self, config: TenantConfig) -> Result<(), TenantError> {
         let mut guard = self.tenants.write().await;
         if guard.contains_key(&config.host) {

@@ -54,6 +54,10 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             let host = p.trim_start_matches("/admin/tenants/").to_string();
             handlers::tenants::remove_tenant(state, &req, &host).await
         }
+        (Method::PUT, p) if p.starts_with("/admin/tenants/") => {
+            let host = p.trim_start_matches("/admin/tenants/").to_string();
+            handlers::tenants::update_tenant(state, req, &host).await
+        }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
         (Method::GET, p) if p.starts_with("/internal/db/state/") => {
             handlers::state_query::get_state_at_commit(state, p).await

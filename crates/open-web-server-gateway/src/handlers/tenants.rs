@@ -61,6 +61,43 @@ pub async fn add_tenant(state: Arc<AppState>, req: Request<Incoming>) -> Respons
     }
 }
 
+/// `PUT /admin/tenants/:host` — 既存ドメイン(またはサブドメイン)の設定を
+/// 変更する。存在しない場合は`404`(誤って新規追加になってしまうのを防ぎ、
+/// 追加は明示的に`POST /admin/tenants`を使わせるため)。
+/// パス中の`:host`とボディの`host`が食い違う場合は`400`とし、
+/// 意図しないホストの上書きを防ぐ。
+pub async fn update_tenant(
+    state: Arc<AppState>,
+    req: Request<Incoming>,
+    host: &str,
+) -> Response<BoxBody> {
+    if let Err(resp) = check_admin_auth(&req) {
+        return resp;
+    }
+
+    let config: TenantConfig = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+
+    if config.host != host {
+        return text_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "path host '{host}' does not match body host '{}'",
+                config.host
+            ),
+        );
+    }
+
+    if !state.tenants.exists(host).await {
+        return text_response(StatusCode::NOT_FOUND, format!("host '{host}' not found"));
+    }
+
+    state.tenants.upsert(config).await;
+    text_response(StatusCode::OK, "tenant updated")
+}
+
 /// `DELETE /admin/tenants/:host` 相当(パスの末尾セグメントをhostとして扱う)。
 pub async fn remove_tenant(
     state: Arc<AppState>,
