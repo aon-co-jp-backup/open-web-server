@@ -1006,3 +1006,16 @@ upsert/TOML一括ロード/一覧取得)。本体クレートへの統合(`toml`
   (Cargo.toml に `async-trait`/`chrono` の依存が抜けていた)。冪等性
   ショートサーキットの単体テストを追加(以前はこのクレートにテストが
   0件だった)。
+
+## HANDOFF追記(2026-07-15) — appserver連携(第二のApache→第二のTomcat配線)
+
+- 姉妹リポジトリ(open-runo / poem-cosmo-tauri)に `open-runo-appserver` が
+  新設された(§0.9)。本リポジトリの `TenantRegistry` と接続するための
+  型非依存ブリッジ `tenant_bridge::dispatcher_from_tenants` が先方に用意済み:
+  `registry.list()` の各 `TenantConfig` から `(host, backend_addr)` ペア列を
+  作って渡すだけで、不変・ロック不要の `TenantDispatcher`(読み取りが
+  マルチコアでスケール)が得られる。解析不能なbackend_addrは拒否リストで
+  返るので、起動時に監査ログへ記録すること(黙殺禁止 — §0)。
+- 配線方法はPCセッションで選択: Cargo git依存
+  (`open-runo-appserver = { git = "https://github.com/aon-co-jp/open-runo" }`)
+  またはワークスペース外パス依存。sandboxではクロスリポジトリビルド未検証。
