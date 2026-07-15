@@ -474,6 +474,17 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-15 コードヘルス監査 — audit only, no changes**:
+  `cargo build --workspace`/`cargo test --workspace`を実行し、ビルド成功
+  (警告1件: `tenant_router.rs`の`len`/`is_empty`が未使用、実害なしの
+  dead_code警告)・全51テストgreen(1件ignored)を確認。以前のHANDOFF
+  エントリに記録されていた「cargo 1.75 + edition2024でworkspace全体の
+  `cargo check`が実行できない」という環境制約は、現在の環境では
+  再現しなかった(問題なくビルド・テストできた——ツールチェーンが
+  更新された可能性)。`git status`はクリーン、修正すべき壊れたビルド・
+  失敗テスト・小規模な欠落は見つからなかったため、コード変更は
+  行っていない。
+
 - **2026-07-14(続き) 前回HANDOFFの未決事項「poem-cosmo-tauri側への
   ミラー要否」を調査・決着 — このリポジトリ側のコード変更は不要と判明**:
   前回、`GET /internal/db/state/...`プロキシがopen-runo固有のまま
