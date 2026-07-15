@@ -1019,3 +1019,9 @@ upsert/TOML一括ロード/一覧取得)。本体クレートへの統合(`toml`
 - 配線方法はPCセッションで選択: Cargo git依存
   (`open-runo-appserver = { git = "https://github.com/aon-co-jp/open-runo" }`)
   またはワークスペース外パス依存。sandboxではクロスリポジトリビルド未検証。
+
+## HANDOFF追記(2026-07-15) — poem/indexmap MSRV修正は対象外の確認
+
+- 姉妹リポジトリ(poem-cosmo-tauri/open-runo)で発見・修正した
+  「`rust-version=1.75`宣言と`poem`未ピンの不整合」バグは、本リポジトリ
+  (`rust-version = "1.80"`、poem不使用)には該当しない。対応不要。
