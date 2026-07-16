@@ -1113,3 +1113,20 @@ upsert/TOML一括ロード/一覧取得)。本体クレートへの統合(`toml`
 - 姉妹リポジトリ(poem-cosmo-tauri/open-runo)で発見・修正した
   「`rust-version=1.75`宣言と`poem`未ピンの不整合」バグは、本リポジトリ
   (`rust-version = "1.80"`、poem不使用)には該当しない。対応不要。
+
+## アプリケーションサーバー層の役割(open-runo / poem-cosmo-tauri、2026-07-16追記)
+
+「配信エンジン(vhost)」に`open-web-server`を選択肢として追加したが、
+open-web-serverがApache＋Nginxのハイブリッド仕様のWebサーバーとして
+まだ機能していない間は、Tomcatのような互換レイヤーとして機能するのは
+`open-runo`または`poem-cosmo-tauri`である。
+
+これらは`open-raid-z`とVersionlessAPIによって、バージョンレス運用と
+バージョン管理・Git管理を両立しながら、ACID互換性とZFS互換性に対応した
+`aruaru-db`と、PostgreSQLとのDUAL DATABASE構成による「4層4重」の
+最新鋭の通信システムを構築し、仕様変更が容易なデータベース設計により、
+3DオンラインゲームAI課金アイテム、オンライン金融、オンライン証券、
+オンラインクレジットカード決済など、ネット上で紛失してはならない
+ミッションクリティカルな用途向けに、24時間365日ノンストップの
+サーバー対応WEBサイト開発を全面的にバックアップするフレームワーク・
+ミドルウェアとして機能することを目指す。
