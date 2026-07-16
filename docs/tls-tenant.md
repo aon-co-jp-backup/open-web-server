@@ -77,21 +77,36 @@ curl -X POST http://127.0.0.1:8080/admin/tenants/tls-smoketest.local/tls \
 curl -k --resolve tls-smoketest.local:8443:127.0.0.1 https://tls-smoketest.local:8443/healthz
 ```
 
-## 意図的にスコープ外とした点(次回フェーズ候補)
+## ACME自動取得の進捗(2026-07-16、Phase 1完了・Phase 2は次回)
 
-- **ACME自動取得**: `poem-cosmo-tauri`側に既に実装・テスト済みの手書き
-  ACMEクライアント(HTTP-01/DNS-01/TLS-ALPN-01、`crates/
-  open-runo-router/src/acme.rs`)があり、本フェーズと同じ設計判断
-  (外部フレームワーク非依存の自前実装)に沿っている。次回フェーズで
-  この`ChallengeStore`+3チャレンジ型実装をこちらへ移植し、取得した
-  証明書を`TenantCertResolver::upsert_pem`へ自動投入する配線を追加する
-  想定。**調査結果(2026-07-16、EN/JP両言語)**: 本番運用のACME
-  クライアントとしては`instant-acme`(アクティブにメンテナンスされた
-  pure-Rust実装、レート制限・アカウントキャッシュ等の実務上の懸念に
-  対応済み)が2026年時点で推奨される選択肢である一方、既存の手書き実装は
-  既にテスト済みで新規依存を追加しない——本フェーズでは既存資産の移植を
-  優先し、`instant-acme`への切替は「本番運用のレート制限/アカウント
-  キャッシュが実際に問題になった場合の改善候補」として明記するに留める。
+- **完了(本フェーズ)**: `crates/open-web-server-gateway/src/acme.rs`
+  ——`ChallengeStore`(トークン→key-authorizationのインメモリ対応表)+
+  `GET /.well-known/acme-challenge/:token`ハンドラ。ACME CA(Let's
+  Encrypt等)や外部ACMEクライアント(certbot等)がこのプロセスに
+  向けて発行したチャレンジをそのまま配信できる(暗号/HTTPクライアント
+  依存なし、常時コンパイル)。`AppState.acme_challenges`として配線済み。
+  `cargo test -p open-web-server-gateway`(21件、新規`acme::tests`2件
+  含む)・`cargo test --workspace`ともgreen。
+- **意図的にスコープ外とした点(次回フェーズ、Phase 2)**: ACMEクライアント
+  本体(ディレクトリ探索・nonce管理・JWS署名・account/order/challenge/
+  finalizeステートマシン)は今回移植しなかった。`poem-cosmo-tauri`側に
+  既に実装・テスト済みの手書きACMEクライアント(HTTP-01/DNS-01/
+  TLS-ALPN-01、`crates/open-runo-router/src/acme.rs`の
+  `#[cfg(feature = "acme")] mod client`、~1500行)は、
+  `open_runo_core::{AppError, Result}`・`crate::hyper_compat::
+  {Handler, Params}`というpoem-cosmo-tauri固有の型に深く結合しており、
+  このリポジトリの別の型体系(`response::BoxBody`等)へ1パスで安全に
+  移植しきれる規模ではないと判断した——型を1つずつ対応させながら、
+  検証可能な単位に分割して次回セッションで移植することを推奨する。
+  今回作った`ChallengeStore`はそのまま移植先として使える設計にして
+  あるため、残る作業はクライアント本体のみ。**調査結果(2026-07-16、
+  EN/JP両言語)**: 本番運用のACMEクライアントとしては`instant-acme`
+  (アクティブにメンテナンスされたpure-Rust実装、レート制限・
+  アカウントキャッシュ等の実務上の懸念に対応済み)が2026年時点で
+  推奨される選択肢である一方、既存の手書き実装は既にテスト済みで
+  新規依存を追加しない——次回フェーズでも既存資産の移植を優先し、
+  `instant-acme`への切替は「本番運用のレート制限/アカウントキャッシュが
+  実際に問題になった場合の改善候補」として明記するに留める。
 - **HTTP/2・WebSocketアップグレードのTLS越し対応**: 現状`accept_tls_loop`
   は`http1::Builder`のみ(既存プレーンHTTPリスナーと同じ制約を踏襲)。
 - **`tenant_router::TenantConfig`とTLS証明書登録の統合**: 現状は

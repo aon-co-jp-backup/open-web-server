@@ -474,6 +474,28 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-16(続き) ACME HTTP-01チャレンジレスポンダ(Phase 1)を追加
+  — 前回HANDOFFの「次回フェーズ候補」を一部解消**: 新規
+  `crates/open-web-server-gateway/src/acme.rs`——`ChallengeStore`
+  (トークン→key-authorizationのインメモリ対応表)+
+  `GET /.well-known/acme-challenge/:token`ハンドラ。暗号/HTTP
+  クライアント依存が無いため常時コンパイル、`AppState.acme_challenges`
+  として配線済み。ACME CA(Let's Encrypt等)や外部ACMEクライアント
+  (certbot等)がこのプロセスに向けて発行したチャレンジをそのまま
+  配信できる。
+  **意図的にPhase 2(ACMEクライアント本体)は今回移植しなかった**:
+  `poem-cosmo-tauri`側の手書きACMEクライアント(HTTP-01/DNS-01/
+  TLS-ALPN-01、`open-runo-router/src/acme.rs`の
+  `#[cfg(feature = "acme")] mod client`、~1500行)は
+  `open_runo_core::{AppError, Result}`・`crate::hyper_compat::
+  {Handler, Params}`というpoem-cosmo-tauri固有の型に深く結合しており、
+  このリポジトリの型体系(`response::BoxBody`等)へ1パスで安全に移植
+  しきれる規模ではないと判断——型を1つずつ対応させながら次回セッション
+  で移植することを推奨する(詳細・判断根拠は`docs/tls-tenant.md`参照)。
+  **検証**: `cargo test -p open-web-server-gateway`(21件、新規
+  `acme::tests`2件含む)・`cargo test --workspace`(全クレート)
+  ともgreen(WSL Ubuntu、rustc/cargo 1.97)。
+
 - **2026-07-16 テナント別TLS終端(Phase 1) — open-web-server自体を
   Apache+Nginxハイブリッド相当に近づける最初の実装、WSL Ubuntu
   (rustc/cargo 1.97)で実TLSハンドシェイクまで検証済み**: ユーザーから

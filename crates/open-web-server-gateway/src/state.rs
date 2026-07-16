@@ -3,6 +3,7 @@ use std::sync::Arc;
 use open_web_server_ledger::{DbStateReader, Ledger, LedgerConfig};
 use open_web_server_wire::TenantCertResolver;
 
+use crate::acme::ChallengeStore;
 use crate::tenant_router::TenantRegistry;
 
 /// アプリケーション全体の共有状態。
@@ -21,6 +22,11 @@ pub struct AppState {
     /// 2026-07-16)。`tenants`とは独立した登録(証明書登録とHTTPルーティング
     /// 登録は別操作、`handlers::tls`のdoc comment参照)。
     pub tls_resolver: Arc<TenantCertResolver>,
+    /// ACME HTTP-01チャレンジレスポンス(`acme.rs`参照)。このプロセス
+    /// 自身はACMEクライアント本体を持たない(次回フェーズ、
+    /// `docs/tls-tenant.md`参照)が、外部ACMEクライアントが発行した
+    /// チャレンジを配信する側は常時有効。
+    pub acme_challenges: Arc<ChallengeStore>,
 }
 
 impl AppState {
@@ -39,8 +45,9 @@ impl AppState {
         let db_state_reader = DbStateReader::shared(open_runo_endpoint);
         let tenants = Arc::new(TenantRegistry::new());
         let tls_resolver = TenantCertResolver::new();
+        let acme_challenges = Arc::new(ChallengeStore::new());
 
-        Ok(Self { ledger, db_state_reader, tenants, tls_resolver })
+        Ok(Self { ledger, db_state_reader, tenants, tls_resolver, acme_challenges })
     }
 
     /// `OPEN_WEB_SERVER_DOMAINS_FILE` で指定された `domains.toml` があれば

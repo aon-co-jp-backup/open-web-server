@@ -8,6 +8,7 @@
 //! ルーティング/ハンドラの API 形状は元々の Poem 実装と互換性を保ちつつ、
 //! パッケージとしては Poem に依存しない (2026-07-10 スタック方針転換)。
 
+mod acme;
 mod app_proxy;
 mod handlers;
 mod middleware;
@@ -78,6 +79,9 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
         (Method::GET, p) if p.starts_with("/internal/db/state/") => {
             handlers::state_query::get_state_at_commit(state, p).await
+        }
+        (Method::GET, p) if p.starts_with("/.well-known/acme-challenge/") => {
+            acme::challenge_response_handler(&state.acme_challenges, &req).await
         }
         // 上記いずれにも一致しないパスは、①複数ドメインを動的に振り分ける
         // マルチテナントルーティング(open-easyweb構想、`tenant_router`)を
