@@ -21,7 +21,7 @@ const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 /// 第一実装として共有シークレットのヘッダ比較のみを行う(本番運用では
 /// mTLS・OAuth等への置き換えを推奨。CLAUDE.md HANDOFFに明記)。環境変数が
 /// 未設定の場合は開発用途とみなし無検証で通す(既存の挙動を壊さないため)。
-fn check_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+pub(crate) fn check_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
     let Ok(expected) = std::env::var("OPEN_WEB_SERVER_ADMIN_TOKEN") else {
         return Ok(());
     };

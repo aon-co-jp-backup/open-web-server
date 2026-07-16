@@ -75,5 +75,5 @@ pub use quic_channel::{
     insecure_client_config_trusting, send_mutation_over_quic, QuicServer, QuicServerConfig,
 };
 pub use replay_guard::{ReplayGuard, SecureChannel};
-pub use tls::TlsServerConfig;
+pub use tls::{build_tenant_server_config, TenantCertResolver, TlsServerConfig};
 pub use udp_channel::{Deduplicator, UdpChannelKeys, UdpReceiver, UdpSender};

@@ -474,6 +474,65 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-16 テナント別TLS終端(Phase 1) — open-web-server自体を
+  Apache+Nginxハイブリッド相当に近づける最初の実装、WSL Ubuntu
+  (rustc/cargo 1.97)で実TLSハンドシェイクまで検証済み**: ユーザーから
+  「ApacheやTomcatの代わりになるWEBミドルウェア・フレームワークとして、
+  ZFS互換・ACID互換のハイブリッドなど、まだ未完成の関連リポジトリの
+  完成度と実用性を高めてよい」との指示を受け、`open-web-server`の
+  既知の欠落(TLS終端を実nginx/certbot経由の外部プロセスに依存しており、
+  自己完結したApache+Nginx代替になっていない)から着手。
+  **設計判断の根拠(2026-07-16、EN/JP両言語でGoogle検索+GitHub調査
+  済み)**: `rustls::server::ResolvesServerCert` + ホスト名ごとの
+  `CertifiedKey`辞書というSNIベースの証明書切替パターンは、実世界の
+  同種実装(複数ドメインをTLS終端するRust製リバースプロキシ`rpxy`等)
+  でも使われている標準的な設計であることを確認済み。ACME自動取得に
+  関しては、2026年時点で`instant-acme`(アクティブにメンテナンスされた
+  pure-Rust実装、レート制限・アカウントキャッシュ等の実務上の懸念に
+  対応済み)が本番運用の推奨選択肢だが、`poem-cosmo-tauri`側に既に
+  実装・テスト済みの手書きACMEクライアント(HTTP-01/DNS-01/TLS-ALPN-01)
+  があり、新規依存を追加しないという既存方針とも一致するため、
+  今回は証明書の**手動/API登録**までを実装し、ACME自動化は
+  `poem-cosmo-tauri`側実装の移植として次回フェーズに明記するに留めた
+  (`docs/tls-tenant.md`に判断根拠を記載)。
+  **実装**: (1) `open-web-server-wire::TenantCertResolver`
+  (`crates/open-web-server-wire/src/tls.rs`)——`ResolvesServerCert`
+  実装、`upsert_pem`/`upsert_from_files`/`remove`/`contains`。
+  (2) `build_tenant_server_config(resolver)`——このリゾルバを使う
+  `rustls::ServerConfig`を組み立てる。(3)
+  `open-web-server-gateway`の`main.rs`に`accept_tls_loop`(既存の
+  プレーンHTTP`accept_loop`とルーティングロジックを完全共有、違いは
+  ハンドシェイク層のみ)、`OPEN_WEB_SERVER_TLS_BIND`環境変数で
+  有効化(未設定時は従来通りプレーンHTTPのみ、既存動作を壊さない)。
+  (4) 管理API`POST`/`DELETE /admin/tenants/:host/tls`
+  (`handlers/tls.rs`、既存の`OPEN_WEB_SERVER_ADMIN_TOKEN`認証を再利用、
+  証明書登録とHTTPルーティング登録は意図的に独立操作)。
+  **検証(実TLSハンドシェイク、新規テストテナントのみ・本番nginx
+  設定は一切変更していない)**: `cargo test -p open-web-server-wire
+  tls::`(4件)——`rcgen`の使い捨て自己署名証明書2組を使い、同一
+  `ServerConfig`が2つの異なるSNI名に対して実際に異なる証明書を返す
+  ことを実TCPループバック上のTLS 1.3ハンドシェイクで証明
+  (`real_tls_handshake_resolves_different_cert_per_sni`)。
+  `cargo test -p open-web-server-gateway
+  tests::tls_admin_registration_enables_real_tls_handshake_and_dispatch`
+  ——証明書登録→`accept_tls_loop`が実際にそのSNI名向けTLS
+  ハンドシェイクに成功→TLS越しの`GET /healthz`が実際に`dispatch()`
+  まで届き200を返す、というエンドツーエンドの経路を実TCP上で証明。
+  `cargo test --workspace`(全クレート)も実行し既存テストへの
+  リグレッションが無いことを確認(結果はこのエントリ更新直後の
+  コミットログ参照)。
+  **cargo実行環境について**: このセッションからはWSL Ubuntu
+  (`wsl -d Ubuntu`、rustc/cargo 1.97)経由でビルド・テストを実行できる
+  ことが判明(詳細はopen-runo側CLAUDE.mdの同日「運用ルール」節参照)
+  ——これにより過去のHANDOFFで繰り返し記録されていた「sandboxの
+  cargo 1.75では一部依存がedition2024を要求しビルドできない」という
+  制約を回避できるようになった。
+  **次回フェーズ候補**: (1) ACME自動取得(`poem-cosmo-tauri`の
+  `acme.rs`移植)、(2) `accept_tls_loop`のHTTP/2・WebSocketアップグレード
+  対応、(3) `tenant_router::TenantConfig`とTLS証明書登録の統合
+  (現状は`/admin/tenants`と`/admin/tenants/:host/tls`が別API)。
+  詳細は`docs/tls-tenant.md`を参照。
+
 - **2026-07-15 コードヘルス監査 — audit only, no changes**:
   `cargo build --workspace`/`cargo test --workspace`を実行し、ビルド成功
   (警告1件: `tenant_router.rs`の`len`/`is_empty`が未使用、実害なしの

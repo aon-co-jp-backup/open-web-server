@@ -14,6 +14,7 @@ open-web-server-core = { path = "../open-web-server-core" }
 open-web-server-wire = { path = "../open-web-server-wire" }
 open-web-server-ledger = { path = "../open-web-server-ledger" }
 tokio.workspace = true
+tokio-rustls.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
@@ -37,3 +38,4 @@ tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+rcgen.workspace = true

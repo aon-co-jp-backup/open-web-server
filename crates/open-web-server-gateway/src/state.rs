@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use open_web_server_ledger::{DbStateReader, Ledger, LedgerConfig};
+use open_web_server_wire::TenantCertResolver;
 
 use crate::tenant_router::TenantRegistry;
 
@@ -15,6 +16,11 @@ pub struct AppState {
     /// ドメイン/サブドメインごとのマルチテナントルーティングレジストリ
     /// (open-easyweb構想、`tenant_router`参照)。
     pub tenants: Arc<TenantRegistry>,
+    /// SNIに応じてテナントごとに証明書を切り替えるTLSリゾルバ
+    /// (open-web-serverをApache+Nginx相当の自己完結TLS終端にする第一歩、
+    /// 2026-07-16)。`tenants`とは独立した登録(証明書登録とHTTPルーティング
+    /// 登録は別操作、`handlers::tls`のdoc comment参照)。
+    pub tls_resolver: Arc<TenantCertResolver>,
 }
 
 impl AppState {
@@ -32,8 +38,9 @@ impl AppState {
         let ledger = Arc::new(Ledger::new(config, wal));
         let db_state_reader = DbStateReader::shared(open_runo_endpoint);
         let tenants = Arc::new(TenantRegistry::new());
+        let tls_resolver = TenantCertResolver::new();
 
-        Ok(Self { ledger, db_state_reader, tenants })
+        Ok(Self { ledger, db_state_reader, tenants, tls_resolver })
     }
 
     /// `OPEN_WEB_SERVER_DOMAINS_FILE` で指定された `domains.toml` があれば
