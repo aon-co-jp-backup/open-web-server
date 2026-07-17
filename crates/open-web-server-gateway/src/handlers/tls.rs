@@ -62,3 +62,46 @@ pub async fn remove_tenant_tls(state: Arc<AppState>, req: &Request<Incoming>, ho
         Err(e) => text_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
+
+#[cfg(feature = "acme")]
+#[derive(Deserialize)]
+pub struct ObtainAcmeCertRequest {
+    /// ACME v2 ディレクトリURL(例: Let's Encrypt本番
+    /// "https://acme-v02.api.letsencrypt.org/directory"、ステージング
+    /// "https://acme-staging-v02.api.letsencrypt.org/directory")。
+    pub directory_url: String,
+    pub contact_email: String,
+}
+
+/// `POST /admin/tenants/:host/tls/acme` — HTTP-01でACME証明書を実際に
+/// 取得し、成功すれば即座に`TenantCertResolver`へ登録する(手動での
+/// `POST /admin/tenants/:host/tls`呼び出しが不要になる、自動化された
+/// 経路)。`acme` feature有効時のみコンパイルされる。
+///
+/// **前提条件(呼び出し前に必ず満たすこと)**: HTTP-01検証のため、ACME CAが
+/// このプロセスの`GET /.well-known/acme-challenge/*`へ公開インターネット
+/// 経由でポート80から到達できる必要がある(本関数はチャレンジの発行・
+/// 公開・後始末は自動で行うが、そこへの到達性自体は運用者側の責任)。
+#[cfg(feature = "acme")]
+pub async fn obtain_tenant_tls_via_acme(
+    state: Arc<AppState>,
+    req: Request<Incoming>,
+    host: &str,
+) -> Response<BoxBody> {
+    if let Err(resp) = check_admin_auth(&req) {
+        return resp;
+    }
+
+    let body: ObtainAcmeCertRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+
+    match crate::acme::obtain_certificate_http01(&body.directory_url, host, &body.contact_email, &state.acme_challenges).await {
+        Ok((cert_pem, key_pem)) => match state.tls_resolver.upsert_pem(host, cert_pem.as_bytes(), key_pem.as_bytes()) {
+            Ok(()) => text_response(StatusCode::OK, format!("acme certificate obtained and registered for '{host}'")),
+            Err(e) => text_response(StatusCode::INTERNAL_SERVER_ERROR, format!("acme certificate obtained but registration failed for '{host}': {e}")),
+        },
+        Err(e) => text_response(StatusCode::BAD_GATEWAY, format!("acme certificate request failed for '{host}': {e}")),
+    }
+}

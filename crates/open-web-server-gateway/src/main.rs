@@ -68,6 +68,14 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
                 .to_string();
             handlers::tls::remove_tenant_tls(state, &req, &host).await
         }
+        #[cfg(feature = "acme")]
+        (Method::POST, p) if p.starts_with("/admin/tenants/") && p.ends_with("/tls/acme") => {
+            let host = p
+                .trim_start_matches("/admin/tenants/")
+                .trim_end_matches("/tls/acme")
+                .to_string();
+            handlers::tls::obtain_tenant_tls_via_acme(state, req, &host).await
+        }
         (Method::DELETE, p) if p.starts_with("/admin/tenants/") => {
             let host = p.trim_start_matches("/admin/tenants/").to_string();
             handlers::tenants::remove_tenant(state, &req, &host).await

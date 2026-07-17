@@ -77,36 +77,51 @@ curl -X POST http://127.0.0.1:8080/admin/tenants/tls-smoketest.local/tls \
 curl -k --resolve tls-smoketest.local:8443:127.0.0.1 https://tls-smoketest.local:8443/healthz
 ```
 
-## ACME自動取得の進捗(2026-07-16、Phase 1完了・Phase 2は次回)
+## ACME自動取得の進捗(2026-07-16 Phase 1・2026-07-17 Phase 2、両方完了)
 
-- **完了(本フェーズ)**: `crates/open-web-server-gateway/src/acme.rs`
-  ——`ChallengeStore`(トークン→key-authorizationのインメモリ対応表)+
-  `GET /.well-known/acme-challenge/:token`ハンドラ。ACME CA(Let's
-  Encrypt等)や外部ACMEクライアント(certbot等)がこのプロセスに
+- **Phase 1(2026-07-16、完了)**: `crates/open-web-server-gateway/src/
+  acme.rs`——`ChallengeStore`(トークン→key-authorizationのインメモリ
+  対応表)+`GET /.well-known/acme-challenge/:token`ハンドラ。ACME CA
+  (Let's Encrypt等)や外部ACMEクライアント(certbot等)がこのプロセスに
   向けて発行したチャレンジをそのまま配信できる(暗号/HTTPクライアント
   依存なし、常時コンパイル)。`AppState.acme_challenges`として配線済み。
-  `cargo test -p open-web-server-gateway`(21件、新規`acme::tests`2件
-  含む)・`cargo test --workspace`ともgreen。
-- **意図的にスコープ外とした点(次回フェーズ、Phase 2)**: ACMEクライアント
-  本体(ディレクトリ探索・nonce管理・JWS署名・account/order/challenge/
-  finalizeステートマシン)は今回移植しなかった。`poem-cosmo-tauri`側に
-  既に実装・テスト済みの手書きACMEクライアント(HTTP-01/DNS-01/
-  TLS-ALPN-01、`crates/open-runo-router/src/acme.rs`の
-  `#[cfg(feature = "acme")] mod client`、~1500行)は、
-  `open_runo_core::{AppError, Result}`・`crate::hyper_compat::
-  {Handler, Params}`というpoem-cosmo-tauri固有の型に深く結合しており、
-  このリポジトリの別の型体系(`response::BoxBody`等)へ1パスで安全に
-  移植しきれる規模ではないと判断した——型を1つずつ対応させながら、
-  検証可能な単位に分割して次回セッションで移植することを推奨する。
-  今回作った`ChallengeStore`はそのまま移植先として使える設計にして
-  あるため、残る作業はクライアント本体のみ。**調査結果(2026-07-16、
-  EN/JP両言語)**: 本番運用のACMEクライアントとしては`instant-acme`
-  (アクティブにメンテナンスされたpure-Rust実装、レート制限・
-  アカウントキャッシュ等の実務上の懸念に対応済み)が2026年時点で
-  推奨される選択肢である一方、既存の手書き実装は既にテスト済みで
-  新規依存を追加しない——次回フェーズでも既存資産の移植を優先し、
-  `instant-acme`への切替は「本番運用のレート制限/アカウントキャッシュが
-  実際に問題になった場合の改善候補」として明記するに留める。
+- **Phase 2(2026-07-17、完了)**: ACMEクライアント本体(ディレクトリ
+  探索・nonce管理・JWS署名・account/order/challenge/finalize
+  ステートマシン)を`poem-cosmo-tauri`側の実装
+  (`crates/open-runo-router/src/acme.rs`の
+  `#[cfg(feature = "acme")] mod client`)から移植完了。型の違い
+  (`open_runo_core::{AppError, Result}` → `anyhow::Result`)以外は
+  ロジック無変更——JWS/JWK/base64url/CSR構築は元の実装のまま。
+  `open-web-server-gateway`の`acme` Cargo feature(既定オフ、
+  `reqwest`/`ring`をoptional依存として追加)でのみコンパイルされる。
+  新規`obtain_certificate_http01(directory_url, domain, contact_email,
+  &ChallengeStore) -> Result<(cert_pem, key_pem)>`と、それを呼んで
+  成功時に`TenantCertResolver::upsert_pem`へ自動登録する管理API
+  `POST /admin/tenants/:host/tls/acme`
+  (`{"directory_url": "...", "contact_email": "..."}`、`acme` feature
+  有効時のみルート登録)を追加。
+  **検証**: `cargo test -p open-web-server-gateway --features acme`
+  (27件、新規`acme::client::tests`4件+モックCA相手のエンドツーエンド
+  テスト1件含む)がgreen。特に
+  `acme::tests::full_http01_flow_against_mock_ca_with_real_challenge_loopback`
+  は、本物の`challenge_response_handler`(実運用と同一コード)と、
+  実TCP上のモックACME CAを組み合わせ、モックCA側が**本当に
+  ループバックHTTP経由でこのプロセスの`.well-known/acme-challenge`へ
+  GETしてkey authorizationを確認する**(JWS署名自体の暗号検証は行わない
+  が、チャレンジ検証だけは偽装なしで実施)ことで、discover→account→
+  order→challenge公開→検証→finalize→ダウンロードの一気通貫を実証。
+  `cargo test --workspace --features open-web-server-gateway/acme`も
+  green。
+  **正直な限界(未検証のまま)**: 実Let's Encrypt(staging/production)
+  への実際の接続は本セッションでは検証していない——公開ドメイン・
+  ポート80への外部到達性が必要なため(次項「実VPS・実ドメインでの
+  動作検証」参照)。**調査結果(2026-07-16、EN/JP両言語)**: 本番運用の
+  ACMEクライアントとしては`instant-acme`(アクティブにメンテナンスされた
+  pure-Rust実装、レート制限・アカウントキャッシュ等の実務上の懸念に
+  対応済み)が2026年時点で推奨される選択肢である一方、既存の手書き実装は
+  既にテスト済みで新規依存を追加しない——`instant-acme`への切替は
+  「本番運用のレート制限/アカウントキャッシュが実際に問題になった場合の
+  改善候補」として明記するに留める。
 - **HTTP/2・WebSocketアップグレードのTLS越し対応**: 現状`accept_tls_loop`
   は`http1::Builder`のみ(既存プレーンHTTPリスナーと同じ制約を踏襲)。
 - **`tenant_router::TenantConfig`とTLS証明書登録の統合**: 現状は

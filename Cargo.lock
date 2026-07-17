@@ -1390,6 +1390,8 @@ dependencies = [
  "opentelemetry-stdout",
  "opentelemetry_sdk",
  "rcgen",
+ "reqwest 0.12.28",
+ "ring",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

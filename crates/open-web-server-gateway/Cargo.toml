@@ -35,7 +35,16 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry-stdout.workspace = true
 tracing-opentelemetry.workspace = true
+# ACME(acme feature)向け。デフォルトfeatureには含めない依存を分離するため
+# 個別に宣言(rcgenはTLSテスト・ACME CSR生成の両方で使うため常時)。
+rcgen.workspace = true
+reqwest = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+
+[features]
+default = []
+# RFC 8555 HTTP-01によるACME自動証明書取得(`acme.rs`のクライアント本体)。
+acme = ["dep:reqwest", "dep:ring"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-rcgen.workspace = true

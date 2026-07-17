@@ -474,6 +474,35 @@ aruaru-dbへの読み出しルートを新設する必要がある(open-runo/aru
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-17 ACMEクライアント本体(Phase 2)を`poem-cosmo-tauri`から
+  移植完了 — ユーザー指示「123の順で」の1番目**: 前回HANDOFF(Phase 1)
+  で「型が深く結合しており1パスでは移植しきれない」としていた
+  ACMEクライアント本体(ディレクトリ探索・nonce管理・JWS署名・
+  account/order/challenge/finalizeステートマシン)を、実際には
+  `open_runo_core::{AppError, Result}` → `anyhow::Result`という型の
+  違いを機械的に置き換えるだけで移植できることが分かり、完了させた
+  (JWS/JWK/base64url/CSR構築のロジックは無変更)。
+  `open-web-server-gateway`に`acme` Cargo feature(既定オフ、
+  `reqwest`/`ring`をoptional依存化)を新設し、その配下でのみ
+  コンパイル。`obtain_certificate_http01()`+管理API
+  `POST /admin/tenants/:host/tls/acme`
+  (`{"directory_url","contact_email"}`、成功時は自動で
+  `TenantCertResolver::upsert_pem`へ登録)を追加。
+  **検証**: `cargo test -p open-web-server-gateway --features acme`
+  (27件、新規4件+モックCAエンドツーエンドテスト1件)・
+  `cargo test --workspace --features open-web-server-gateway/acme`
+  ともgreen。特にエンドツーエンドテストは、本物の
+  `challenge_response_handler`と実TCP上のモックACME CAを組み合わせ、
+  モックCAが**本当にループバックHTTP経由でこのプロセスの
+  `.well-known/acme-challenge`へGETしてkey authorizationを確認する**
+  ことで、discover→account→order→challenge公開→検証→finalize→
+  ダウンロードの一気通貫を実証(JWS署名自体の暗号検証はモックCA側では
+  行わない——それにはこのテストが検証したいクライアント側ロジックを
+  サーバー側で再実装する必要があるため)。詳細は`docs/tls-tenant.md`。
+  **正直な限界**: 実Let's Encrypt(staging/production)への実接続は
+  未検証——公開ドメイン・ポート80への外部到達性が必要なため、次の
+  優先項目「実VPS・実ドメインでの動作検証」で扱う。
+
 - **2026-07-16(続き) ACME HTTP-01チャレンジレスポンダ(Phase 1)を追加
   — 前回HANDOFFの「次回フェーズ候補」を一部解消**: 新規
   `crates/open-web-server-gateway/src/acme.rs`——`ChallengeStore`
