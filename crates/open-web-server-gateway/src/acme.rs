@@ -326,7 +326,7 @@ mod client {
 
         pub async fn get_authorization(&mut self, url: &str) -> Result<AcmeAuthorization> {
             let (_headers, body) = self.post_jws(url, None).await?;
-            serde_json::from_value(body).map_err(|e| anyhow!("ACME authorization parse failed: {e}"))
+            serde_json::from_value(body.clone()).map_err(|e| anyhow!("ACME authorization parse failed: {e}; raw body: {body}"))
         }
 
         pub fn key_authorization_for(&self, token: &str) -> String {
