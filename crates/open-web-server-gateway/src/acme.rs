@@ -360,8 +360,20 @@ mod client {
 
         pub async fn finalize_order(&mut self, order: &AcmeOrder, domain: &str) -> Result<(AcmeOrder, String)> {
             let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("certificate key generation failed: {e}"))?;
-            let params = rcgen::CertificateParams::new(vec![domain.to_string()])
+            let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
                 .map_err(|e| anyhow!("certificate params failed: {e}"))?;
+            // `CertificateParams::new` defaults `distinguished_name` to
+            // rcgen's own placeholder ("CN=rcgen self signed cert"), meant
+            // for throwaway self-signed certs (like the ones this same
+            // file's tests generate). Real Let's Encrypt rejected a CSR
+            // built with that default outright ("rejectedIdentifier: ...
+            // Domain name contains an invalid character") because the CN
+            // isn't one of the requested SANs -- discovered running this
+            // against the real staging CA. CA/Browser Forum baseline
+            // requirements have deprecated CN-based validation in favor of
+            // SANs anyway, so clearing it (SAN-only CSR) is both the fix
+            // and the modern-practice choice, not just a workaround.
+            params.distinguished_name = rcgen::DistinguishedName::new();
             let csr = params.serialize_request(&key_pair).map_err(|e| anyhow!("CSR generation failed: {e}"))?;
             let key_pem = key_pair.serialize_pem();
 
