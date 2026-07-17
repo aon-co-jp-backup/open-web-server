@@ -323,18 +323,56 @@ mod client {
             Ok(())
         }
 
-        pub async fn new_order(&mut self, domains: &[String]) -> Result<AcmeOrder> {
+        /// Returns the freshly created order together with its own URL
+        /// (from the `Location` response header) -- callers need that URL
+        /// to poll the order's status after finalizing, since `AcmeOrder`
+        /// itself doesn't carry a self-referential field in the response
+        /// body (RFC 8555 §7.1.3).
+        pub async fn new_order(&mut self, domains: &[String]) -> Result<(AcmeOrder, String)> {
             let url = self.directory.new_order.clone();
             let identifiers: Vec<serde_json::Value> =
                 domains.iter().map(|d| serde_json::json!({ "type": "dns", "value": d })).collect();
             let payload = serde_json::json!({ "identifiers": identifiers });
-            let (_headers, body) = self.post_jws(&url, Some(payload)).await?;
-            serde_json::from_value(body).map_err(|e| anyhow!("ACME order parse failed: {e}"))
+            let (headers, body) = self.post_jws(&url, Some(payload)).await?;
+            let order_url = headers
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| anyhow!("ACME newOrder response missing Location"))?
+                .to_string();
+            let order = serde_json::from_value(body).map_err(|e| anyhow!("ACME order parse failed: {e}"))?;
+            Ok((order, order_url))
         }
 
         pub async fn get_authorization(&mut self, url: &str) -> Result<AcmeAuthorization> {
             let (_headers, body) = self.post_jws(url, None).await?;
             serde_json::from_value(body.clone()).map_err(|e| anyhow!("ACME authorization parse failed: {e}; raw body: {body}"))
+        }
+
+        /// POST-as-GET the order URL itself (RFC 8555 §7.1.3) -- used to
+        /// poll status after finalizing, since a CA is allowed to answer
+        /// finalize with `status: "processing"` and only populate
+        /// `certificate` once issuance actually completes.
+        pub async fn get_order(&mut self, url: &str) -> Result<AcmeOrder> {
+            let (_headers, body) = self.post_jws(url, None).await?;
+            serde_json::from_value(body.clone()).map_err(|e| anyhow!("ACME order parse failed: {e}; raw body: {body}"))
+        }
+
+        /// Poll `order_url` until its status leaves `"processing"` (the
+        /// state finalize commonly leaves it in while the CA actually
+        /// signs the certificate -- discovered running against real Let's
+        /// Encrypt staging, where finalize's own response never carries
+        /// `certificate` directly). Mirrors
+        /// [`Self::poll_authorization_until_valid`]'s fixed-delay approach.
+        pub async fn poll_order_until_valid(&mut self, order_url: &str, max_attempts: u32) -> Result<AcmeOrder> {
+            for _ in 0..max_attempts {
+                let order = self.get_order(order_url).await?;
+                match order.status.as_str() {
+                    "valid" => return Ok(order),
+                    "processing" | "pending" => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+                    other => return Err(anyhow!("ACME order {order_url} ended in status {other}")),
+                }
+            }
+            Err(anyhow!("ACME order {order_url} still processing after {max_attempts} attempts"))
         }
 
         pub fn key_authorization_for(&self, token: &str) -> String {
@@ -428,7 +466,7 @@ mod client {
     ) -> Result<(String, String)> {
         let mut client = AcmeClient::discover(directory_url).await?;
         client.new_account(&[contact_email.to_string()], true).await?;
-        let order = client.new_order(&[domain.to_string()]).await?;
+        let (order, order_url) = client.new_order(&[domain.to_string()]).await?;
 
         for auth_url in &order.authorizations {
             let auth = client.get_authorization(auth_url).await?;
@@ -449,8 +487,18 @@ mod client {
             challenges.remove(&token);
         }
 
-        let (finalized, key_pem) = client.finalize_order(&order, domain).await?;
-        let cert_url = finalized.certificate.ok_or_else(|| anyhow!("ACME order finalized without a certificate URL"))?;
+        let (_finalized, key_pem) = client.finalize_order(&order, domain).await?;
+        // Real CAs commonly answer finalize with `status: "processing"` and
+        // no `certificate` yet -- the order has to be polled (POST-as-GET)
+        // until issuance actually completes (RFC 8555 §7.4). Discovered
+        // running this against real Let's Encrypt staging: the original
+        // code expected `certificate` directly on finalize's own response,
+        // which only happens to work against a CA fast/synchronous enough
+        // to finish issuing within that single round trip.
+        let valid_order = client.poll_order_until_valid(&order_url, 20).await?;
+        let cert_url = valid_order
+            .certificate
+            .ok_or_else(|| anyhow!("ACME order reached 'valid' status without a certificate URL"))?;
         let cert_pem = client.download_certificate(&cert_url).await?;
         Ok((cert_pem, key_pem))
     }
@@ -697,6 +745,27 @@ mod tests {
                                     }
                                     (&Method::POST, "/finalize/1") => {
                                         finalized.store(true, Ordering::SeqCst);
+                                        json_resp(
+                                            StatusCode::OK,
+                                            &serde_json::json!({
+                                                "status": "valid",
+                                                "authorizations": [format!("{base}/authz/1")],
+                                                "finalize": format!("{base}/finalize/1"),
+                                                "certificate": format!("{base}/cert/1"),
+                                            }),
+                                            &[("replay-nonce", nonce)],
+                                        )
+                                    }
+                                    (&Method::POST, "/order/1") => {
+                                        // Real CAs (Let's Encrypt staging,
+                                        // discovered 2026-07-17) commonly
+                                        // answer finalize with "processing"
+                                        // and only reach "valid" +
+                                        // `certificate` once polled via the
+                                        // order's own URL -- this mock
+                                        // returns "valid" on the very first
+                                        // poll since the finalize handler
+                                        // above already "issued" synchronously.
                                         json_resp(
                                             StatusCode::OK,
                                             &serde_json::json!({
