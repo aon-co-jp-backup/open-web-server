@@ -197,7 +197,15 @@ mod client {
         #[serde(rename = "type")]
         pub challenge_type: String,
         pub url: String,
-        pub token: String,
+        /// 実際のLet's Encrypt(staging、2026-07-17実機確認)は`token`を
+        /// 持たないチャレンジ型(`dns-persist-01`、ACME ARI関連の新しい
+        /// 実験的チャレンジ)も同じ`authorizations`配列内に含めて返す。
+        /// RFC 8555の標準チャレンジ型(http-01/dns-01/tls-alpn-01)は
+        /// `token`必須だが、非標準/将来のチャレンジ型は必須としない
+        /// CAもあることが実地検証で判明したため`Option`にした——
+        /// 必須`String`のままだと、使わない他のチャレンジ型に`token`が
+        /// 無いだけで配列全体のデシリアライズが失敗する実バグがあった。
+        pub token: Option<String>,
         pub status: String,
     }
 
@@ -417,12 +425,16 @@ mod client {
                 .iter()
                 .find(|c| c.challenge_type == "http-01")
                 .ok_or_else(|| anyhow!("no http-01 challenge offered"))?;
+            let token = challenge
+                .token
+                .clone()
+                .ok_or_else(|| anyhow!("http-01 challenge unexpectedly has no token"))?;
 
-            let key_auth = client.key_authorization_for(&challenge.token);
-            challenges.publish(challenge.token.clone(), key_auth);
+            let key_auth = client.key_authorization_for(&token);
+            challenges.publish(token.clone(), key_auth);
             client.respond_to_challenge(&challenge.url).await?;
             client.poll_authorization_until_valid(auth_url, 20).await?;
-            challenges.remove(&challenge.token);
+            challenges.remove(&token);
         }
 
         let (finalized, key_pem) = client.finalize_order(&order, domain).await?;
