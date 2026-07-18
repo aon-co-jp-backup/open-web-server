@@ -535,6 +535,67 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-19 `KeyGuardian`にファイルバックド永続化を追加
+  — 前回HANDOFF(2026-07-18)で明記した「正直な開示: プロセス内メモリのみ、
+  再起動で全キー消失」というギャップの解消**: このリポジトリの根本方針
+  (24時間365日ノンストップ・「二重課金」も「データ消失」も起こさない
+  ミッションクリティカル設計)に対し、自己運用型APIキーレジストリ自体が
+  再起動で発行済みキー・失効状態を丸ごと失う設計は矛盾するとの指摘を
+  受けて着手。新規DBエンジン・外部サービスは追加せず、既存のこの
+  エコシステムの「軽量なローカル永続化」の作法(`audiocafe-tokyo-rust`の
+  `cron.rs`が`*-cache.json`へ`serde_json::to_string_pretty`+
+  `std::fs::write`で書く方式と同じ重さ感)に、キーデータの重要性に見合う
+  **アトミック書き込み**(一時ファイルへ書いてから`rename`、クラッシュ
+  時に半端なJSONで永続化ファイルが壊れることを防ぐ)を足したもの。
+  - `crates/open-web-server-gateway/src/keyring.rs`: `GuardianConfig`に
+    `persistence_path: Option<PathBuf>`を追加(`from_env()`が新規の
+    `OPEN_WEB_SERVER_KEY_STORE_PATH`環境変数から読む。未設定時は既存の
+    プロセス内メモリのみの挙動を一切変えない、既存デプロイ・既存テスト
+    への影響ゼロを優先)。`issue`/`revoke_owner`/`verify`内の期限切れ
+    自動クリーンの3箇所すべてで、レコードの`Mutex`ガードを保持したまま
+    (`persist_locked`)ハッシュ済みキーのみのJSONをアトミック書き込み
+    する——ロックを離してから書くと2スレッドの書き込み順序が入れ替わり
+    「後勝ちだが古い内容」で上書きされるレースになり得るため、ロック
+    保持中に直列化して書く設計とした(プレーンテキストキーは既存設計
+    通り一切保存しない)。
+  - `KeyGuardian::load_from_disk(config)`を新設(`KeyGuardian::new`は
+    テスト・後方互換のため残す)。永続化ファイルが無い/読めない/JSON
+    パース失敗のいずれでも`tracing::warn!`(または未作成時は`info!`)を
+    出すのみで**パニックせず空のレジストリから起動する**——補助的な
+    認証利便性機能であり本体の起動を止める理由にはしない、という
+    既存のACME/監査ログ等と同じ「補助系の失敗は権威パスをブロック
+    しない」設計方針を踏襲。`crates/open-web-server-gateway/src/
+    state.rs`の`AppState::from_env()`を`KeyGuardian::new(...)`から
+    `KeyGuardian::load_from_disk(...)`へ差し替え。
+  - **検証**: 新規依存追加なし(`serde_json`は既存依存)。
+    `cargo build -p open-web-server-gateway`成功。`cargo test -p
+    open-web-server-gateway`は**34件全green**(前回29件から+5件が
+    今回の永続化テスト): (1)キー発行→実一時ファイルパスへ永続化した
+    独立した第二の`KeyGuardian`インスタンスが同じファイルから状態を
+    復元し`verify()`が正しく認識する往復実証
+    (`issued_key_survives_reload_into_a_fresh_instance`)、(2)失効も
+    同様に永続化・再読込後に生存する実証
+    (`revocation_survives_persist_and_reload`)、(3)永続化ファイルが
+    存在しない場合はパニックせず空レジストリで起動
+    (`missing_persistence_file_starts_empty_without_crashing`)、
+    (4)非JSONの壊れたファイルでもパニックせず空レジストリで起動
+    (`corrupted_persistence_file_starts_empty_without_crashing`)、
+    (5)`verify()`内の期限切れ自動クリーンによる削除もディスクへ
+    反映される実証(`expiry_cleanup_persists_removal`)。既存の
+    `keyring`単体テスト6件・`handlers::keys`のテスト・実HTTP経由の
+    統合テスト`keyguardian_issued_key_authorizes_admin_requests_over_
+    real_http`を含む既存29件は無変更のまま全てgreen。
+    `cargo test --workspace`も全クレートでリグレッション無し(gateway
+    34件・ledger 20件(1件ignored)・wire 18件、他クレートは既存通り)。
+  - **正直な開示・次にすべきこと**: (1) `open-web-server-ledger`との
+    本格統合(WAL/監査ログと同じ永続化層への統合)は今回のスコープ外
+    (今回はシンプルなJSONファイル1本に留めた、前回HANDOFFが明記した
+    次段階課題そのものへの対応としては最小実装)。(2) 永続化ファイルの
+    ローテーション・サイズ上限は未実装(キー件数が非常に多い運用では
+    将来検討)。(3) マルチインスタンス(複数プロセス)間での永続化
+    ファイル共有・ロック競合(NFS等での同時書き込み)は未検証——単一
+    プロセスでの再起動耐性のみを今回のスコープとした。
+
 - **2026-07-18 `KeyGuardian`(自己運用型APIキーレジストリ)を新規実装
   — ユーザー指示「第二のTomcatでREST API不要でAPIキーの自動発行・
   自動承認・自動廃棄・APIキーを意識しない仕様、WunderGraph Cosmo有料版

@@ -50,7 +50,7 @@ impl AppState {
         let tenants = Arc::new(TenantRegistry::new());
         let tls_resolver = TenantCertResolver::new();
         let acme_challenges = Arc::new(ChallengeStore::new());
-        let keyring = Arc::new(KeyGuardian::new(GuardianConfig::from_env()));
+        let keyring = Arc::new(KeyGuardian::load_from_disk(GuardianConfig::from_env()));
 
         Ok(Self { ledger, db_state_reader, tenants, tls_resolver, acme_challenges, keyring })
     }
