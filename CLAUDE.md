@@ -509,6 +509,48 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-18 `KeyGuardian`(自己運用型APIキーレジストリ)を新規実装
+  — ユーザー指示「第二のTomcatでREST API不要でAPIキーの自動発行・
+  自動承認・自動廃棄・APIキーを意識しない仕様、WunderGraph Cosmo有料版
+  互換性向上」**: `RPoem`/`RCosmo`の`crates/open-runo-router/src/
+  keyring.rs`と同じ設計(auto-issue・auto-revoke・期限切れの
+  auto-clean・EWMAによる異常検知の自動防衛)を、
+  `crates/open-web-server-gateway/src/keyring.rs`として自己完結で
+  再実装した(**RPoem側の`open_runo_db::DbBackend`には依存しない**
+  ——別リポジトリのcrateへ直接依存させない既存方針を守るため、
+  ロジックのみを移植し、永続化は本リポジトリ独自のプロセス内メモリ
+  実装とした)。
+  - `handlers::keys`: `POST /admin/keys`(自動発行)・
+    `POST /admin/keys/revoke`(owner名義の全キーを自動失効)・
+    `GET /admin/keys`(発行済みキー件数のみ、プレーンテキストは
+    再表示しない設計)。
+  - `handlers::tenants::check_admin_auth`を拡張し、既存の静的共有
+    シークレット(`x-admin-token`)**だけでなく**、`KeyGuardian`が
+    発行した`Authorization: Bearer <key>`でも管理APIを通せるように
+    した(**「APIキーを意識しない」の核心**: 一度キーを発行すれば、
+    以後の呼び出し元は共有シークレットの存在自体を知らなくてよい)。
+    最初の1本を発行する行為だけは、既存の静的シークレットを持つ人が
+    行うブートストラップ設計(`handlers/keys.rs`のdoc comment参照)。
+    `handlers::tls`の3エンドポイントも含め、既存の全管理APIへ
+    後方互換を保ったまま反映(引数追加のみ、静的シークレット単体でも
+    引き続き動作する)。
+  - **検証**: `cargo test -p open-web-server-gateway`で**29件全green**
+    (新規8件: `keyring`モジュール単体6件+`handlers::keys`のヘッダ解析
+    単体1件+実HTTP経由のエンドツーエンド統合テスト1件)。統合テストは
+    実際に(1)静的シークレットで`POST /admin/keys`を叩いてキーを自動
+    発行→(2)発行された動的キーのみ(静的シークレットは一切送らず)で
+    `GET /admin/tenants`が通ること→(3)`POST /admin/keys/revoke`で
+    自動失効させた後は同じキーがもう通らないこと、を実際のTCP接続・
+    HTTPリクエストで確認した(型チェックのみでの完了報告ではない)。
+    `cargo test --workspace`もリグレッション無し。
+  - **正直な開示・次にすべきこと**: (1) 現状はプロセス内メモリのみ
+    (再起動で全キー消失)。`open-web-server-ledger`との統合による
+    永続化が次段階の課題(RPoem側はPostgreSQL永続化まで実装済み)。
+    (2) SCIMプロビジョニング連動の自動発行(RPoem側は`scim_create_user_
+    handler`等と連動済み)は本リポジトリにSCIM自体が無いため範囲外
+    のまま。(3) 発行済みキーの一覧・owner別内訳等の可視化APIは
+    件数のみ(`GET /admin/keys`)に留まり、詳細一覧は未実装。
+
 - **2026-07-17 ACMEクライアント本体(Phase 2)を`poem-cosmo-tauri`から
   移植完了 — ユーザー指示「123の順で」の1番目**: 前回HANDOFF(Phase 1)
   で「型が深く結合しており1パスでは移植しきれない」としていた

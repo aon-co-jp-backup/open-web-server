@@ -35,7 +35,7 @@ pub async fn upsert_tenant_tls(
     req: Request<Incoming>,
     host: &str,
 ) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(&req) {
+    if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
 
@@ -53,7 +53,7 @@ pub async fn upsert_tenant_tls(
 /// `DELETE /admin/tenants/:host/tls` — 登録済み証明書を削除する
 /// (`tenant_router::remove`と同様、未登録でも冪等に成功する)。
 pub async fn remove_tenant_tls(state: Arc<AppState>, req: &Request<Incoming>, host: &str) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(req) {
+    if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
 
@@ -88,7 +88,7 @@ pub async fn obtain_tenant_tls_via_acme(
     req: Request<Incoming>,
     host: &str,
 ) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(&req) {
+    if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
 

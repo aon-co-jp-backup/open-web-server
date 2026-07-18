@@ -4,12 +4,16 @@ use open_web_server_ledger::{DbStateReader, Ledger, LedgerConfig};
 use open_web_server_wire::TenantCertResolver;
 
 use crate::acme::ChallengeStore;
+use crate::keyring::{GuardianConfig, KeyGuardian};
 use crate::tenant_router::TenantRegistry;
 
 /// アプリケーション全体の共有状態。
 #[derive(Clone)]
 pub struct AppState {
     pub ledger: Arc<Ledger>,
+    /// 自己運用型APIキーレジストリ(第二のTomcat、WunderGraph Cosmo
+    /// Enterprise互換の自動発行・自動失効・自動防衛、`keyring`参照)。
+    pub keyring: Arc<KeyGuardian>,
     /// VersionLessAPI + Git-on-SQL ハイブリッドの読み出し側(拡張要件(1))。
     /// `Ledger`の書き込みパスとは独立したopen-runoへのHTTPクライアント
     /// (詳細は`DbStateReader`のdoc comment参照)。
@@ -46,8 +50,9 @@ impl AppState {
         let tenants = Arc::new(TenantRegistry::new());
         let tls_resolver = TenantCertResolver::new();
         let acme_challenges = Arc::new(ChallengeStore::new());
+        let keyring = Arc::new(KeyGuardian::new(GuardianConfig::from_env()));
 
-        Ok(Self { ledger, db_state_reader, tenants, tls_resolver, acme_challenges })
+        Ok(Self { ledger, db_state_reader, tenants, tls_resolver, acme_challenges, keyring })
     }
 
     /// `OPEN_WEB_SERVER_DOMAINS_FILE` で指定された `domains.toml` があれば

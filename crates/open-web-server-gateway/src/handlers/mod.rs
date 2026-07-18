@@ -1,4 +1,5 @@
 pub mod items;
+pub mod keys;
 pub mod state_query;
 pub mod tenants;
 pub mod tls;

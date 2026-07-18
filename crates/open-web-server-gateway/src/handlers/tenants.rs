@@ -16,12 +16,10 @@ use crate::tenant_router::{TenantConfig, TenantError};
 
 const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
-/// `OPEN_WEB_SERVER_ADMIN_TOKEN` が設定されている場合のみ検証する簡易認証。
-///
-/// 第一実装として共有シークレットのヘッダ比較のみを行う(本番運用では
-/// mTLS・OAuth等への置き換えを推奨。CLAUDE.md HANDOFFに明記)。環境変数が
-/// 未設定の場合は開発用途とみなし無検証で通す(既存の挙動を壊さないため)。
-pub(crate) fn check_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+/// `OPEN_WEB_SERVER_ADMIN_TOKEN` が設定されている場合のみ検証する
+/// 静的共有シークレット認証(第二引数の`state`は使わない、キー方式との
+/// 呼び出しシグネチャ統一のためだけに受け取る)。
+fn check_static_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
     let Ok(expected) = std::env::var("OPEN_WEB_SERVER_ADMIN_TOKEN") else {
         return Ok(());
     };
@@ -40,9 +38,33 @@ pub(crate) fn check_admin_auth(req: &Request<Incoming>) -> Result<(), Response<B
     }
 }
 
+/// 管理API向け認証。**「APIキーを意識しない仕様」の中核**:
+/// `KeyGuardian`が発行した`Authorization: Bearer <key>`が検証に成功
+/// すればそれで通す(この経路を使う限り運用者は`OPEN_WEB_SERVER_
+/// ADMIN_TOKEN`という共有シークレットの存在自体を意識しなくてよい)。
+/// キーが無い・無効・失効済み・一時停止中の場合は、既存の静的
+/// 共有シークレット(`x-admin-token`)へフォールバックする——最初の
+/// キーを発行する行為自体は、この静的シークレットで権限を持つ人が
+/// 行う想定(ブートストラップの割り切り、`handlers::keys`のdoc
+/// comment参照)。
+pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+    match crate::handlers::keys::check_bearer_key(state, req) {
+        crate::keyring::KeyDecision::Ok { .. } => Ok(()),
+        crate::keyring::KeyDecision::Suspended => Err(text_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "API key temporarily suspended due to anomalous request rate",
+        )),
+        // レジストリが空・未知のキー・キー未提示のいずれの場合も、
+        // 静的シークレットへフォールバックする。
+        crate::keyring::KeyDecision::RegistryEmpty | crate::keyring::KeyDecision::Rejected => {
+            check_static_admin_auth(req)
+        }
+    }
+}
+
 /// `POST /admin/tenants` — ドメインを1件、無停止で追加する。
 pub async fn add_tenant(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(&req) {
+    if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
 
@@ -71,7 +93,7 @@ pub async fn update_tenant(
     req: Request<Incoming>,
     host: &str,
 ) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(&req) {
+    if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
 
@@ -104,7 +126,7 @@ pub async fn remove_tenant(
     req: &Request<Incoming>,
     host: &str,
 ) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(req) {
+    if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
 
@@ -119,7 +141,7 @@ pub async fn remove_tenant(
 
 /// `GET /admin/tenants` — 登録済みドメイン一覧。
 pub async fn list_tenants(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(req) {
+    if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
 

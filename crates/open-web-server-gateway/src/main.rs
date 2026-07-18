@@ -11,6 +11,7 @@
 mod acme;
 mod app_proxy;
 mod handlers;
+mod keyring;
 mod middleware;
 mod proxy;
 mod response;
@@ -51,6 +52,11 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         }
         (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
         (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
+        // 自己運用型APIキー(KeyGuardian、「第二のTomcat」REST-API不要・
+        // 自動発行/自動失効の実現)。
+        (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
+        (Method::GET, "/admin/keys") => handlers::keys::key_status(state, &req).await,
+        (Method::POST, "/admin/keys/revoke") => handlers::keys::revoke_owner(state, req).await,
         // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
         // prefixマッチより先に評価する必要がある(先に評価されると
         // `:host`が`"foo.example.com/tls"`ごと拾われてしまうため)。
@@ -377,5 +383,94 @@ mod tests {
             .unwrap();
         let response = sender.send_request(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// エンドツーエンド検証: `KeyGuardian`(「第二のTomcat」REST-API不要・
+    /// APIキー自動発行/自動失効)が実HTTP経由で本当に機能するか。
+    /// (1) 静的シークレット(`x-admin-token`)で`POST /admin/keys`を叩き
+    ///     キーを自動発行 → (2) その動的キーだけを`Authorization: Bearer`
+    ///     に使い(静的シークレットは一切送らず)`GET /admin/tenants`が
+    ///     通ること(「APIキーを意識しない」= 発行後は運用者が共有
+    ///     シークレットを知らなくても使える、を実証) → (3)
+    ///     `POST /admin/keys/revoke`で自動失効させた後は、同じ動的キーが
+    ///     もう通らないこと、を確認する。
+    #[tokio::test]
+    async fn keyguardian_issued_key_authorizes_admin_requests_over_real_http() {
+        // 他の並行テストと共有ポートを踏まないよう、このテスト専用の
+        // 値を使い、テスト終了時に必ず元へ戻す。
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-bootstrap-secret");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // (1) 静的シークレットでキーを自動発行する。
+        let mut sender = connect(addr).await;
+        let issue_body = serde_json::json!({ "owner": "ci-test-caller", "roles": ["developer"] }).to_string();
+        let issue_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/keys")
+            .header("x-admin-token", "test-bootstrap-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(issue_body)))
+            .unwrap();
+        let issue_resp = sender.send_request(issue_req).await.unwrap();
+        assert_eq!(issue_resp.status(), StatusCode::CREATED);
+        let issue_bytes = http_body_util::BodyExt::collect(issue_resp.into_body()).await.unwrap().to_bytes();
+        let issued: serde_json::Value = serde_json::from_slice(&issue_bytes).unwrap();
+        let issued_key = issued["key"].as_str().expect("response should contain the plaintext key").to_string();
+        assert!(issued_key.starts_with("ows_"));
+
+        // (2) 発行された動的キーだけで(静的シークレットは送らず)
+        // 管理APIが通ることを確認する。
+        let mut sender = connect(addr).await;
+        let bearer_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/tenants")
+            .header("authorization", format!("Bearer {issued_key}"))
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let bearer_resp = sender.send_request(bearer_req).await.unwrap();
+        assert_eq!(bearer_resp.status(), StatusCode::OK, "a freshly issued KeyGuardian key should authorize admin requests without the static secret");
+
+        // (3) 自動失効させた後は同じキーがもう通らないこと。
+        let mut sender = connect(addr).await;
+        let revoke_body = serde_json::json!({ "owner": "ci-test-caller" }).to_string();
+        let revoke_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/keys/revoke")
+            .header("x-admin-token", "test-bootstrap-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(revoke_body)))
+            .unwrap();
+        let revoke_resp = sender.send_request(revoke_req).await.unwrap();
+        assert_eq!(revoke_resp.status(), StatusCode::OK);
+
+        let mut sender = connect(addr).await;
+        let post_revoke_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/tenants")
+            .header("authorization", format!("Bearer {issued_key}"))
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let post_revoke_resp = sender.send_request(post_revoke_req).await.unwrap();
+        assert_eq!(
+            post_revoke_resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a revoked key must fall back to (and fail) the static-secret check, not silently keep working"
+        );
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
     }
 }
