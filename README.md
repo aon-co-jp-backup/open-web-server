@@ -13,7 +13,7 @@
 
 ## 命名・関連リポジトリとの位置付け
 
-**`open-web-server`** という名称は、石塚正浩(aon CEO)によって命名されました。
+**`open-web-server`** という名称は、ユーザーによって命名されました。
 本リポジトリはクライアント向けの入口(REST API、冪等 WAL 先行書き込み)を
 担当し、`open-runo`(または `poem-cosmo-tauri`、Federation Gateway)経由で
 `aruaru-db`(分散 Git-on-SQL データベース)へ課金・金融データの確定を
