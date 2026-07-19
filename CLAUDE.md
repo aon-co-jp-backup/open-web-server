@@ -396,7 +396,7 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 - **open-raid-z**(開発ルールの正本): https://github.com/aon-co-jp/open-raid-z
 - **rs-to-readme**: https://github.com/aon-co-jp/rs-to-readme
 - **poem-cosmo-tauri**(open-runoと同時並行開発。Poem→tokio/hyper移行の
-  実装先行地点): https://github.com/aon-co-jp/poem-cosmo-tauri
+  実装先行地点): https://github.com/aon-co-jp/RPoem
 
 ### テナント別方針: aruaru.tokyo / audiocafe.tokyo(2026-07-14、ユーザー指示・訂正あり)
 
