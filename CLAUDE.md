@@ -388,9 +388,9 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
   https://github.com/aon-co-jp/open-runo
 - **open-web-server**(このリポジトリ): https://github.com/aon-co-jp/open-web-server
 - **aruaru-db**: https://github.com/aon-co-jp/aruaru-db
-- **open-easyweb**(第二のKUSANAGI、ドメイン/サブドメイン簡単登録+HTTPS
+- **open-easy-web**(第二のKUSANAGI、ドメイン/サブドメイン簡単登録+HTTPS
   自動監視/発行/更新の易操作ツール。高速化機能は含まない、2026-07-13に
-  aruaru-webから分離): https://github.com/aon-co-jp/open-easyweb
+  aruaru-webから分離): https://github.com/aon-co-jp/open-easy-web
 - **aruaru-web**(2026-07-13廃止。役割はopen-easyweb(易操作)と
   open-runo/poem-cosmo-tauri(高速化)へ分割継承済み): https://github.com/aon-co-jp/aruaru-web
 - **open-raid-z**(開発ルールの正本): https://github.com/aon-co-jp/open-raid-z
@@ -400,9 +400,9 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ### テナント別方針: aruaru.tokyo / audiocafe.tokyo(2026-07-14、ユーザー指示・訂正あり)
 
-- **aruaru.tokyo** — `open-easyweb`用に用意されたドメイン。TenantRegistryへの
+- **aruaru.tokyo** — `open-easy-web`用に用意されたドメイン。TenantRegistryへの
   登録対象はこちら。
-- **audiocafe.tokyo** — 実在するドメインだが、`open-easyweb`のテナントとして
+- **audiocafe.tokyo** — 実在するドメインだが、`open-easy-web`のテナントとして
   登録する対象**ではない**(2026-07-14、ユーザー訂正)。別の使い道として
   以下の構成方針のみ記録しておく(TenantRegistryへの登録は行わない)。
   - **現状(2026-07中旬)**: PHPベース。ApacheがCONOHA VPS上で稼働している
