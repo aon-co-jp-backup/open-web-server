@@ -5,7 +5,9 @@ use open_web_server_wire::TenantCertResolver;
 
 use crate::acme::ChallengeStore;
 use crate::keyring::{GuardianConfig, KeyGuardian};
+use crate::php_server::PhpServerPool;
 use crate::tenant_router::TenantRegistry;
+use crate::web_vhost::WebVhostRegistry;
 
 /// アプリケーション全体の共有状態。
 #[derive(Clone)]
@@ -31,6 +33,12 @@ pub struct AppState {
     /// `docs/tls-tenant.md`参照)が、外部ACMEクライアントが発行した
     /// チャレンジを配信する側は常時有効。
     pub acme_challenges: Arc<ChallengeStore>,
+    /// 静的ファイル/PHPサイト向けvhostレジストリ(Apache+Nginxハイブリッド
+    /// 配信エンジン構想、`web_vhost`参照。既存の`tenants`(APIバックエンド
+    /// 向け)とは独立した設定空間)。
+    pub web_vhosts: Arc<WebVhostRegistry>,
+    /// PHPビルトインサーバのサブプロセスプール(`php_server`参照)。
+    pub php_pool: Arc<PhpServerPool>,
 }
 
 impl AppState {
@@ -51,8 +59,19 @@ impl AppState {
         let tls_resolver = TenantCertResolver::new();
         let acme_challenges = Arc::new(ChallengeStore::new());
         let keyring = Arc::new(KeyGuardian::load_from_disk(GuardianConfig::from_env()));
+        let web_vhosts = Arc::new(WebVhostRegistry::new());
+        let php_pool = Arc::new(PhpServerPool::from_env());
 
-        Ok(Self { ledger, db_state_reader, tenants, tls_resolver, acme_challenges, keyring })
+        Ok(Self {
+            ledger,
+            db_state_reader,
+            tenants,
+            tls_resolver,
+            acme_challenges,
+            keyring,
+            web_vhosts,
+            php_pool,
+        })
     }
 
     /// `OPEN_WEB_SERVER_DOMAINS_FILE` で指定された `domains.toml` があれば
@@ -68,6 +87,19 @@ impl AppState {
         let count = self.tenants.load_from_toml(&toml_str).await?;
         self.tenants.set_persist_path(std::path::PathBuf::from(&path)).await;
         tracing::info!(count, path, "loaded tenant domains from file");
+        Ok(())
+    }
+
+    /// `OPEN_WEB_SERVER_WEB_VHOSTS_FILE` で指定された `web_vhosts.toml` が
+    /// あれば起動時に一括ロードする(静的ファイル/PHPサイト向けvhost)。
+    pub async fn load_web_vhosts_from_env(&self) -> anyhow::Result<()> {
+        let Ok(path) = std::env::var("OPEN_WEB_SERVER_WEB_VHOSTS_FILE") else {
+            return Ok(());
+        };
+        let toml_str = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("failed to read web vhosts file '{path}': {e}"))?;
+        let count = self.web_vhosts.load_from_toml(&toml_str).await?;
+        tracing::info!(count, path, "loaded web vhosts from file");
         Ok(())
     }
 }

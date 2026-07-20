@@ -19,6 +19,8 @@ open-web-server 是面向 3D 网游道具购买、信用卡支付等关键业务
 4. **UDP-IP 冗余通道**(`open-web-server-wire::udp_channel`,2026-07-11)— 与 TCP 权威提交并行,以加密+HMAC 方式尽力发送 UDP 即时通知(无重传,第一版实现)
 5. **目标架构:通信层与数据库写入的四重冗余**(2026-07-11修订)— 最终目标:通信层采用 TCP-IP + UDP-IP + QUIC/MPQUIC + MPTCP/SCTP 四种方式,数据库写入采用 PostgreSQL(ACID,即原子性、一致性、隔离性、持久性的事务保证特性) + aruaru-db + 多区域同步复制 + 独立审计日志四条路径。目前已实现 TCP-IP、UDP-IP,以及 ③QUIC(`quinn`,已用真实TLS1.3握手验证)与PostgreSQL WAL(`sqlx`,真实BEGIN/COMMIT,受限于沙盒环境无法连接真实PostgreSQL);④MPTCP/SCTP:经调查发现在Windows沙盒环境中内核级实现/验证不可行,已改用用户态替代方案(`aggligator`,`open-web-server-wire::mptcp_channel`,并非真正的内核MPTCP/SCTP)并通过真实回环TCP往返测试验证(2026-07-13);**④独立审计日志已实现**(`open-web-server-ledger::audit_log::FileAuditLog`,2026-07-13,SHA-256校验和的追加式文件,与WAL/aruaru-db技术独立,支持`scan_and_verify()`与`reconcile()`)。其余DB四重化路径(②aruaru-db、③多区域同步复制)尚未开始(详见 [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化) 与 [CLAUDE.md](CLAUDE.md))。**下一步新开发计划**:将 aruaru-db 的提交与 ZFS(open-raid-z)快照联动——虽未找到现成技术,但判断为可实现的新发现,计划下一阶段着手。
 
+6. **静态文件 + PHP 托管**(`static_files`/`php_server`/`web_vhost`,2026-07-20)— 面向 Apache+Nginx 混合交付引擎的第一步。按主机名映射到 docroot,静态资源直接从磁盘提供(含路径穿越防护),其余请求转发给按需启动的 `php -S` 子进程。已通过实际托管 `audiocafe.tokyo`(现有 PHP 网站)验证。
+
 ## 快速开始
 
 ```bash

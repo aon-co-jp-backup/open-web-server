@@ -13,11 +13,14 @@ mod app_proxy;
 mod handlers;
 mod keyring;
 mod middleware;
+mod php_server;
 mod proxy;
 mod response;
 mod state;
+mod static_files;
 mod telemetry;
 mod tenant_router;
+mod web_vhost;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,6 +55,18 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         }
         (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
         (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
+        // 静的ファイル/PHPサイト向けvhost管理API(Apache+Nginxハイブリッド
+        // 配信エンジン構想、`web_vhost`参照)。
+        (Method::POST, "/admin/web-vhosts") => {
+            handlers::web_vhost::upsert_web_vhost(state, req).await
+        }
+        (Method::GET, "/admin/web-vhosts") => {
+            handlers::web_vhost::list_web_vhosts(state, &req).await
+        }
+        (Method::DELETE, p) if p.starts_with("/admin/web-vhosts/") => {
+            let host = p.trim_start_matches("/admin/web-vhosts/").to_string();
+            handlers::web_vhost::remove_web_vhost(state, &req, &host).await
+        }
         // 自己運用型APIキー(KeyGuardian、「第二のTomcat」REST-API不要・
         // 自動発行/自動失効の実現)。
         (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
@@ -110,6 +125,18 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
 
+            // ①静的ファイル/PHPサイト向けvhost(`web_vhost`、Apache+Nginx
+            // ハイブリッド配信エンジン構想)を最優先で試す。
+            let web_vhost = match &host_header {
+                Some(h) => state.web_vhosts.resolve(h).await,
+                None => None,
+            };
+            if let Some(vhost) = web_vhost {
+                return handlers::web_vhost::dispatch(state, vhost, req).await;
+            }
+
+            // ②複数ドメインを動的に振り分けるマルチテナントルーティング
+            // (APIバックエンド用途、`tenant_router`)。
             let tenant = match &host_header {
                 Some(h) => state.tenants.resolve(h).await,
                 None => None,
@@ -117,6 +144,7 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
 
             match tenant {
                 Some(tenant) => proxy::forward_to(&tenant.config.backend_addr, req).await,
+                // ③単一アップストリームへの委譲(Apache+Tomcat型、`app_proxy`)。
                 None => match app_proxy::app_upstream_base() {
                     Some(base) => proxy::forward_to(&base, req).await,
                     None => text_response(StatusCode::NOT_FOUND, "not found"),
@@ -235,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState::from_env()?);
     state.load_domains_from_env().await?;
+    state.load_web_vhosts_from_env().await?;
 
     let bind_addr: SocketAddr = std::env::var("OPEN_WEB_SERVER_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())

@@ -1,0 +1,18 @@
+# 静的ファイル/PHPサイト向けvhost設定例(Apache+Nginxハイブリッド配信
+# エンジン構想、`docroot`はホストにPHPビルトインサーバ(`php -S`)または
+# 直接の静的ファイル配信で提供する)。
+#
+# 使い方:
+#   OPEN_WEB_SERVER_WEB_VHOSTS_FILE=./web_vhosts.toml ./open-web-server
+#
+# 起動後も再起動不要で追加/削除できる:
+#   curl -X POST http://localhost:8080/admin/web-vhosts \
+#     -H 'content-type: application/json' \
+#     -d '{"host":"audiocafe.tokyo","docroot":"F:/open-runo/audiocafe.tokyo","php_enabled":true}'
+#   curl -X DELETE http://localhost:8080/admin/web-vhosts/audiocafe.tokyo
+#   curl http://localhost:8080/admin/web-vhosts
+
+[[webvhost]]
+host = "audiocafe.tokyo"
+docroot = "F:/open-runo/audiocafe.tokyo"
+php_enabled = true

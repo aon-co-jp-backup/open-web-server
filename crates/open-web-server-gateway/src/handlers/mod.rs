@@ -5,3 +5,4 @@ pub mod tenants;
 pub mod tls;
 pub mod transactions;
 pub mod wal;
+pub mod web_vhost;

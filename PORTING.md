@@ -224,6 +224,39 @@ let mut channel = SecureChannel::new(&PayloadCipher::generate_key());
 let frame = channel.encrypt(b"charge:100yen")?;
 ```
 
+### 4.7 静的ファイル/PHPサイト配信(Apache+Nginxハイブリッド配信エンジン、2026-07-20)
+
+`open-web-server-gateway`の新規モジュール`static_files`/`php_server`/
+`web_vhost`は、既存のAPIバックエンド用途(`tenant_router`)とは独立した
+「ホスト名 → docroot」のvhost機構で、静的ファイル配信とPHP実行
+(PHPビルトインdevサーバへのリバースプロキシ)の両方を提供する。
+これは他プロジェクトへの移植価値が高い(PHP資産を持つ他のドメイン
+[例: aruaru.tokyo/PHP版、その他のレガシーPHPサイト]をopen-web-server配下
+へ統合する際にそのまま使える):
+
+```toml
+# web_vhosts.toml
+[[webvhost]]
+host = "example.com"
+docroot = "/var/www/example"
+php_enabled = true
+```
+
+```bash
+OPEN_WEB_SERVER_WEB_VHOSTS_FILE=./web_vhosts.toml ./open-web-server
+```
+
+管理APIでの動的追加/削除も可能: `POST /admin/web-vhosts` /
+`DELETE /admin/web-vhosts/:host` / `GET /admin/web-vhosts`
+(既存の`x-admin-token`/`KeyGuardian`認証を共用)。
+
+**移植時の注意**: `php_server::PhpServerPool`はデフォルトで
+`OPEN_WEB_SERVER_PHP_BINARY`環境変数(未設定時はこの開発環境固有の
+WinGet配布パス)からPHP実行ファイルを探す — 他環境へ移植する際は必ず
+この環境変数を設定すること。本番運用では`php -S`(開発用ビルトイン
+サーバ)ではなくPHP-FPM + FastCGIへの置き換えを推奨(`php_server.rs`
+のモジュールdocに明記)。
+
 ## 5. 動作確認
 
 ```bash

@@ -199,6 +199,20 @@ yet and needs coordination with `open-runo`'s API surface; that's the
 next concrete gap. Integration with `open-raid-z` as open-web-server's
 own disk-redundancy foundation is likewise not yet started.
 
+### 7. Static file + PHP serving (first step toward an Apache+Nginx hybrid delivery engine, 2026-07-20)
+
+`open-web-server-gateway` gained a "static file / PHP site" vhost
+mechanism (`static_files` / `php_server` / `web_vhost`), independent from
+the existing API-backend routing (`tenant_router`). Each hostname maps to
+a docroot; paths recognizable as static assets by extension are served
+directly from disk (with path-traversal protection), while everything
+else is proxied to a spawned `php -S` (PHP's built-in dev server)
+subprocess. This was verified end-to-end by actually serving
+`audiocafe.tokyo` (an existing PHP site) through this server over real
+HTTP (see this file's HANDOFF section for details). Vhosts can be
+declared via `web_vhosts.toml` (same TOML convention as `domains.toml`)
+or added dynamically via the admin API (`POST /admin/web-vhosts`).
+
 ---
 
 ## Quick Start

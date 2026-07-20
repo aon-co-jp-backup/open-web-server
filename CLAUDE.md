@@ -553,6 +553,68 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-20 静的ファイル + PHP配信を追加(Apache+Nginxハイブリッド配信エンジン構想 第一歩)**:
+  `F:\open-runo\open-raid-z\CLAUDE.md`(529-534行目)で明記された「open-web-serverを
+  Apache+Nginxハイブリッド配信エンジンにする」という方針の最初の実装。
+  新規モジュール3本を`open-web-server-gateway`に追加(既存のAPIバックエンド用途
+  `tenant_router`とは独立):
+  - `static_files.rs` — docroot配下の静的ファイル配信。`..`拒否・絶対パス拒否・
+    `canonicalize()`後の`starts_with`再検証によるディレクトリトラバーサル対策
+    (シンボリックリンクでのdocroot外エスケープも検出、Windows権限で作成できる
+    環境のみテスト実行)。
+  - `php_server.rs` — `php -S 127.0.0.1:<port> -t <docroot>`をdocrootごとに
+    遅延起動・使い回すサブプロセスプール(`OPEN_WEB_SERVER_PHP_BINARY`で
+    パス指定可、デフォルトはこの開発環境のWinGet配布パス)。
+  - `web_vhost.rs` — ホスト名→docrootのvhostレジストリ(`web_vhosts.toml`、
+    `domains.toml`と同じ作法。管理API `POST/GET /admin/web-vhosts`、
+    `DELETE /admin/web-vhosts/:host`も追加、既存の管理認証を共用)。
+  - `handlers/web_vhost.rs` — ディスパッチ(拡張子で静的アセットと判定できる
+    パスは直接配信を優先、それ以外はPHPサブプロセスへリバースプロキシ)。
+  `main.rs`の`dispatch()`で、Hostヘッダ解決の優先順位を
+  ①`web_vhosts` → ②`tenant_router` → ③`app_proxy`単一アップストリームに変更。
+
+  **実機検証(audiocafe.tokyo、実PHPサイトを本サーバー経由で配信)**:
+  `web_vhosts.toml.example`に`host="audiocafe.tokyo"`,
+  `docroot="F:/open-runo/audiocafe.tokyo"`を設定し、
+  `OPEN_WEB_SERVER_WEB_VHOSTS_FILE`指定でバイナリを実起動
+  (`OPEN_WEB_SERVER_BIND=127.0.0.1:8099`)。Bashツールのサンドボックスから
+  だとループバック接続がタイムアウトする環境だったため、PowerShellの
+  `Invoke-WebRequest`(`curl`相当)で実HTTP検証した:
+  - `GET /index.php` (Host: audiocafe.tokyo) → **`STATUS: 200`**、
+    本文307,499バイトに**`AUDIOCAFE`を実際に含むことを確認**
+    (`<title>AUDIOCAFE | World — Select Your Language</title>`)。
+  - `GET /` (同Host) → `STATUS: 200`、同じく`AUDIOCAFE`含有を確認
+    (PHPの組み込みルーティングでindex.phpへフォールバック)。
+  - `GET /images/audiocafe1.png` (同Host) → `STATUS: 200`,
+    `Content-Type: image/png`, 7,617,994バイト
+    (静的ファイルハンドラが実ファイルをdocrootから直接配信することを確認、
+    PHPサブプロセスを経由していない)。
+  - 存在しない画像パスは`404`(想定通り)。
+  検証後、起動した`open-web-server.exe`本体および子プロセスの
+  `php -S`インスタンスはともに`Stop-Process`で終了させ、常駐プロセスを
+  残さないことを確認済み。
+
+  **テスト**: `cargo test --workspace`は**gateway 46 / ledger 20(+1 ignored,
+  要ライブPostgreSQL)/ wire 18、doc-tests 0、全件green**
+  (新規追加: `static_files`のパストラバーサル系・静的判定系のテスト、
+  `php_server`のインスタンス使い回しテスト[環境にphpが無ければ`skip`扱いで
+  安全にpassする設計]、`web_vhost`のvhost解決/TOML一括ロードのテスト)。
+
+  **ドキュメント**: `PORTING.md`§4.7に移植時の注意(`OPEN_WEB_SERVER_PHP_BINARY`
+  を必ず設定すること、本番はPHP-FPM+FastCGI推奨)を追記。10言語READMEにも
+  簡潔な機能説明を追加。
+
+  **既知の制約・今回スコープ外**:
+  (1) 本番向けPHP-FPM/FastCGI直結は未実装(現状は開発用`php -S`のみ)。
+  (2) PHPサブプロセスは起動したままプロセス終了まで生存し続ける設計
+      (`kill_on_drop`はグレースフルシャットダウン時のみ有効、今回のように
+      外部から強制終了させた場合は子プロセスが残るケースがあるため、
+      運用時はプロセスツリーごとの終了確認が必要——検証時は手動で確認・終了済み)。
+  (3) この開発環境のBashツールのサンドボックスからは`127.0.0.1`宛の接続が
+      到達しない(別ネットワーク名前空間と見られる)ため、実HTTP検証は
+      PowerShell側から実施した。今後この環境でループバック検証をする際は
+      同様にPowerShellを使うこと。
+
 - **2026-07-19 `KeyGuardian`にファイルバックド永続化を追加
   — 前回HANDOFF(2026-07-18)で明記した「正直な開示: プロセス内メモリのみ、
   再起動で全キー消失」というギャップの解消**: このリポジトリの根本方針
