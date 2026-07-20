@@ -1,9 +1,10 @@
 # open-web-server
 
-## 基于 Rust + Poem 构建、确保计费物品和金融数据永不丢失的 Web 服务器
+## 基于 Rust + tokio/hyper 构建、确保计费物品和金融数据永不丢失的 Web 服务器
 
 open-web-server 是面向 3D 网游道具购买、信用卡支付等关键业务的 24/7/365 Web 服务器。
-使用 **Rust + Poem** 构建，通过四层防御架构与 aruaru-db、open-runo 协同工作，
+使用 **Rust + tokio/hyper** 构建(路由/处理器的 API 形态与旧版 Poem 实现兼容，
+但自 2026-07-10 起已不再依赖 Poem 包本身)，通过四层防御架构与 aruaru-db、open-runo 协同工作，
 确保网络抖动、进程重启、重试都不会导致重复扣款或数据静默丢失。
 
 📖 其他语言: [日本語](README-Japan.md) / [English](README-English.md) /
@@ -32,7 +33,7 @@ OPEN_RUNO_ENDPOINT=https://127.0.0.1:8443 cargo run -p open-web-server-gateway
 ## 项目结构(4 个 crate)
 
 `open-web-server-core`(领域模型/错误类型)、`open-web-server-wire`(四层防御通信)、
-`open-web-server-ledger`(幂等 WAL + 三跳提交)、`open-web-server-gateway`(Poem 网关)。
+`open-web-server-ledger`(幂等 WAL + 三跳提交)、`open-web-server-gateway`(tokio/hyper 网关,不依赖 Poem)。
 
 ## License
 

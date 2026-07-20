@@ -1,12 +1,13 @@
 # open-web-server
 
-## 課金アイテムと金融データを「消さない」ための Rust + Poem 製 Webサーバー
+## 課金アイテムと金融データを「消さない」ための Rust + tokio/hyper 製 Webサーバー
 
 open-web-server は、3Dオンラインゲームのアイテム課金や、クレジットカード決済のような
 金融データを扱う、24時間365日ノンストップ運用のミッションクリティカルな Webサーバーです。
-**Rust + Poem** で実装し、aruaru-db・open-runo と連携する4層防御アーキテクチャにより、
-ネットワーク瞬断・プロセス再起動・リトライが起きても「二重課金」も「データ消失」も
-起こさない設計を目指します。
+**Rust + tokio/hyper**(ルーティング/ハンドラのAPI形状は旧Poem実装と互換だが、
+2026-07-10にPoemパッケージへの依存自体は解消済み)で実装し、aruaru-db・open-runo と
+連携する4層防御アーキテクチャにより、ネットワーク瞬断・プロセス再起動・リトライが
+起きても「二重課金」も「データ消失」も起こさない設計を目指します。
 
 📖 他の言語: [日本語](README-Japan.md) / [English](README-English.md) /
 [中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
@@ -228,7 +229,7 @@ open-web-server/
 │   ├── open-web-server-core/     # ドメインモデル・エラー型
 │   ├── open-web-server-wire/     # 4層防御通信 (TLS / 相互認証 / ペイロード暗号化 / リプレイ対策)
 │   ├── open-web-server-ledger/   # 冪等WAL + 3層コミットパイプライン
-│   └── open-web-server-gateway/  # Poem製 Webゲートウェイ (実行バイナリ)
+│   └── open-web-server-gateway/  # tokio/hyper製 Webゲートウェイ (実行バイナリ、Poem非依存/Poem互換API)
 ├── docs/
 │   ├── architecture.md
 │   └── integration.md

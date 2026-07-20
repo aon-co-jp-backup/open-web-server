@@ -1,9 +1,11 @@
 # open-web-server
 
-## 과금 아이템/금융 데이터가 절대 유실되지 않도록 설계된 Rust + Poem 웹 서버
+## 과금 아이템/금융 데이터가 절대 유실되지 않도록 설계된 Rust + tokio/hyper 웹 서버
 
 open-web-server는 3D 온라인 게임 아이템 결제, 신용카드 결제 같은
-미션 크리티컬한 24/7/365 워크로드를 위한 웹 서버입니다. **Rust + Poem**으로
+미션 크리티컬한 24/7/365 워크로드를 위한 웹 서버입니다. **Rust + tokio/hyper**로
+(라우팅/핸들러 API 형태는 이전 Poem 구현과 호환되지만, 2026-07-10부로 Poem 패키지 자체에 대한
+의존은 제거됨)
 제작되었으며, aruaru-db·open-runo와 4중 방어 아키텍처로 연동되어
 재전송·프로세스 재시작·네트워크 순단이 있어도 이중 과금이나 데이터 유실이 없습니다.
 
@@ -33,7 +35,7 @@ OPEN_RUNO_ENDPOINT=https://127.0.0.1:8443 cargo run -p open-web-server-gateway
 ## 구성(4개 crate)
 
 `open-web-server-core`(도메인 모델/에러 타입), `open-web-server-wire`(4중 방어 통신),
-`open-web-server-ledger`(멱등 WAL + 3홉 커밋), `open-web-server-gateway`(Poem 게이트웨이).
+`open-web-server-ledger`(멱등 WAL + 3홉 커밋), `open-web-server-gateway`(tokio/hyper 게이트웨이, Poem 비의존).
 
 ## License
 

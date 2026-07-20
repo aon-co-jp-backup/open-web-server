@@ -9,8 +9,8 @@
                             │  4層防御通信 (open-web-server-wire)
                             ▼
 ┌────────────────────────────────────────────────────────────────┐
-│ open-web-server  (Rust + Poem)                                  │
-│  - REST / GraphQL Gateway                                       │
+│ open-web-server  (Rust + tokio/hyper、Poem非依存・Poem互換API)      │
+│  - REST Gateway / マルチテナントHostルーティング / 静的ファイル+PHP配信  │
 │  - Idempotency-Key 必須ミドルウェア                                │
 │  - ローカル WAL 先行書き込み (open-web-server-ledger)               │
 └───────────────────────────┬────────────────────────────────────┘
@@ -127,3 +127,25 @@ open-web-server-ledger::Ledger::commit()
   open-runoサーバを使い、(c) UDP経由通知がTCP確定と並行して正しく届き
   デデュープされること、(d) UDP宛先が完全に到達不能でもTCP経由の権威
   パスは影響を受けずコミットが成功すること、を実証済み。
+
+## マルチテナント入口層(`open-web-server-gateway`、「第二のApache」相当)
+
+`dispatch()` は Host ヘッダに基づき、以下の優先順位でリクエストを振り分ける
+(詳細は各モジュールのdoc・`CLAUDE.md` HANDOFF参照。本節は概要のみ)。
+
+1. `web_vhost::WebVhostRegistry` — ホスト名→docrootのvhost(静的ファイル
+   直接配信 + `php_server::PhpServerPool` 経由のPHPリバースプロキシ、
+   2026-07-20追加。`web_vhosts.toml.example`参照)。
+2. `tenant_router::TenantRegistry` — ホスト名→バックエンド(`open_runo`/
+   `poem_cosmo_tauri`等)のマルチテナントルーティング(`domains.toml.example`
+   参照、`proxy::forward_to()`でリバースプロキシ)。
+3. `app_proxy`(`OPEN_WEB_SERVER_APP_UPSTREAM`) — 単一アップストリームへの
+   フォールバック転送(Apache+Tomcat型のシンプル運用向け)。
+4. 上記いずれにも一致しなければ既存の`/api/v1/*`・`/admin/*`・`/healthz`
+   ハンドラ、それも無ければ`404`。
+
+`open-web-server-wire::TenantCertResolver`(SNIごとの証明書切替、
+`docs/tls-tenant.md`参照)・ACMEクライアント(`acme` feature)・
+`keyring::KeyGuardian`(自己運用型APIキーレジストリ、ファイルバックド永続化)も
+この入口層に組み込まれている。静的ファイル/PHP配信の移植時の注意点は
+`PORTING.md` §4.7を参照。

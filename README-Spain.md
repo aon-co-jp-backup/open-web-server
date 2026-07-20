@@ -1,10 +1,12 @@
 # open-web-server
 
-## Servidor web en Rust + Poem diseñado para que los artículos de pago y los datos financieros nunca se pierdan
+## Servidor web en Rust + tokio/hyper diseñado para que los artículos de pago y los datos financieros nunca se pierdan
 
 open-web-server es un servidor web de misión crítica, 24/7/365, pensado para cargas
 como compras de artículos en juegos online 3D y pagos con tarjeta de crédito.
-Construido con **Rust + Poem**, trabaja junto a aruaru-db y open-runo mediante una
+Construido con **Rust + tokio/hyper** (la forma de la API de enrutamiento/handlers sigue
+siendo compatible con la antigua implementación en Poem, pero desde el 2026-07-10 el paquete
+ya no depende de Poem), trabaja junto a aruaru-db y open-runo mediante una
 arquitectura de defensa en cuatro capas, de modo que los cortes de red, reinicios de
 proceso y reintentos nunca causan doble cobro ni pérdida silenciosa de datos.
 
@@ -34,7 +36,7 @@ OPEN_RUNO_ENDPOINT=https://127.0.0.1:8443 cargo run -p open-web-server-gateway
 ## Estructura (4 crates)
 
 `open-web-server-core` (modelos de dominio/errores), `open-web-server-wire` (transporte de defensa en cuatro capas),
-`open-web-server-ledger` (WAL idempotente + commit en 3 saltos), `open-web-server-gateway` (gateway Poem).
+`open-web-server-ledger` (WAL idempotente + commit en 3 saltos), `open-web-server-gateway` (gateway tokio/hyper, sin dependencia de Poem).
 
 ## Licencia
 
