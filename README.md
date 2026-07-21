@@ -154,6 +154,31 @@ match (method, path.as_str()) {
 これを忘れると Idempotency-Key 必須化(§0 のゼロロス保証の要)が効かない
 エンドポイントを作ってしまいます。
 
+## 自己ホスト構成の方針(2026-07-21、ユーザー指示)
+
+`runo.tokyo/open-web-server`(紹介ページ)は当初nginxの`alias`による
+静的ファイル直接配信で公開したが、**それでは`open-web-server`自身が
+Apache/Nginx相当のWebサーバーであることを実証できていない**という
+指摘を受け、構成を切り替える。
+
+**方針**: `open-web-server`自体を実際に稼働させ(静的配信エンジンとして)、
+その手前を[`open-easy-web`](https://github.com/aon-co-jp/open-easy-web)の
+`scripts/gen-vhost.sh`で生成した設定でプロキシする形にする——nginxの
+手書きlocationから、実際に`open-web-server`が配信する構成へ移行する。
+
+1. VPS上に`open-web-server`をデプロイし、`web_vhosts.toml`で
+   紹介ページ(`site/index.html`)を配信させる(`OPEN_WEB_SERVER_WEB_VHOSTS_FILE`
+   環境変数、詳細は`web_vhosts.toml.example`参照)。
+2. 手前のリバースプロキシ設定は、私が手書きするのではなく
+   `open-easy-web`の`scripts/gen-vhost.sh --stack=proxy`で生成する
+   (このエコシステムの正規の「サイト追加」手順を、`open-web-server`
+   自身のデプロイにも適用する)。
+3. これにより、`open-web-server`が実際にリクエストを受け、静的ファイル
+   配信エンジンとして機能していることを実トラフィックで示せる
+   (単にnginxが直接配信しているだけの状態から脱却する)。
+
+進捗・実機検証結果は`CLAUDE.md`のHANDOFF節に記録する。
+
 ## 構成(4 クレート)
 
 `open-web-server-core`(ドメイン型/エラー) ・ `open-web-server-wire`(4 層防御通信) ・
