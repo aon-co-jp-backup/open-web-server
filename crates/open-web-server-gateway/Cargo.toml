@@ -46,6 +46,8 @@ ring = { workspace = true, optional = true }
 default = []
 # RFC 8555 HTTP-01によるACME自動証明書取得(`acme.rs`のクライアント本体)。
 acme = ["dep:reqwest", "dep:ring"]
+# 固定IPを持たない自宅サーバー等向けの簡易DDNS更新(`ddns.rs`)。
+ddns = ["dep:reqwest"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

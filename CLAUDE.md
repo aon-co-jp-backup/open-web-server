@@ -553,6 +553,47 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-21 固定IP不要のDDNS対応・クロスプラットフォーム配布・
+  紹介ページ追加(ユーザー指示「固定IPでも、なくても...簡単にサーバーを
+  立てられるように」「AlmaLinux/Ubuntu/Windows/Windows Server向け
+  インストーラー付きダウンロード」)**:
+  1. **`crates/open-web-server-gateway/src/ddns.rs`新設**: 固定IPを
+     持たない自宅サーバー等向けの簡易DDNS更新。特定プロバイダ
+     (No-IP・DuckDNS・Cloudflare等)の専用APIを個別実装せず、`{ip}`
+     プレースホルダ入りのURLテンプレートを環境変数
+     (`OPEN_WEB_SERVER_DDNS_UPDATE_URL`)で受け取る汎用方式(正直な
+     開示: 対応プロバイダ一覧を保守しない代わり、ユーザー自身が
+     プロバイダのURL形式を確認する必要がある)。`api.ipify.org`で
+     グローバルIPを5分ごとに確認し、変化時のみ更新URLを叩く。
+     新規`ddns` Cargo feature(既定オフ、`reqwest`をoptional依存化)。
+  2. **クロスプラットフォーム配布**: `.github/workflows/release.yml`
+     (タグpushでLinux・Windows向けバイナリ自動ビルド→GitHub Releases)、
+     `install.sh`(systemdサービス登録)・`install.ps1`(Windowsサービス
+     登録案内)を追加。**正直な開示**: TLS(rustls)・QUIC(quinn)・
+     ACME(ring)を含むため、`RS-Chiketto`のような軽量プロジェクトとは
+     異なりmusl静的リンクは狙わず、Ubuntu LTS基準のglibc(gnuターゲット)
+     を使用——比較的新しいディストリでは動くが、非常に古いディストリ
+     では動かない可能性がある、という選択理由をワークフロー内に明記。
+  3. **紹介・ダウンロードページ**(`site/index.html`): GitHubのように
+     READMEを読めるページを新設。外部ライブラリ非依存のバニラJSで、
+     GitHub Raw配信からREADME.mdをfetchし、最小限のMarkdown→HTML変換
+     (見出し・強調・リンク・コードブロック・箇条書き)を行う軽量実装
+     (完全なMarkdown仕様の再実装ではないと明記)。OS別インストール
+     コマンド(Linux/Windows)のカード型UIも同梱。**実機検証**: ローカル
+     ブラウザで実際に開き、GitHubから実際にREADME本文を取得・
+     見出し/コードブロック/リンクが正しくレンダリングされることを
+     確認済み(コンソールエラー無し)。
+  4. **検証**: `cargo build -p open-web-server-gateway`(featureあり/
+     なし両方)警告0件(ddns関連の新規警告無し、既存の無関係な
+     dead_code警告のみ)、`cargo test -p open-web-server-gateway
+     --features ddns`のddns関連2件green。
+  - 次にすべきこと: (1) VPS(`runo.tokyo/open-web-server`)への
+    `site/index.html`デプロイ(静的ファイル配信、nginx設定はVPS側の
+    み管理)、(2) タグpushによる実リリース(`v0.1.0`等)でGitHub Actions
+    ワークフローの実動作を確認、(3) DDNSプロバイダ1つ以上での実更新
+    URL疎通確認(現状はURLテンプレート置換のロジックのみ単体テスト、
+    実プロバイダとの実通信は未検証)。
+
 - **2026-07-20 静的ファイル + PHP配信を追加(Apache+Nginxハイブリッド配信エンジン構想 第一歩)**:
   `F:\open-runo\open-raid-z\CLAUDE.md`(529-534行目)で明記された「open-web-serverを
   Apache+Nginxハイブリッド配信エンジンにする」という方針の最初の実装。

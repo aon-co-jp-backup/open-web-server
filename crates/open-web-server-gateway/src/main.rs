@@ -10,6 +10,8 @@
 
 mod acme;
 mod app_proxy;
+#[cfg(feature = "ddns")]
+mod ddns;
 mod handlers;
 mod keyring;
 mod middleware;
@@ -264,6 +266,11 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState::from_env()?);
     state.load_domains_from_env().await?;
     state.load_web_vhosts_from_env().await?;
+
+    // 固定IPを持たない自宅サーバー等向け(`ddns` feature時のみ、
+    // `OPEN_WEB_SERVER_DDNS_UPDATE_URL`未設定なら何もしない)。
+    #[cfg(feature = "ddns")]
+    ddns::spawn_if_configured();
 
     let bind_addr: SocketAddr = std::env::var("OPEN_WEB_SERVER_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())

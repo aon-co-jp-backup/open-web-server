@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>open-web-server</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1f2328; }
+  h1, h2, h3 { border-bottom: 1px solid #d1d9e0; padding-bottom: 0.3rem; }
+  pre { background: #f6f8fa; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  code { background: #f6f8fa; padding: 0.1rem 0.3rem; border-radius: 4px; font-family: ui-monospace, monospace; }
+  pre code { background: none; padding: 0; }
+  a { color: #0969da; }
+  #downloads { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+  .card { border: 1px solid #d1d9e0; border-radius: 8px; padding: 1rem; }
+  .card h3 { border: none; margin-top: 0; }
+  .card pre { font-size: 0.85em; }
+  #readme { margin-top: 2rem; }
+  #status { color: #666; }
+</style>
+</head>
+<body>
+<h1>open-web-server</h1>
+<p>Apache+Nginxハイブリッド仕様のRust製Webサーバー。マルチテナントHostルーティング・
+TLS終端(SNIごとの証明書切替+ACME自動取得)・静的ファイル/PHP配信・固定IP不要のDDNS更新に対応。</p>
+
+<h2>ダウンロード・インストール</h2>
+<div id="downloads">
+  <div class="card">
+    <h3>🐧 Linux</h3>
+    <p>AlmaLinux・Ubuntu・Debian・Fedora・RHEL等、systemdを使う主要ディストリ共通</p>
+    <pre><code>curl -fsSL https://github.com/aon-co-jp/open-web-server/releases/latest/download/open-web-server-linux-x86_64.tar.gz | tar xz
+sudo ./install.sh
+sudo systemctl edit open-web-server
+sudo systemctl enable --now open-web-server</code></pre>
+  </div>
+  <div class="card">
+    <h3>🪟 Windows / Windows Server</h3>
+    <p>管理者権限のPowerShellで実行</p>
+    <pre><code>Invoke-WebRequest -Uri "https://github.com/aon-co-jp/open-web-server/releases/latest/download/open-web-server-windows-x86_64.zip" -OutFile ows.zip
+Expand-Archive ows.zip -DestinationPath open-web-server
+cd open-web-server
+.\install.ps1</code></pre>
+  </div>
+</div>
+<p><a href="https://github.com/aon-co-jp/open-web-server/releases" target="_blank" rel="noopener">すべてのリリースを見る →</a></p>
+
+<h2>README</h2>
+<div id="status">読み込み中...</div>
+<div id="readme"></div>
+
+<script>
+// GitHub Releasesページのような体験を、外部依存ゼロで作る:
+// READMEをGitHubのRaw配信からfetchし、最小限のMarkdown→HTML変換を
+// バニラJSで行う(完全なMarkdown仕様の再実装ではなく、README表示に
+// 十分な範囲——見出し・強調・リンク・コードブロック・箇条書き・段落
+// ——のみをサポートする軽量な実装)。
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderMarkdown(md) {
+  const lines = md.split("\n");
+  let html = "";
+  let inCodeBlock = false;
+  let codeLines = [];
+  let inList = false;
+
+  function closeList() {
+    if (inList) { html += "</ul>\n"; inList = false; }
+  }
+
+  function inlineFormat(text) {
+    text = escapeHtml(text);
+    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+    text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    return text;
+  }
+
+  for (const line of lines) {
+    if (line.startsWith("```")) {
+      if (inCodeBlock) {
+        html += "<pre><code>" + escapeHtml(codeLines.join("\n")) + "</code></pre>\n";
+        codeLines = [];
+        inCodeBlock = false;
+      } else {
+        closeList();
+        inCodeBlock = true;
+      }
+      continue;
+    }
+    if (inCodeBlock) { codeLines.push(line); continue; }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      closeList();
+      const level = headingMatch[1].length;
+      html += `<h${level}>${inlineFormat(headingMatch[2])}</h${level}>\n`;
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      if (!inList) { html += "<ul>\n"; inList = true; }
+      html += `<li>${inlineFormat(line.replace(/^[-*]\s+/, ""))}</li>\n`;
+      continue;
+    }
+    closeList();
+    if (line.trim() === "") { continue; }
+    html += `<p>${inlineFormat(line)}</p>\n`;
+  }
+  closeList();
+  if (inCodeBlock && codeLines.length) {
+    html += "<pre><code>" + escapeHtml(codeLines.join("\n")) + "</code></pre>\n";
+  }
+  return html;
+}
+
+fetch("https://raw.githubusercontent.com/aon-co-jp/open-web-server/main/README.md")
+  .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+  .then((text) => {
+    document.getElementById("readme").innerHTML = renderMarkdown(text);
+    document.getElementById("status").textContent = "";
+  })
+  .catch((e) => {
+    document.getElementById("status").textContent = "README の読み込みに失敗しました: " + e.message;
+  });
+</script>
+</body>
+</html>
