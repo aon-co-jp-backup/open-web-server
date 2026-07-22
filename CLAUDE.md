@@ -582,13 +582,13 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
      (`<DOMAIN> <BIND_IP> [UPSTREAM]`)であり、既存`runo.tokyo`
      サーバーブロック内の`/open-web-server/`という1つの`location`
      だけを差し替える(`/rgit/`等の他の`location`と同居)用途には
-     噛み合わないと判断し、既にRGitで実績のある「1 locationだけ
+     噛み合わないと判断し、既にRS-Gitで実績のある「1 locationだけ
      手書きで`proxy_pass`に差し替える」パターンを踏襲した。
      `/etc/nginx/conf.d/runo-tokyo-tls.conf`を
      `.bak-20260722-110433`へバックアップ後、**443(SSL)サーバー
      ブロック**(`listen 443 ssl`、14行目〜。ポート80のリダイレクト
      専用ブロックではないことを`grep -n 'server {\|listen \|server_name'`
-     で事前確認済み——RGit導入時に一度この取り違えが起きたと記録されて
+     で事前確認済み——RS-Git導入時に一度この取り違えが起きたと記録されて
      いる既知の落とし穴)内の
      `location /open-web-server/ { alias /var/www/open-web-server-site/; index index.html; }`
      を
@@ -1633,5 +1633,5 @@ ACME)まで実装・実検証済みとなり、Apache+Nginxハイブリッド仕
 [`open-raid-z`のCLAUDE.md](https://github.com/aon-co-jp/open-raid-z/blob/main/CLAUDE.md)
 「関連プロジェクト」節を参照。**どのリポジトリから読み始めても、
 この節を起点に他プロジェクトへ辿れる**ようにしてある(新規追加:
-RGit・RJSON・RS-Chiketto・RS-Blog・RS-EC。このリポジトリ自身の状況は
+RS-Git・RJSON・RS-Chiketto・RS-Blog・RS-EC。このリポジトリ自身の状況は
 このファイルの他の節・HANDOFFを参照)。
