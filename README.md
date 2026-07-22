@@ -154,28 +154,47 @@ match (method, path.as_str()) {
 これを忘れると Idempotency-Key 必須化(§0 のゼロロス保証の要)が効かない
 エンドポイントを作ってしまいます。
 
-## 自己ホスト構成の方針(2026-07-21、ユーザー指示)
+## 自己ホスト構成の方針(2026-07-21策定、2026-07-22完了・DONE)
 
 `runo.tokyo/open-web-server`(紹介ページ)は当初nginxの`alias`による
-静的ファイル直接配信で公開したが、**それでは`open-web-server`自身が
+静的ファイル直接配信で公開していたが、**それでは`open-web-server`自身が
 Apache/Nginx相当のWebサーバーであることを実証できていない**という
-指摘を受け、構成を切り替える。
+指摘を受け、構成を切り替えた。**2026-07-22、実VPS上で完了・実HTTPS
+検証済み**(詳細は`CLAUDE.md`のHANDOFF「2026-07-22」節参照)。
 
-**方針**: `open-web-server`自体を実際に稼働させ(静的配信エンジンとして)、
-その手前を[`open-easy-web`](https://github.com/aon-co-jp/open-easy-web)の
-`scripts/gen-vhost.sh`で生成した設定でプロキシする形にする——nginxの
-手書きlocationから、実際に`open-web-server`が配信する構成へ移行する。
+**実施内容**:
 
-1. VPS上に`open-web-server`をデプロイし、`web_vhosts.toml`で
-   紹介ページ(`site/index.html`)を配信させる(`OPEN_WEB_SERVER_WEB_VHOSTS_FILE`
-   環境変数、詳細は`web_vhosts.toml.example`参照)。
-2. 手前のリバースプロキシ設定は、私が手書きするのではなく
-   `open-easy-web`の`scripts/gen-vhost.sh --stack=proxy`で生成する
-   (このエコシステムの正規の「サイト追加」手順を、`open-web-server`
-   自身のデプロイにも適用する)。
-3. これにより、`open-web-server`が実際にリクエストを受け、静的ファイル
-   配信エンジンとして機能していることを実トラフィックで示せる
-   (単にnginxが直接配信しているだけの状態から脱却する)。
+1. VPS上に`open-web-server`をデプロイし、`web_vhosts.toml`
+   (`host="runo.tokyo"`, `docroot="/root/open-web-server/site"`,
+   `php_enabled=false`)で紹介ページ(`site/index.html`)を配信させた
+   (`OPEN_WEB_SERVER_WEB_VHOSTS_FILE`環境変数、詳細は
+   `web_vhosts.toml.example`参照)。ポート`127.0.0.1:8103`
+   (`OPEN_WEB_SERVER_BIND`)でsystemdサービス`open-web-server.service`
+   として常駐。
+2. **手前のリバースプロキシ設定について(当初方針からの実装上の判断
+   変更)**: 当初は`open-easy-web`の`scripts/gen-vhost.sh --stack=proxy`
+   で生成する方針だったが、実際に検証したところ同スクリプトは
+   **ドメイン単位で新規vhostサーバーブロック一式を生成する**設計
+   (`<DOMAIN> <BIND_IP> [UPSTREAM]`)であり、本件のように**既存の
+   `runo.tokyo`サーバーブロック内の1つの`location`だけ**
+   (`/rgit/`等と同居)を`alias`から`proxy_pass`に差し替えるという
+   ユースケースには噛み合わない(ドメイン全体を再生成する形になり、
+   同居している他の`location`定義を壊すリスクがある)と判断した。
+   そのため、既に同じ`runo.tokyo`設定ファイルで実績のあるRGitと同じ
+   パターン(`location /rgit/ { proxy_pass http://127.0.0.1:8090/; ... }`)
+   に倣い、`/etc/nginx/conf.d/runo-tokyo-tls.conf`の443(SSL)サーバー
+   ブロック内の`location /open-web-server/`を`alias`から`proxy_pass
+   http://127.0.0.1:8103/`へ直接書き換えた(ポート80のリダイレクト
+   専用ブロックではなくSSLブロックであることを事前に確認済み——RGit
+   導入時に一度これを誤った既知の落とし穴があるため)。
+3. **実証**: `https://runo.tokyo/open-web-server/`が実際に
+   `open-web-server`プロセス経由で配信されていることを、`nginx -t`
+   だけでなく実際に(a) 正常系で`curl`が200と`<title>open-web-server</title>`
+   を返すこと、(b) `systemctl stop open-web-server`でプロセスを一時停止
+   すると同URLが**502**に変わること(=静的aliasではなく本当にプロキシ
+   していることの証明)、(c) `systemctl start`で再開すると200に戻ること、
+   の3段階で確認した(単に`nginx -t`が通っただけで「完了」と報告しない
+   よう徹底)。
 
 進捗・実機検証結果は`CLAUDE.md`のHANDOFF節に記録する。
 

@@ -553,6 +553,73 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-22 `runo.tokyo/open-web-server`を実際に`open-web-server`
+  自身が配信する構成へ切り替え完了(前回HANDOFF「2026-07-21」で策定した
+  方針の実行、README.md「自己ホスト構成の方針」節も参照)**:
+  1. VPS(`ssh conoha`、`/root/open-web-server`)を`git pull`で
+     `56a26a0`(README方針策定コミット)まで最新化。バイナリ
+     (`target/release/open-web-server`)は既にそれより新しい
+     タイムスタンプでビルド済みだったため再ビルド不要と判断。
+  2. `ss -ltnp`でVPS上の使用中ポートを確認(`8090`=rgit、
+     `8100`-`8102`=rs-chiketto/rs-blog/rs-ec使用中)、空いていた
+     **`8103`**を採用。
+  3. `/root/open-web-server/web_vhosts.toml`を新規作成
+     (`host="runo.tokyo"`、`docroot="/root/open-web-server/site"`、
+     `php_enabled=false`)。`crates/open-web-server-gateway/src/
+     web_vhost.rs`のホスト解決ロジック(`Host`ヘッダから振り分け)
+     を確認した上で、nginxが転送する`Host: runo.tokyo`と一致する
+     ようホスト名を設定。
+  4. `/etc/systemd/system/open-web-server.service`を新規作成
+     (`OPEN_WEB_SERVER_BIND=127.0.0.1:8103`、
+     `OPEN_WEB_SERVER_WEB_VHOSTS_FILE=/root/open-web-server/
+     web_vhosts.toml`、`Restart=always`)、`systemctl enable --now`。
+     `curl -H 'Host: runo.tokyo' http://127.0.0.1:8103/`で実際に
+     `site/index.html`(`<title>open-web-server</title>`)が返る
+     ことをローカル確認。
+  5. **nginx設定の切り替え(当初方針からの実装上の判断変更、詳細は
+     README.md「自己ホスト構成の方針」節に記載)**: `open-easy-web`の
+     `scripts/gen-vhost.sh`はドメイン単位の新規vhost一式生成用
+     (`<DOMAIN> <BIND_IP> [UPSTREAM]`)であり、既存`runo.tokyo`
+     サーバーブロック内の`/open-web-server/`という1つの`location`
+     だけを差し替える(`/rgit/`等の他の`location`と同居)用途には
+     噛み合わないと判断し、既にRGitで実績のある「1 locationだけ
+     手書きで`proxy_pass`に差し替える」パターンを踏襲した。
+     `/etc/nginx/conf.d/runo-tokyo-tls.conf`を
+     `.bak-20260722-110433`へバックアップ後、**443(SSL)サーバー
+     ブロック**(`listen 443 ssl`、14行目〜。ポート80のリダイレクト
+     専用ブロックではないことを`grep -n 'server {\|listen \|server_name'`
+     で事前確認済み——RGit導入時に一度この取り違えが起きたと記録されて
+     いる既知の落とし穴)内の
+     `location /open-web-server/ { alias /var/www/open-web-server-site/; index index.html; }`
+     を
+     `location /open-web-server/ { proxy_pass http://127.0.0.1:8103/; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; }`
+     に書き換え。`nginx -t`(既存の他ドメイン設定由来の無関係な警告
+     のみ、syntax ok)→`systemctl reload nginx`。
+  6. **実HTTPS検証(3段階、`nginx -t`が通っただけで完了と報告しない
+     方針を徹底)**:
+     - 通常時: `curl -o /dev/null -w '%{http_code}' https://runo.tokyo/open-web-server/`
+       → **`200`**、`curl ... | grep '<title>'` →
+       **`<title>open-web-server</title>`**(実際に`open-web-server`が
+       生成するHTMLであることを確認)。
+     - `systemctl stop open-web-server`でプロセスを一時停止した状態で
+       同URLを叩くと → **`502`**(nginxが本当にプロキシ待ち受け先の
+       プロセスへ転送しており、静的`alias`の名残ではないことの直接
+       証明——alias配信のままなら停止しても200のままのはず)。
+     - `systemctl start open-web-server`で再開後、同URLは
+       **`200`**に復帰することを再確認。
+  7. VPSローカル(`ssh conoha`上)からの`curl`でも`200`を再確認。
+  - **正直な開示・今回のスコープ外**: (1) `web_vhosts.toml`は現状
+    `runo.tokyo`向け1エントリのみ(将来他のvhostを追加する場合は
+    同ファイルに追記する運用)。(2) `open-easy-web`の
+    `domains.txt`/`engines.txt`(`gen-vhost.sh`が生成・追跡する管理
+    台帳)には今回の変更は反映していない(手書きでnginx locationを
+    直接編集したため)——将来的に`gen-vhost.sh`側を「既存サーバー
+    ブロック内の特定location差し替え」に対応させる拡張を行うなら、
+    その時に台帳との整合を取る。(3) `web_vhosts.toml.example`
+    (リポジトリ同梱のサンプル)自体は`audiocafe.tokyo`向けのまま
+    据え置き(VPS実機の`web_vhosts.toml`とは別物、後者はVPS上のみに
+    存在しGit管理対象外)。
+
 - **2026-07-21 固定IP不要のDDNS対応・クロスプラットフォーム配布・
   紹介ページ追加(ユーザー指示「固定IPでも、なくても...簡単にサーバーを
   立てられるように」「AlmaLinux/Ubuntu/Windows/Windows Server向け
