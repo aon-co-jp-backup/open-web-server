@@ -245,11 +245,28 @@ impl TenantRegistry {
     ///    どおりの登録)のテナントを返す。
     /// 3. どちらも無ければ`None`。
     pub async fn resolve(&self, host_header: &str, path: &str) -> Option<Arc<TenantHandle>> {
+        self.resolve_prefix_only(host_header, path)
+            .await
+            .or(self.resolve_host_only(host_header).await)
+    }
+
+    /// `resolve`のうち、`path_prefix`が実際に指定・一致した場合のみを返す
+    /// (host-onlyテナントへのフォールバックはしない)。`web_vhost`のような
+    /// 「hostのみでマッチする既存の仕組み」より本当に優先すべきなのは
+    /// パスプレフィックスが明示的に一致した場合だけであり、host-only
+    /// フォールバックまで含めてしまうと`web_vhost`より常に先に評価される
+    /// 既存の優先順位を崩してしまうため、`main::dispatch()`側で使い分ける
+    /// 目的で公開する(2026-07-22追記)。
+    pub async fn resolve_prefix_only(
+        &self,
+        host_header: &str,
+        path: &str,
+    ) -> Option<Arc<TenantHandle>> {
         let host = host_header.split(':').next().unwrap_or(host_header);
         let guard = self.tenants.read().await;
         let entries = guard.get(host)?;
 
-        let prefix_match = entries
+        entries
             .iter()
             .filter_map(|h| {
                 h.config
@@ -259,14 +276,18 @@ impl TenantRegistry {
                     .map(|p| (p.len(), h))
             })
             .max_by_key(|(len, _)| *len)
-            .map(|(_, h)| h.clone());
+            .map(|(_, h)| h.clone())
+    }
 
-        prefix_match.or_else(|| {
-            entries
-                .iter()
-                .find(|h| h.config.path_prefix.is_none())
-                .cloned()
-        })
+    /// `path_prefix`未指定(従来通りHostのみでマッチする)テナントのみを返す。
+    pub async fn resolve_host_only(&self, host_header: &str) -> Option<Arc<TenantHandle>> {
+        let host = host_header.split(':').next().unwrap_or(host_header);
+        let guard = self.tenants.read().await;
+        let entries = guard.get(host)?;
+        entries
+            .iter()
+            .find(|h| h.config.path_prefix.is_none())
+            .cloned()
     }
 
     pub async fn list(&self) -> Vec<TenantConfig> {

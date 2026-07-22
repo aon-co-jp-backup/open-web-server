@@ -127,8 +127,26 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
 
+            // ⓪同一Host配下の`path_prefix`付きマルチテナント(例:
+            // `runo.tokyo`の`/blog`→RS-Blog)は、host単位でしかマッチしない
+            // `web_vhost`より先に評価する必要がある(そうしないと`web_vhost`が
+            // 常に`/blog`等のパスも含めて奪ってしまう)。「分身の術」の
+            // 対象拡大、2026-07-22。
+            let prefix_tenant = match &host_header {
+                Some(h) => state.tenants.resolve_prefix_only(h, &path).await,
+                None => None,
+            };
+            if let Some(tenant) = prefix_tenant {
+                return proxy::forward_to_stripped(
+                    &tenant.config.backend_addr,
+                    tenant.config.path_prefix.as_deref(),
+                    req,
+                )
+                .await;
+            }
+
             // ①静的ファイル/PHPサイト向けvhost(`web_vhost`、Apache+Nginx
-            // ハイブリッド配信エンジン構想)を最優先で試す。
+            // ハイブリッド配信エンジン構想)を試す。
             let web_vhost = match &host_header {
                 Some(h) => state.web_vhosts.resolve(h).await,
                 None => None,
@@ -138,11 +156,9 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             }
 
             // ②複数ドメインを動的に振り分けるマルチテナントルーティング
-            // (APIバックエンド用途、`tenant_router`)。同一Host配下で
-            // `path_prefix`(例: `/blog`)を持つ複数テナントを共存させられる
-            // (2026-07-22、"分身の術"の対象拡大)。
+            // (APIバックエンド用途、`tenant_router`、host-onlyのフォールバック)。
             let tenant = match &host_header {
-                Some(h) => state.tenants.resolve(h, &path).await,
+                Some(h) => state.tenants.resolve_host_only(h).await,
                 None => None,
             };
 
