@@ -40,6 +40,21 @@ fn shared_client() -> &'static ProxyClient {
 ///
 /// 転送失敗(バックエンド接続不可等)は `502 Bad Gateway` にマッピングする。
 pub async fn forward_to(base_addr: &str, req: Request<Incoming>) -> Response<BoxBody> {
+    forward_to_stripped(base_addr, None, req).await
+}
+
+/// `forward_to`と同じだが、転送前に`strip_prefix`(例: `"/blog"`)を
+/// リクエストパスの先頭から除去してから転送する(2026-07-22追記、
+/// `tenant_router::TenantConfig::path_prefix`向け——RS-Blog/RS-Chiketto/
+/// RS-EC等のバックエンドはいずれも`/`をトップとして期待するルーティング
+/// 実装のため、プレフィックス込みのパスをそのまま渡すと404になる)。
+/// `strip_prefix`が`None`または一致しない場合は`forward_to`と全く同じ
+/// 挙動(既存呼び出し元への影響なし)。
+pub async fn forward_to_stripped(
+    base_addr: &str,
+    strip_prefix: Option<&str>,
+    req: Request<Incoming>,
+) -> Response<BoxBody> {
     let base_addr = base_addr.trim_end_matches('/');
     let base_url = if base_addr.contains("://") {
         base_addr.to_string()
@@ -59,11 +74,26 @@ pub async fn forward_to(base_addr: &str, req: Request<Incoming>) -> Response<Box
         }
     };
 
-    let path_and_query = parts
+    let original_path_and_query = parts
         .uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
+
+    let stripped_path_and_query;
+    let path_and_query = match strip_prefix {
+        Some(prefix) if !prefix.is_empty() => {
+            let path = parts.uri.path();
+            let query = parts.uri.query();
+            let new_path = crate::tenant_router::strip_path_prefix(path, prefix);
+            stripped_path_and_query = match query {
+                Some(q) => format!("{new_path}?{q}"),
+                None => new_path,
+            };
+            stripped_path_and_query.as_str()
+        }
+        _ => original_path_and_query,
+    };
 
     let upstream_uri: Uri = match format!("{base_url}{path_and_query}").parse() {
         Ok(uri) => uri,

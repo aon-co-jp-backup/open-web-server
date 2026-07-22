@@ -49,6 +49,15 @@ pub struct TenantConfig {
     pub backend_addr: String,
     /// このテナントが使う DB (aruaru-db 等)への接続文字列。
     pub db_uri: String,
+    /// 任意のパスプレフィックス(例: "/blog")。指定された場合、同じHostの
+    /// 配下で「このプレフィックスから始まるパスのみ」をこのテナントへ
+    /// 振り分ける("分身の術"の対象拡大、2026-07-22追記)。省略時(`None`)は
+    /// 従来通りHostのみでマッチし、後方互換を維持する(既存の登録済み
+    /// ルールは一切壊れない)。バックエンドへ転送する際はこのプレフィックス
+    /// 部分をリクエストパスから除去してから渡す(RS-Blog/RS-Chiketto/RS-EC
+    /// はいずれも`/`をトップとして期待するルーティング実装のため)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
 }
 
 /// ルーティング済みテナントの実行時ハンドル。
@@ -65,7 +74,12 @@ pub struct TenantHandle {
 /// リクエストパスの競合は増えない。
 #[derive(Debug, Default)]
 pub struct TenantRegistry {
-    tenants: RwLock<HashMap<String, Arc<TenantHandle>>>,
+    /// Hostごとに1件以上のテナントを保持する(同一Host配下で複数の
+    /// `path_prefix`を持つテナントを共存させるため、2026-07-22に
+    /// `Arc<TenantHandle>`単体から`Vec`へ変更。`path_prefix`未指定の
+    /// テナントは通常1Host1件のままで、この変更による既存動作への
+    /// 影響は無い)。
+    tenants: RwLock<HashMap<String, Vec<Arc<TenantHandle>>>>,
     /// 設定済みの場合、`add`/`remove`/`upsert`のたびに現在の全テナントを
     /// このパスへTOMLとして書き戻す(Apacheの`a2ensite`相当の永続化。
     /// 管理APIでの変更がプロセス再起動後も残るようにするための実用性
@@ -100,12 +114,16 @@ impl TenantRegistry {
     /// →rename)書き戻す。パス未設定なら何もしない。書き込み失敗は
     /// 呼び出し元のadd/remove自体を失敗させない(リクエストパスの
     /// 可用性を優先し、警告ログのみ残す)。
-    async fn persist(&self, tenants: &HashMap<String, Arc<TenantHandle>>) {
+    async fn persist(&self, tenants: &HashMap<String, Vec<Arc<TenantHandle>>>) {
         let Some(path) = self.persist_path.read().await.clone() else {
             return;
         };
 
-        let domains: Vec<TenantConfig> = tenants.values().map(|h| h.config.clone()).collect();
+        let domains: Vec<TenantConfig> = tenants
+            .values()
+            .flatten()
+            .map(|h| h.config.clone())
+            .collect();
         let file = DomainsFile { domains };
 
         let toml_str = match toml::to_string_pretty(&file) {
@@ -140,53 +158,115 @@ impl TenantRegistry {
         let mut guard = self.tenants.write().await;
         let count = parsed.domains.len();
         for config in parsed.domains {
-            guard.insert(
-                config.host.clone(),
-                Arc::new(TenantHandle { config }),
-            );
+            guard
+                .entry(config.host.clone())
+                .or_default()
+                .push(Arc::new(TenantHandle { config }));
         }
         Ok(count)
     }
 
     /// ドメインを1件追加する(ノーダウンタイム、既存接続には影響しない)。
-    /// 指定ホスト(サブドメイン含むフルホスト名)が既に登録済みか。
+    /// 指定ホスト(サブドメイン含むフルホスト名)が既に登録済みか
+    /// (`path_prefix`を問わず、そのホストに何か1件でも登録があるか)。
     /// `update_tenant`ハンドラで「変更」と「新規追加」を区別するために使う。
     pub async fn exists(&self, host: &str) -> bool {
-        self.tenants.read().await.contains_key(host)
+        self.tenants
+            .read()
+            .await
+            .get(host)
+            .is_some_and(|v| !v.is_empty())
     }
 
+    /// 同一Host配下で(path_prefixの有無・値まで含めて)完全に同じ組み合わせが
+    /// 既に登録されていないかを見る(重複登録防止、`path_prefix`が異なれば
+    /// 別テナントとして共存できる——"分身の術"の対象拡大)。
     pub async fn add(&self, config: TenantConfig) -> Result<(), TenantError> {
         let mut guard = self.tenants.write().await;
-        if guard.contains_key(&config.host) {
+        let entries = guard.entry(config.host.clone()).or_default();
+        if entries
+            .iter()
+            .any(|h| h.config.path_prefix == config.path_prefix)
+        {
             return Err(TenantError::AlreadyExists(config.host));
         }
-        guard.insert(config.host.clone(), Arc::new(TenantHandle { config }));
+        entries.push(Arc::new(TenantHandle { config }));
         self.persist(&guard).await;
         Ok(())
     }
 
-    /// 既存ドメインの設定を置き換える(存在しなければ追加と同じ扱い)。
+    /// 既存ドメイン(+`path_prefix`の組み合わせ)の設定を置き換える
+    /// (存在しなければ追加と同じ扱い)。
     pub async fn upsert(&self, config: TenantConfig) {
         let mut guard = self.tenants.write().await;
-        guard.insert(config.host.clone(), Arc::new(TenantHandle { config }));
+        let entries = guard.entry(config.host.clone()).or_default();
+        entries.retain(|h| h.config.path_prefix != config.path_prefix);
+        entries.push(Arc::new(TenantHandle { config }));
         self.persist(&guard).await;
     }
 
-    /// ドメインを削除する。
+    /// ドメインを削除する。**後方互換の挙動**: 引数は従来通りHostのみ
+    /// (`path_prefix`を持たない=省略された、旧来の1Host1テナント運用を
+    /// 想定した登録)を対象に削除する。`path_prefix`付きテナントを個別に
+    /// 削除したい場合は`remove_prefixed`を使う。
     pub async fn remove(&self, host: &str) -> Result<(), TenantError> {
+        self.remove_prefixed(host, None).await
+    }
+
+    /// `host` + `path_prefix`の組み合わせでテナントを1件削除する。
+    pub async fn remove_prefixed(
+        &self,
+        host: &str,
+        path_prefix: Option<&str>,
+    ) -> Result<(), TenantError> {
         let mut guard = self.tenants.write().await;
-        let removed = guard.remove(host);
-        if removed.is_none() {
+        let Some(entries) = guard.get_mut(host) else {
             return Err(TenantError::NotFound(host.to_string()));
+        };
+        let before = entries.len();
+        entries.retain(|h| h.config.path_prefix.as_deref() != path_prefix);
+        if entries.len() == before {
+            return Err(TenantError::NotFound(host.to_string()));
+        }
+        if entries.is_empty() {
+            guard.remove(host);
         }
         self.persist(&guard).await;
         Ok(())
     }
 
-    /// Hostヘッダ(ポート番号が付いている場合は除去して)からテナントを引く。
-    pub async fn resolve(&self, host_header: &str) -> Option<Arc<TenantHandle>> {
+    /// Hostヘッダ(ポート番号が付いている場合は除去して) + リクエストパスから
+    /// テナントを引く。マッチ規則(2026-07-22、"分身の術"の対象拡大):
+    /// 1. そのHost配下で`path_prefix`が指定されておりリクエストパスが
+    ///    そのプレフィックスで始まる登録のうち、最も長いプレフィックスの
+    ///    ものを優先する(`/blog`と`/blog/api`のように複数該当し得る場合、
+    ///    より具体的な方を選ぶ)。
+    /// 2. 該当が無ければ、`path_prefix`未指定(=Hostのみでマッチする従来
+    ///    どおりの登録)のテナントを返す。
+    /// 3. どちらも無ければ`None`。
+    pub async fn resolve(&self, host_header: &str, path: &str) -> Option<Arc<TenantHandle>> {
         let host = host_header.split(':').next().unwrap_or(host_header);
-        self.tenants.read().await.get(host).cloned()
+        let guard = self.tenants.read().await;
+        let entries = guard.get(host)?;
+
+        let prefix_match = entries
+            .iter()
+            .filter_map(|h| {
+                h.config
+                    .path_prefix
+                    .as_ref()
+                    .filter(|p| !p.is_empty() && path.starts_with(p.as_str()))
+                    .map(|p| (p.len(), h))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, h)| h.clone());
+
+        prefix_match.or_else(|| {
+            entries
+                .iter()
+                .find(|h| h.config.path_prefix.is_none())
+                .cloned()
+        })
     }
 
     pub async fn list(&self) -> Vec<TenantConfig> {
@@ -194,16 +274,30 @@ impl TenantRegistry {
             .read()
             .await
             .values()
+            .flatten()
             .map(|h| h.config.clone())
             .collect()
     }
 
     pub async fn len(&self) -> usize {
-        self.tenants.read().await.len()
+        self.tenants.read().await.values().map(|v| v.len()).sum()
     }
 
     pub async fn is_empty(&self) -> bool {
-        self.tenants.read().await.is_empty()
+        self.len().await == 0
+    }
+}
+
+/// リクエストパス先頭から`path_prefix`を除去したパスを返す(バックエンドは
+/// `/`をトップとして期待するため)。除去後に空文字列になる場合は`"/"`を返す。
+pub fn strip_path_prefix(path: &str, prefix: &str) -> String {
+    let stripped = path.strip_prefix(prefix).unwrap_or(path);
+    if stripped.is_empty() {
+        "/".to_string()
+    } else if stripped.starts_with('/') {
+        stripped.to_string()
+    } else {
+        format!("/{stripped}")
     }
 }
 
@@ -217,6 +311,17 @@ mod tests {
             backend: BackendKind::OpenRuno,
             backend_addr: "127.0.0.1:9001".to_string(),
             db_uri: "postgres://localhost/db".to_string(),
+            path_prefix: None,
+        }
+    }
+
+    fn sample_prefixed(host: &str, prefix: &str, backend_addr: &str) -> TenantConfig {
+        TenantConfig {
+            host: host.to_string(),
+            backend: BackendKind::OpenRuno,
+            backend_addr: backend_addr.to_string(),
+            db_uri: "postgres://localhost/db".to_string(),
+            path_prefix: Some(prefix.to_string()),
         }
     }
 
@@ -225,7 +330,7 @@ mod tests {
         let registry = TenantRegistry::new();
         registry.add(sample("shop.example.com")).await.unwrap();
 
-        let resolved = registry.resolve("shop.example.com").await;
+        let resolved = registry.resolve("shop.example.com", "/").await;
         assert!(resolved.is_some());
         assert_eq!(resolved.unwrap().config.host, "shop.example.com");
     }
@@ -235,14 +340,14 @@ mod tests {
         let registry = TenantRegistry::new();
         registry.add(sample("shop.example.com")).await.unwrap();
 
-        let resolved = registry.resolve("shop.example.com:8080").await;
+        let resolved = registry.resolve("shop.example.com:8080", "/").await;
         assert!(resolved.is_some());
     }
 
     #[tokio::test]
     async fn resolve_unknown_host_is_none() {
         let registry = TenantRegistry::new();
-        assert!(registry.resolve("unknown.example.com").await.is_none());
+        assert!(registry.resolve("unknown.example.com", "/").await.is_none());
     }
 
     #[tokio::test]
@@ -265,7 +370,7 @@ mod tests {
         let registry = TenantRegistry::new();
         registry.add(sample("a.example.com")).await.unwrap();
         registry.remove("a.example.com").await.unwrap();
-        assert!(registry.resolve("a.example.com").await.is_none());
+        assert!(registry.resolve("a.example.com", "/").await.is_none());
     }
 
     #[tokio::test]
@@ -277,8 +382,117 @@ mod tests {
         updated.backend_addr = "127.0.0.1:9999".to_string();
         registry.upsert(updated).await;
 
-        let resolved = registry.resolve("a.example.com").await.unwrap();
+        let resolved = registry.resolve("a.example.com", "/").await.unwrap();
         assert_eq!(resolved.config.backend_addr, "127.0.0.1:9999");
+    }
+
+    /// 同一Hostに複数の`path_prefix`テナントを共存登録し、パスに応じて
+    /// 正しく振り分けられることを確認する("分身の術"の対象拡大、
+    /// 2026-07-22)。
+    #[tokio::test]
+    async fn path_prefix_routes_to_the_matching_backend_under_one_host() {
+        let registry = TenantRegistry::new();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/blog", "127.0.0.1:8101"))
+            .await
+            .unwrap();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/chiketto", "127.0.0.1:8100"))
+            .await
+            .unwrap();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/ec", "127.0.0.1:8102"))
+            .await
+            .unwrap();
+
+        let blog = registry.resolve("runo.tokyo", "/blog/posts/1").await.unwrap();
+        assert_eq!(blog.config.backend_addr, "127.0.0.1:8101");
+
+        let chiketto = registry.resolve("runo.tokyo", "/chiketto").await.unwrap();
+        assert_eq!(chiketto.config.backend_addr, "127.0.0.1:8100");
+
+        let ec = registry.resolve("runo.tokyo", "/ec/").await.unwrap();
+        assert_eq!(ec.config.backend_addr, "127.0.0.1:8102");
+
+        // 未登録のプレフィックス・ホスト無しのフォールバック無しなら None。
+        assert!(registry.resolve("runo.tokyo", "/other").await.is_none());
+    }
+
+    /// path_prefix指定のテナントと、Hostのみ(prefix未指定)のテナントが
+    /// 同居できる。prefixに一致すればそちらを優先、しなければ
+    /// prefix無しの方へフォールバックする(既存の1Host1テナント運用との
+    /// 後方互換)。
+    #[tokio::test]
+    async fn path_prefix_falls_back_to_host_only_tenant() {
+        let registry = TenantRegistry::new();
+        registry
+            .add(sample("runo.tokyo")) // path_prefix無し(従来運用のトップページ相当)
+            .await
+            .unwrap();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/blog", "127.0.0.1:8101"))
+            .await
+            .unwrap();
+
+        let top = registry.resolve("runo.tokyo", "/").await.unwrap();
+        assert_eq!(top.config.backend_addr, "127.0.0.1:9001");
+
+        let blog = registry.resolve("runo.tokyo", "/blog").await.unwrap();
+        assert_eq!(blog.config.backend_addr, "127.0.0.1:8101");
+    }
+
+    /// 同一Host+同一path_prefixの重複登録は拒否されるが、prefixが違えば
+    /// 別テナントとして共存できる(逆に言えば重複拒否はprefix込みで判定
+    /// されることの確認)。
+    #[tokio::test]
+    async fn add_duplicate_same_prefix_fails_but_different_prefix_succeeds() {
+        let registry = TenantRegistry::new();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/blog", "127.0.0.1:8101"))
+            .await
+            .unwrap();
+        let err = registry
+            .add(sample_prefixed("runo.tokyo", "/blog", "127.0.0.1:9999"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TenantError::AlreadyExists(_)));
+
+        registry
+            .add(sample_prefixed("runo.tokyo", "/ec", "127.0.0.1:8102"))
+            .await
+            .unwrap();
+        assert_eq!(registry.len().await, 2);
+    }
+
+    /// `remove_prefixed`で個別のprefixテナントだけを削除でき、残りの
+    /// テナントには影響しない。
+    #[tokio::test]
+    async fn remove_prefixed_removes_only_that_entry() {
+        let registry = TenantRegistry::new();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/blog", "127.0.0.1:8101"))
+            .await
+            .unwrap();
+        registry
+            .add(sample_prefixed("runo.tokyo", "/ec", "127.0.0.1:8102"))
+            .await
+            .unwrap();
+
+        registry
+            .remove_prefixed("runo.tokyo", Some("/blog"))
+            .await
+            .unwrap();
+
+        assert!(registry.resolve("runo.tokyo", "/blog").await.is_none());
+        assert!(registry.resolve("runo.tokyo", "/ec").await.is_some());
+    }
+
+    #[test]
+    fn strip_path_prefix_variants() {
+        assert_eq!(strip_path_prefix("/blog", "/blog"), "/");
+        assert_eq!(strip_path_prefix("/blog/", "/blog"), "/");
+        assert_eq!(strip_path_prefix("/blog/posts/1", "/blog"), "/posts/1");
+        assert_eq!(strip_path_prefix("/other", "/blog"), "/other");
     }
 
     #[tokio::test]
@@ -301,8 +515,8 @@ mod tests {
         let count = registry.load_from_toml(toml_str).await.unwrap();
         assert_eq!(count, 2);
         assert_eq!(registry.len().await, 2);
-        assert!(registry.resolve("shop.example.com").await.is_some());
-        assert!(registry.resolve("app.example.com").await.is_some());
+        assert!(registry.resolve("shop.example.com", "/").await.is_some());
+        assert!(registry.resolve("app.example.com", "/").await.is_some());
     }
 
     #[tokio::test]

@@ -121,6 +121,10 @@ pub async fn update_tenant(
 }
 
 /// `DELETE /admin/tenants/:host` 相当(パスの末尾セグメントをhostとして扱う)。
+/// 任意で `?path_prefix=/blog` クエリを付けると、そのHost配下の該当
+/// `path_prefix`テナントのみを削除する(2026-07-22追記、"分身の術"の
+/// 対象拡大)。クエリ省略時は従来通り`path_prefix`未指定のテナントを
+/// 対象にする(後方互換)。
 pub async fn remove_tenant(
     state: Arc<AppState>,
     req: &Request<Incoming>,
@@ -130,13 +134,47 @@ pub async fn remove_tenant(
         return resp;
     }
 
-    match state.tenants.remove(host).await {
+    let path_prefix = req.uri().query().and_then(|q| {
+        q.split('&')
+            .find_map(|kv| kv.strip_prefix("path_prefix="))
+            .map(|v| urlencoding_lite_decode(v))
+    });
+
+    match state
+        .tenants
+        .remove_prefixed(host, path_prefix.as_deref())
+        .await
+    {
         Ok(()) => text_response(StatusCode::OK, "tenant removed"),
         Err(TenantError::NotFound(host)) => {
             text_response(StatusCode::NOT_FOUND, format!("host '{host}' not found"))
         }
         Err(e) => text_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
+}
+
+/// クエリパラメータ値の最小限のパーセントデコード(`%2F` → `/` 等)。
+/// 本リポジトリは新規に`urlencoding`クレートへ依存させない方針のため、
+/// この用途(`path_prefix`クエリ値のみ)に限定した最小実装とする。
+fn urlencoding_lite_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
+                16,
+            ) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `GET /admin/tenants` — 登録済みドメイン一覧。

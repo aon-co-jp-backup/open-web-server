@@ -138,14 +138,23 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             }
 
             // ②複数ドメインを動的に振り分けるマルチテナントルーティング
-            // (APIバックエンド用途、`tenant_router`)。
+            // (APIバックエンド用途、`tenant_router`)。同一Host配下で
+            // `path_prefix`(例: `/blog`)を持つ複数テナントを共存させられる
+            // (2026-07-22、"分身の術"の対象拡大)。
             let tenant = match &host_header {
-                Some(h) => state.tenants.resolve(h).await,
+                Some(h) => state.tenants.resolve(h, &path).await,
                 None => None,
             };
 
             match tenant {
-                Some(tenant) => proxy::forward_to(&tenant.config.backend_addr, req).await,
+                Some(tenant) => {
+                    proxy::forward_to_stripped(
+                        &tenant.config.backend_addr,
+                        tenant.config.path_prefix.as_deref(),
+                        req,
+                    )
+                    .await
+                }
                 // ③単一アップストリームへの委譲(Apache+Tomcat型、`app_proxy`)。
                 None => match app_proxy::app_upstream_base() {
                     Some(base) => proxy::forward_to(&base, req).await,
