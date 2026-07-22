@@ -59,7 +59,29 @@
 //! 冗長化)をユーザー空間で実現する `aggligator` クレートを用いた実装を
 //! 提供する。**本物のカーネルMPTCP/SCTPではない**——調査結果・判断根拠の
 //! 詳細は `mptcp_channel` モジュールのdocを参照。
+//!
+//! ## `rs_smarttcp`について (2026-07-23、独立リポジトリへ切り出し)
+//!
+//! IOWN/APN(光電融合ネットワーク)のような超低遅延・ジッター無し回線と、
+//! Smart-TCP(AI生成通信プロトコル、fast/slowモデルによる判断構造)の
+//! 良いとこ取りハイブリッド。実測RTT・ジッターに基づく決定論的な
+//! ヒューリスティック判定(訓練済みMLモデルではない)で、リトライ間隔等を
+//! 2段階(Fast/Slow)に切り替える。当初このクレート内の`adaptive_channel`
+//! モジュールとして実装したが、`Rust-JSON`等と同じ「独立リポジトリとして
+//! 切り出し、必要な場所からpath依存する」パターンに合わせ、
+//! [`aon-co-jp/RS-SmartTCP`](https://github.com/aon-co-jp/RS-SmartTCP)へ
+//! 切り出した。**arXiv論文のSmart-TCPプロトコルそのものの実装ではない**
+//! ——詳細・スコープの限界はそちらのdocを参照。
+//!
+//! ## `accel` について (2026-07-23 追加)
+//!
+//! メモリキャッシュへの圧縮+暗号化変換を、CPU(実装済み)・GPU/NPU/
+//! 専用ハードウェアアクセラレータ(未実装の拡張点)で切り替え可能にする
+//! 抽象化。存在しないハードウェア対応を実装済みと偽らず、要求時は
+//! 安全にCPUへフォールバックする。詳細・調査結果は`accel`モジュールの
+//! docを参照。
 
+pub mod accel;
 pub mod auth;
 pub mod mptcp_channel;
 pub mod payload_crypto;
@@ -68,7 +90,9 @@ pub mod replay_guard;
 pub mod tls;
 pub mod udp_channel;
 
+pub use accel::{AccelBackend, PayloadAccelerator};
 pub use auth::MutualAuthConfig;
+pub use rs_smarttcp::{AdaptiveMode, AdaptivePolicy, NetworkQualityMonitor};
 pub use mptcp_channel::{send_mutation_over_mptcp, MptcpServer};
 pub use payload_crypto::PayloadCipher;
 pub use quic_channel::{

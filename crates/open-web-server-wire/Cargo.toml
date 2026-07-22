@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 open-web-server-core = { path = "../open-web-server-core" }
+rs-smarttcp = { path = "../../../RS-SmartTCP" }
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
@@ -29,6 +30,11 @@ hmac.workspace = true
 # 第3層: アプリケーション層ペイロード暗号化 (AEAD)
 chacha20poly1305.workspace = true
 hkdf.workspace = true
+
+# ペイロード変換アクセラレータ(accel.rs)の圧縮バックエンド。CPU実装
+# のみ(2026-07-23、GPU/NPU/専用ハードウェアは未実装の拡張点として
+# accel.rsのモジュールdocに明記)。
+flate2 = "1.0"
 
 # 通信層の四重化 第3伝送路: QUIC (quinn)
 quinn.workspace = true

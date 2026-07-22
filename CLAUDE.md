@@ -581,6 +581,57 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23 通信層にIOWN/APN×Smart-TCPの適応制御(`RS-SmartTCP`)と
+  圧縮+暗号化のハードウェアアクセラレータ抽象化(`accel.rs`)を追加
+  ——アーキテクチャ位置づけ(RPoem≈Tomcat、open-web-server≈Apache+
+  Nginxハイブリッド)を前提とした通信・DB連携の継続開発**:
+  1. **`RS-SmartTCP`を独立リポジトリとして新設**
+     ([aon-co-jp/RS-SmartTCP](https://github.com/aon-co-jp/RS-SmartTCP)、
+     ローカル`F:\runo\RS-SmartTCP`、VPS`/root/RS-SmartTCP`)。
+     IOWN/APN(NTTのオールフォトニクス・ネットワーク、日本-台湾間
+     3,000kmで約17ms・ジッター無しを実証済み、
+     [digitimes: NTT IOWN 2026](https://www.digitimes.com/news/a20251007PD227/ntt-iown-infrastructure-launch-2026.html))
+     のような超低遅延・ジッター無し回線を検知した際にリトライ間隔等を
+     積極化する適応制御。**正直な開示**: IOWN/APN自体はNTTが構築する
+     物理telecom基盤であり、このRust製ミドルウェアが「実装」できる
+     対象ではない——本クレートが行うのは「そのような回線が来た時に
+     ソフトウェア層が足を引っ張らない」設計のみ。
+  2. **RTT/ジッター推定アルゴリズムをRFC 6298(TCP)/RFC 9002(QUIC)と
+     同じSRTT/RTTVAR(Jacobson/Karels EWMA)へ設計**(当初の固定
+     ウィンドウ+標準偏差方式から、ユーザー指示による再検証を経て
+     書き換え——このエコシステムが既に使うQUICの輻輳制御と同じ
+     枯れたアルゴリズムに統一)。
+  3. **`Smart-TCP`という名前は使わなかった**: arXiv 2512.00491
+     ("Agentic AI-based Autonomous and Adaptive TCP Protocol")という
+     実在する論文と同名になり混同を招くため、ユーザー確認の上
+     `RS-SmartTCP`(既存のRS-接頭辞命名規則に準拠)とした。本クレートは
+     訓練済みMLモデルを使わない決定論的ヒューリスティックであり、
+     論文のプロトコルそのものの実装ではないことをdocに明記。
+  4. **`open-web-server-wire::accel`新設**(ユーザー指示「ハードウェアが
+     無くても圧縮+暗号化変換をCPUのみならずNPU/GPU/ハードウェア
+     アクセラレータでも対応可能に」): `AccelBackend`列挙型
+     (`Cpu`/`Gpu`/`Npu`/`HardwareAccelerator`)で将来のハードウェアを
+     API形状として先取りし、`Cpu`のみ実装(`flate2`圧縮+既存
+     `PayloadCipher`暗号化)。他バックエンドを要求してもパニックせず
+     `Cpu`へ安全にフォールバックし`tracing::warn!`で可視化——呼び出し側
+     のコードを変えずに将来ハードウェアが実装された時にそのまま差し
+     替わる設計。**`open-cuda::GpuDevice`は再利用しなかった**
+     (GEMM/Attention向けカーネル起動が前提の設計で、汎用バイト列の
+     圧縮・AEAD暗号化とは操作の性質が異なるため、NPU対応も含め独自の
+     軽量トレイトを新設)。GPU圧縮(NVIDIA nvCOMP)・GPU暗号化(学術研究
+     レベルのCUDA AES実装)は実在すると確認済みだが未統合、NPU汎用
+     圧縮/暗号化の実用ライブラリは調査時点で見当たらずと正直に記載。
+  5. **検証**: `cargo test -p open-web-server-wire`**21件全green**
+     (新規3件: CPUバックエンドでの圧縮+暗号化ラウンドトリップ〈実際に
+     入力より小さくなることを確認〉、未実装バックエンド要求時の
+     Cpuフォールバック、改竄された暗号文の復号拒否)。
+     `cargo build --workspace`リグレッション無し。
+  - 次にすべきこと: (1) `Ledger`の`retry_backoff`を`RS-SmartTCP`の
+    `AdaptivePolicy`経由に実際に配線する(現状は独立クレートとして
+    存在するのみ、呼び出し元は未接続)、(2) `accel::PayloadAccelerator`
+    をメモリキャッシュ層(将来実装)から実際に呼び出す配線、(3) GPU
+    バックエンド(nvCOMP等)の実装。
+
 - **2026-07-22 `runo.tokyo/open-web-server`を実際に`open-web-server`
   自身が配信する構成へ切り替え完了(前回HANDOFF「2026-07-21」で策定した
   方針の実行、README.md「自己ホスト構成の方針」節も参照)**:
