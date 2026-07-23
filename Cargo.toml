@@ -48,7 +48,11 @@ hkdf = "0.12"
 sha2 = "0.10"
 
 # 連携先クライアント
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+# default-features=falseでnative-tls(OpenSSL、Androidクロスビルドで
+# openssl-sysのネイティブビルド失敗の原因になっていた)を無効化し、
+# 既存方針通りrustls(pure Rust実装)に統一する(2026-07-23、Android版
+# クロスコンパイル検証で発覚)。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "system-proxy"] }
 
 # 通信層の四重化 第3伝送路: QUIC (Multipath QUICへの拡張余地を残した第一実装)
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "log"] }

@@ -581,6 +581,51 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23(続き) Android版の実現可能性を実機クロスコンパイルで実証
+  ——`open-web-server`本体が実際にAndroid ELFバイナリとしてビルドできる
+  ことを確認(ユーザー指示「Androidスマホやタブレットにインストールする
+  とopen-web-serverを簡単インストール」、「机上の計画」で終わらせず
+  実証した)**:
+  1. この開発マシンには**Android Studio・SDK・NDK(27.1.12297006)・
+     `cargo-ndk`・rustupのAndroidターゲット4種(aarch64/armv7/i686/
+     x86_64-linux-android)が既に揃っていた**——想定より実現可能性が
+     高いことが判明。
+  2. `cargo ndk -t aarch64-linux-android build --release --bin
+     open-web-server`を実行したところ、`reqwest`(既定でnative-tls
+     経由の`openssl-sys`をリンクする)がAndroid向けのOpenSSLクロス
+     ビルド設定が無く失敗した。
+  3. **実バグ修正**: ルート`Cargo.toml`の`reqwest`依存が
+     `features = ["json", "rustls-tls"]`と書きつつ`default-features`を
+     falseにしておらず、reqwestの既定feature(`default-tls`= native-tls)
+     も同時に有効なままだった(`rustls-tls`を足しても`default-tls`が
+     残っていれば`openssl-sys`は消えない、という見落とされがちな
+     Cargo featureの罠)。`default-features = false`にし、既定で
+     必要な`charset`/`http2`/`system-proxy`を明示的に復元する形へ修正
+     (このリポジトリの既存方針「TLSはrustls(pure Rust実装)に統一」を
+     徹底、Android以外のプラットフォームでもOpenSSL系統の脆弱性面を
+     減らせる副次効果もある)。
+  4. **再検証**: 同じ`cargo ndk`コマンドが成功し、実際に
+     `target/aarch64-linux-android/release/open-web-server`
+     (`file`コマンドで`ELF 64-bit LSB pie executable, ARM aarch64...
+     interpreter /system/bin/linker64...for Android 21`と確認、
+     Android 21=Lollipop以降で動く設定)が生成されることを実証した。
+     `cargo build --workspace`(通常のWindows/Linuxビルド)もリグレッション
+     無しであることを確認済み。
+  5. **正直な開示・次にすべきこと**: 実バイナリが生成できることは
+     証明できたが、これは「Androidアプリ」そのものではない。実際に
+     スマホ/タブレットへ配布・実行するには、(a) この実行ファイルを
+     APK内(`jniLibs`配下等)に同梱し`ProcessBuilder`経由で起動する
+     Kotlin/Java製の薄いAndroidアプリシェルの新規開発、(b) フォアグラウンド
+     サービス化(バックグラウンドでの継続動作)、(c) ユーザー要求の
+     3電源プロファイル(省電力版/常時電源接続版/通常版)をAndroidの
+     `WorkManager`/`WakeLock`/`PowerManager`と連携させる実装、
+     (d) APK署名・配布(Google Play or 直接配布)、が未着手のまま残る
+     ——今回はコア実行ファイル自体のクロスコンパイル実現可能性を
+     実証したところまで。「分身の術」(ドメイン毎インストール不要)の
+     仕組み自体は既存の`tenant_router`/`web_vhost`がプラットフォーム
+     非依存でそのまま機能するため、Android版固有の追加実装は不要と
+     見込まれる。
+
 - **2026-07-23(続き) `open-cuda`側でGPU圧縮/暗号化カーネル(ChaCha20)
   実装完了——`accel.rs::AccelBackend::Gpu`の実装候補ができた
   (関連リポジトリ動向の記録)**: このリポジトリの`accel.rs`が
