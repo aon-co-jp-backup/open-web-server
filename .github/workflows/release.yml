@@ -32,10 +32,8 @@ jobs:
       # 相対位置(`$GITHUB_WORKSPACE`の1つ上=`../RS-SmartTCP`)にsibling
       # リポジトリをcheckoutする(2026-07-23、v0.1.0タグでの初回リリースで
       # 発覚したビルド失敗の修正)。
-      - uses: actions/checkout@v4
-        with:
-          repository: aon-co-jp/RS-SmartTCP
-          path: ../RS-SmartTCP
+      - name: Checkout RS-SmartTCP (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -54,10 +52,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: aon-co-jp/RS-SmartTCP
-          path: ../RS-SmartTCP
+      - name: Checkout RS-SmartTCP (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
