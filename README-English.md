@@ -380,6 +380,35 @@ open-web-server/
 - [x] First cut of the UDP-IP redundant transport path
   (`open-web-server-wire::udp_channel`; retransmit, a secondary TCP path,
   and an open-runo-side receiving listener remain future work)
+- [x] **CORS support** (2026-07-23, `middleware::cors`, opt-in) — lets a
+  browser-side WASM frontend (e.g. `open-easy-web`'s domain-setup wizard)
+  call this server's admin API (`/admin/*`) from a different origin.
+  Disabled by default; set `OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS`
+  (comma-separated) to enable. Preflight (`OPTIONS`) requests from allowed
+  origins get an immediate `204` with
+  `Access-Control-Allow-Origin`/`-Methods`/`-Headers` (including
+  `x-admin-token`), and normal responses to allowed origins get the same
+  headers appended after dispatch. Verified with two real-HTTP integration
+  tests (`cors_headers_and_preflight_work_over_real_http`,
+  `cors_headers_are_absent_by_default_over_real_http`).
+- [x] **DuckDNS real-endpoint verification** (2026-07-23) — sent a real
+  request to `https://www.duckdns.org/update` with a dummy invalid token
+  from this sandbox; confirmed the real response is `HTTP 200` with a
+  plain-text body of `KO` on failure, matching the existing
+  `update_duckdns()` parsing logic (`body.trim_start().starts_with("OK")`).
+  A full success-path E2E with a real DuckDNS account/token is still
+  outside this project's automation scope (user's own action).
+- [ ] **Android app shell** (started 2026-07-23, incomplete) — a minimal
+  single-Activity Kotlin app under `android/` that launches the
+  `cargo ndk`-cross-compiled `open-web-server` binary (renamed to
+  `libopenwebserver.so` under `jniLibs/arm64-v8a/` so it lands in the
+  app's `nativeLibraryDir`, one of the few locations still executable
+  under Android 10+'s W^X restrictions) via `ProcessBuilder`, then polls
+  its own `GET /healthz` to prove the binary actually started and
+  responds. Power-profile UI, a foreground service, and signing/
+  distribution are intentionally out of scope for this pass — see
+  `CLAUDE.md`'s HANDOFF entry for the exact build/emulator verification
+  status.
 
 ## License
 

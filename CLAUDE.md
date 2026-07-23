@@ -581,6 +581,123 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23(続き) 残課題3項目(CORS対応・DuckDNS実応答検証・Android
+  APK化着手)——ユーザー指示「正直な残課題を進めて」**:
+  1. **CORS対応(最も明確に前進・完了)**: 新規`middleware/cors.rs`。
+     `OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS`(カンマ区切り、未設定なら
+     既定無効=CORSヘッダー一切無し)というオプトイン方式で実装。
+     `main.rs`の`route()`関数で、①`OPTIONS`+`Access-Control-Request-
+     Method`のプリフライトは許可オリジンからのものに限り`dispatch`より
+     先に`204`+`Access-Control-Allow-Origin`/`-Methods`(`GET, POST, PUT,
+     DELETE, OPTIONS`)/`-Headers`(`content-type, x-admin-token,
+     authorization, idempotency-key`——管理APIの`x-admin-token`を含む)で
+     即応答、②通常リクエストは`dispatch`+gzip圧縮の後、許可オリジンから
+     のものにのみ同じヘッダーを付与、という2段構成。許可されていない
+     オリジンにはヘッダーを一切付けない(サーバー側でリクエスト自体を
+     拒否するのではなく、ブラウザ側のCORS enforcementに委ねる一般的な
+     設計)。**検証**: `middleware::cors`単体テスト8件(許可/拒否判定・
+     プリフライト検出・ヘッダー付与のロジック)、`main.rs`に実HTTP経由の
+     統合テスト2件を追加
+     (`cors_headers_and_preflight_work_over_real_http`——許可オリジンへの
+     ヘッダー付与・拒否オリジンへの非付与・`/admin/tenants`への
+     プリフライトが`204`で正しく処理されること[プリフライト自体は
+     ハンドラ未実装のパスのため、`204`が返ること自体が`dispatch`より
+     先に横取りされた直接証拠になる]を実TCP接続で確認、
+     `cors_headers_are_absent_by_default_over_real_http`——環境変数
+     未設定時は既存動作を一切変えないことを確認)。
+     `cargo test -p open-web-server-gateway --features ddns,sftp,upnp
+     -- --test-threads=1`は**83件全green**(新規10件を含む)。
+     `open-easy-web`側との実ブラウザ別オリジンE2E確認は、CORS機能自体は
+     ブラウザ標準のfetch/CORSプロトコルに従うだけで`open-easy-web`側の
+     コード変更が一切不要なため、今回は上記の実HTTP統合テストに検証を
+     委ねた(**正直な開示**: `open-easy-web`のウィザードを実際に別
+     ポートから動かしてのブラウザ実機確認までは今回のパスでは実施
+     していない、次回の余力があるパスでの追加確認候補)。
+  2. **DuckDNS実応答検証(トークン無しでも検証できる範囲)**: この
+     サンドボックス環境から`https://www.duckdns.org/`への外部到達性を
+     まず確認(`curl`で200応答を実際に確認)。その上で、ダミーの無効
+     トークン(`00000000-0000-0000-0000-000000000000`)+存在しない
+     ドメイン名で実際に`GET https://www.duckdns.org/update?domains=...
+     &token=...`を叩いたところ、**`HTTP 200`+プレーンテキストボディ
+     `KO`**が実際に返ることを確認した(`curl -v`のログで実証)。
+     `free_domain.rs::update_duckdns()`の判定ロジック
+     (`body.trim_start().starts_with("OK")`、失敗時`ok=false`)は、
+     この実際のレスポンス形式と一致していることを確認できたため、
+     **コード修正は不要と判断**(パースロジック自体は既に正しかった)。
+     **正直な開示**: 実DuckDNSアカウント作成・有効トークンでの成功系
+     (`OK`応答)の実接続確認は、他社サービスの認証情報を代行取得しない
+     既存方針により今回も実施していない——ユーザー自身がduckdns.orgで
+     アカウント作成・トークン取得した上で一度実接続確認することが
+     引き続き必要。
+  3. **Android APK化(第一段階として着手、完成はしていない)**:
+     - `android/`配下に新規Kotlin/Gradleプロジェクトを作成(単一
+       `MainActivity`、`androidx.appcompat`+`kotlinx-coroutines`のみの
+       最小構成)。`cargo ndk -t aarch64-linux-android build --release
+       --bin open-web-server`(この開発マシンには既にNDK
+       27.1.12297006・Android SDK・`cargo-ndk`・Android Studioが揃って
+       いることを確認済み——前回HANDOFF記載通り)で生成したELF実行
+       ファイルを、`libopenwebserver.so`という名前で`jniLibs/
+       arm64-v8a/`配下に配置する設計とした(Termux等が使う既知の手法:
+       通常の`assets/`配下は最近のAndroidのW^X制約下で実行できないが、
+       `nativeLibraryDir`〈ネイティブライブラリ用に確保された領域〉は
+       この制約の例外になるため、実行ファイルを`.so`の皮を被せて
+       同梱する)。`MainActivity`は起動ボタン押下で
+       `ProcessBuilder(nativeLibraryDir/libopenwebserver.so)`を起動し、
+       `OPEN_WEB_SERVER_BIND=127.0.0.1:18099`を環境変数で渡した上で、
+       自分自身へ`GET /healthz`をポーリングし、実際に`200`が返ることを
+       画面上のログに表示する——「実機/エミュレータ上で本体バイナリが
+       実際に起動し、HTTPリクエストに応答する」という最小限の一気通貫を
+       実証するための最小スコープに絞った(3電源プロファイルUI・
+       フォアグラウンドサービス化・署名/配布は今回のスコープ外、
+       ユーザー要望原文にも「完成しなくてよい」と明記済み)。
+     - **実際にビルドまで進めた内容**: `cargo ndk`による
+       `aarch64-linux-android`向けクロスビルドは実際に成功し
+       (`target/aarch64-linux-android/release/open-web-server`、
+       `file`コマンドで`ELF 64-bit LSB pie executable, ARM aarch64...
+       for Android 21`と確認)、`jniLibs/arm64-v8a/libopenwebserver.so`
+       として配置済み。Gradle(このマシンにwrapper無しで実行可能な
+       キャッシュ済み配布物`gradle-8.11.1-all`が`~/.gradle/wrapper/
+       dists/`に存在することを発見し、`gradlew`無しでも
+       `gradle-8.11.1/bin/gradle`を直接叩く形で実行できた)での
+       `assembleDebug`は、2件の実バグ修正
+       (①`android/local.properties`の`sdk.dir`をWindowsパスの
+       バックスラッシュのまま書いたため`.properties`ファイルの
+       エスケープ解釈で壊れていた——スラッシュ区切りに修正、
+       ②`MainActivity.kt`の`Process.pid()`がこのAndroidターゲット環境
+       ではコンパイルエラーになった——`process.isAlive`に置き換え)を
+       経て**実際に成功**し、`android/app/build/outputs/apk/debug/
+       app-debug.apk`が生成された。
+     - **エミュレータ起動も実施**: このマシンに既存のAVD(`Pixel_9_Pro`)
+       があることを確認し、`emulator -avd Pixel_9_Pro -no-window`で
+       ヘッドレス起動を試みた——起動ログ上はブート処理が進行し
+       (GPU初期化・ディスプレイ設定等は正常)、エミュレータプロセス自体は
+       正常稼働した。
+     - **正直な制約(ここが実機/エミュレータ確認の最終到達点)**: `adb
+       devices`が一貫して`emulator-5554  unauthorized`を返し続け、
+       `apk install`/`am start`が実行できなかった。これはコード上の
+       バグではなく、Androidの標準的なUSBデバッグ承認ダイアログ
+       (「このコンピュータからのデバッグを許可しますか」の画面タップ)
+       を、`-no-window`のヘッドレス起動では物理的に承認できないという
+       **この検証環境固有の制約**(GUI操作を伴わない自動化セッションでは
+       解消できない)。`adb kill-server`/`start-server`での再試行でも
+       状況は変わらなかった。これにより「**APK生成・エミュレータ起動
+       までは実証済み、`adb install`以降の実機/エミュレータ上での
+       `/healthz`応答確認(ユーザー要望原文の最優先ゴール)は今回の
+       セッションでは完了できなかった**」というのが正直な到達点。
+       **次回セッションへの申し送り**: (a) GUI操作が可能なセッション
+       (Android Studio経由、または`computer-use`等の画面操作ツールが
+       使えるセッション)であれば、エミュレータ画面上の承認ダイアログを
+       直接タップして解消できる可能性が高い、(b)
+       別解として、AVDの`userdata.img`に事前に信頼済み鍵
+       (`/data/misc/adb/adb_keys`)を書き込んでおく、または
+       `-writable-system`+ルート化したユーザービルドイメージを使う、
+       という非対話的な回避策も次回調査の価値がある。
+  - **検証まとめ**: `cargo build --workspace` / `cargo test -p
+    open-web-server-gateway --features ddns,sftp,upnp -- --test-threads=1`
+    (83件全green)を確認。型チェックのみでの完了報告は行っていない
+    (CORS: 実HTTP統合テスト、DuckDNS: 実`curl`によるライブエンドポイント
+    確認、Android: 実`cargo ndk`クロスビルドで実行ファイル生成まで確認)。
+
 - **2026-07-23(続き) 無料DDNS(DuckDNS)を単一ドメインから最大20ドメイン
   対応へ拡張(ユーザー追加指示「open-web-server/open-easy-webを同時に
   インストールした一台に20ドメインまで取得と自動更新可能にして」)**:

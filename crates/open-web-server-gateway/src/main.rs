@@ -215,16 +215,32 @@ async fn route(
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    let span = tracing::info_span!("http_request", %method, %path, status = tracing::field::Empty);
+
+    // CORS(`middleware::cors`、既定無効・オプトイン): プリフライト
+    // (`OPTIONS` + `Access-Control-Request-Method`)は、許可オリジンからの
+    // ものであればルーティングより先に`204`で即応答し、`dispatch`へは
+    // 一切渡さない(ブラウザの実際のプリフライト仕様通り)。
+    if let Some(preflight_response) = middleware::cors::handle_preflight(&method, req.headers()) {
+        tracing::Span::current().record("status", preflight_response.status().as_u16());
+        let _enter = span.enter();
+        tracing::info!("cors preflight handled");
+        return Ok(preflight_response);
+    }
+
     // Nginx互換のgzip圧縮(compression.rs)を適用する際、レスポンス側
     // だけを見ても`Accept-Encoding`は分からない(すでにreqをdispatchへ
     // 渡した後では読めなくなる)ため、先にヘッダだけ複製しておく。
+    // CORSレスポンスヘッダーの付与(`Origin`ヘッダー判定)も同じ理由で
+    // 先に複製しておく必要がある。
     let accept_encoding_headers = req.headers().clone();
-    let span = tracing::info_span!("http_request", %method, %path, status = tracing::field::Empty);
+    let cors_request_headers = req.headers().clone();
 
     async move {
         let started = std::time::Instant::now();
         let response = dispatch(state, req).await;
         let response = compression::maybe_gzip(&accept_encoding_headers, response).await;
+        let response = middleware::cors::apply_response_headers(&cors_request_headers, response);
 
         tracing::Span::current().record("status", response.status().as_u16());
         tracing::info!(
@@ -786,5 +802,152 @@ mod tests {
         assert_eq!(sender.send_request(del_missing_req).await.unwrap().status(), StatusCode::NOT_FOUND);
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// `OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS`もプロセス全体のグローバル
+    /// 環境変数のため、`ADMIN_TOKEN_ENV_LOCK`と同じ理由で直列化する。
+    static CORS_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// エンドツーエンド検証(ユーザー指示、2026-07-23 CORS対応):
+    /// `open-easy-web`のウィザードが別オリジンから`open-web-server`の
+    /// 管理APIを叩けるようにするCORS実装を、実HTTP経由で3点確認する。
+    /// (a) 許可オリジンからの通常リクエストには`Access-Control-Allow-*`
+    /// ヘッダーが実際に付く、(b) 許可されていないオリジンからのリクエスト
+    /// には付かない、(c) `OPTIONS`プリフライトが`204`+正しいヘッダーで
+    /// 正しく処理される(実`dispatch`へは到達しないことも
+    /// `Access-Control-Allow-Methods`の内容で間接的に確認できる)。
+    #[tokio::test]
+    async fn cors_headers_and_preflight_work_over_real_http() {
+        let _cors_guard = CORS_ENV_LOCK.lock().await;
+        std::env::set_var(
+            "OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS",
+            "http://allowed.example:5173",
+        );
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // (a) 許可オリジンからの通常リクエスト(`/healthz`)には
+        // `Access-Control-Allow-Origin`が実際に付く。
+        let mut sender = connect(addr).await;
+        let allowed_req = Request::builder()
+            .method(Method::GET)
+            .uri("/healthz")
+            .header("origin", "http://allowed.example:5173")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let allowed_resp = sender.send_request(allowed_req).await.unwrap();
+        assert_eq!(allowed_resp.status(), StatusCode::OK);
+        assert_eq!(
+            allowed_resp
+                .headers()
+                .get("access-control-allow-origin")
+                .expect("allowed origin should receive Access-Control-Allow-Origin"),
+            "http://allowed.example:5173"
+        );
+
+        // (b) 許可されていないオリジンからの同じリクエストにはCORSヘッダーが
+        // 一切付かない(レスポンス自体は通常通り200で返る=CORSはブラウザ側の
+        // enforcement前提であり、サーバー側で拒否するものではない)。
+        let mut sender = connect(addr).await;
+        let disallowed_req = Request::builder()
+            .method(Method::GET)
+            .uri("/healthz")
+            .header("origin", "http://evil.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let disallowed_resp = sender.send_request(disallowed_req).await.unwrap();
+        assert_eq!(disallowed_resp.status(), StatusCode::OK);
+        assert!(
+            disallowed_resp.headers().get("access-control-allow-origin").is_none(),
+            "a disallowed origin must not receive any CORS headers"
+        );
+
+        // (c) `OPTIONS`プリフライトが`204`+`Access-Control-Allow-Methods`/
+        // `Access-Control-Allow-Headers`(`x-admin-token`を含む)で正しく
+        // 処理される。管理APIのパス(`/admin/tenants`)を対象にする——
+        // このパス自体には`OPTIONS`ハンドラが実装されていないため、もし
+        // CORSミドルウェアがルーティングより先にプリフライトを横取り
+        // していなければ`404`になるはずで、`204`が返ること自体が
+        // 「dispatchより先に処理された」ことの直接証拠になる。
+        let mut sender = connect(addr).await;
+        let preflight_req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/admin/tenants")
+            .header("origin", "http://allowed.example:5173")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "x-admin-token, content-type")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let preflight_resp = sender.send_request(preflight_req).await.unwrap();
+        assert_eq!(preflight_resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            preflight_resp.headers().get("access-control-allow-origin").unwrap(),
+            "http://allowed.example:5173"
+        );
+        let allow_headers = preflight_resp
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            allow_headers.contains("x-admin-token"),
+            "Access-Control-Allow-Headers must include x-admin-token so the admin API remains callable cross-origin"
+        );
+        let allow_methods = preflight_resp
+            .headers()
+            .get("access-control-allow-methods")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(allow_methods.contains("POST"));
+
+        std::env::remove_var("OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS");
+    }
+
+    /// CORSが未設定(既定=無効)の場合、既存動作を一切変えないことの実HTTP
+    /// 経由の確認(オプトイン方式であることの直接検証)。
+    #[tokio::test]
+    async fn cors_headers_are_absent_by_default_over_real_http() {
+        let _cors_guard = CORS_ENV_LOCK.lock().await;
+        std::env::remove_var("OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/healthz")
+            .header("origin", "http://anything.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "CORS headers must never appear when OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS is unset"
+        );
     }
 }

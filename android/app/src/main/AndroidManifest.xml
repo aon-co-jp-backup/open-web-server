@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.OpenWebServer"
+        android:usesCleartextTraffic="true">
+
+        <!--
+          open-web-server本体はKotlinコードではなくクロスコンパイル済みの
+          ネイティブ実行ファイル(`libopenwebserver.so`、実体はELF実行
+          ファイルをjniLibs命名規則に合わせてリネームしたもの——nativeLibraryDir
+          配下はAndroid 10+のW^X制約下でも実行可能な数少ない領域のため、この
+          「実行ファイルをlib*.soとして配置する」手法を採用している)を
+          `MainActivity`が`ProcessBuilder`で起動する構成。フォアグラウンド
+          サービス化は今回のスコープ外(CLAUDE.md参照)。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
