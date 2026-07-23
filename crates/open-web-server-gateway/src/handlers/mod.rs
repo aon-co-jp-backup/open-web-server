@@ -1,5 +1,6 @@
 pub mod items;
 pub mod keys;
+pub mod sftp_info;
 pub mod state_query;
 pub mod tenants;
 pub mod tls;

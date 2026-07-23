@@ -41,6 +41,15 @@ tracing-opentelemetry.workspace = true
 rcgen.workspace = true
 reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
+# 組み込みSFTPサーバー(sftp feature)向け。pure-Rust SSH/SFTP実装
+# (外部sshd/vsftpdに依存しない、既存の「単一バイナリで完結する」設計思想に
+# 合わせる)。activeにメンテナンスされていることを2026-07時点でcrates.io/
+# GitHub上で確認済み。
+russh = { version = "0.45", optional = true }
+russh-sftp = { version = "2", optional = true }
+# UPnP IGD自動ポート開放(upnp feature)向け。`igd`の後継で活発にメンテ
+# されている`igd-next`を採用(2026-07時点でcrates.io確認済み)。
+igd-next = { version = "0.15", optional = true, features = ["aio_tokio"] }
 
 [features]
 default = []
@@ -48,6 +57,11 @@ default = []
 acme = ["dep:reqwest", "dep:ring"]
 # 固定IPを持たない自宅サーバー等向けの簡易DDNS更新(`ddns.rs`)。
 ddns = ["dep:reqwest"]
+# 組み込みSFTPサーバー(`sftp.rs`)。既定オフ、`OPEN_WEB_SERVER_SFTP_BIND`で有効化。
+sftp = ["dep:russh", "dep:russh-sftp"]
+# UPnP IGDによるポート自動開放の補助機能(`upnp.rs`)。既定オフ、
+# `OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true`で有効化。
+upnp = ["dep:igd-next"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

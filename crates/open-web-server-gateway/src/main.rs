@@ -18,10 +18,14 @@ mod middleware;
 mod php_server;
 mod proxy;
 mod response;
+#[cfg(feature = "sftp")]
+mod sftp;
 mod state;
 mod static_files;
 mod telemetry;
 mod tenant_router;
+#[cfg(feature = "upnp")]
+mod upnp;
 mod web_vhost;
 
 use std::net::SocketAddr;
@@ -74,6 +78,10 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
         (Method::GET, "/admin/keys") => handlers::keys::key_status(state, &req).await,
         (Method::POST, "/admin/keys/revoke") => handlers::keys::revoke_owner(state, req).await,
+        // 固定IPを持たない環境でも「今すぐ何を入力すればSFTP接続できるか」
+        // を1回のAPI呼び出しで確認できるヘルパー(sftp featureの有無に
+        // 関わらず常時応答し、`sftp_enabled: false`で状態を正直に返す)。
+        (Method::GET, "/admin/sftp/connection-info") => handlers::sftp_info::connection_info(state, &req).await,
         // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
         // prefixマッチより先に評価する必要がある(先に評価されると
         // `:host`が`"foo.example.com/tls"`ごと拾われてしまうため)。
@@ -296,6 +304,27 @@ async fn main() -> anyhow::Result<()> {
     // `OPEN_WEB_SERVER_DDNS_UPDATE_URL`未設定なら何もしない)。
     #[cfg(feature = "ddns")]
     ddns::spawn_if_configured();
+
+    // 組み込みSFTPサーバー(`sftp` feature時のみ、`OPEN_WEB_SERVER_SFTP_BIND`
+    // 未設定なら何もしない)。
+    #[cfg(feature = "sftp")]
+    sftp::spawn_if_configured();
+
+    // UPnP IGD自動ポート開放(`upnp` feature時のみ、
+    // `OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true`未設定なら何もしない)。
+    // SFTPポート(設定されていれば)を対象にする。
+    #[cfg(feature = "upnp")]
+    {
+        let mut ports = Vec::new();
+        if let Ok(sftp_bind) = std::env::var("OPEN_WEB_SERVER_SFTP_BIND") {
+            if let Some(port_str) = sftp_bind.rsplit(':').next() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    ports.push((port, "open-web-server SFTP"));
+                }
+            }
+        }
+        upnp::spawn_if_configured(ports);
+    }
 
     let bind_addr: SocketAddr = std::env::var("OPEN_WEB_SERVER_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())
@@ -531,6 +560,58 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "a revoked key must fall back to (and fail) the static-secret check, not silently keep working"
         );
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// エンドツーエンド検証: `GET /admin/sftp/connection-info`が実HTTP経由で
+    /// (1) 認証無しでは拒否され、(2) 静的シークレットで通り、(3) SFTP未有効時
+    /// は`sftp_enabled: false`を正直に返す、ことを実証する。
+    #[tokio::test]
+    async fn sftp_connection_info_requires_admin_auth_and_reports_honest_state_over_real_http() {
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-sftp-info-secret");
+        std::env::remove_var("OPEN_WEB_SERVER_SFTP_BIND");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // (1) 認証ヘッダ無しでは拒否される。
+        let mut sender = connect(addr).await;
+        let unauth_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/sftp/connection-info")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let unauth_resp = sender.send_request(unauth_req).await.unwrap();
+        assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+
+        // (2) 静的シークレットでは通り、(3) SFTPが未起動(バイナリはfeature
+        // 無しでビルドされている前提)なので`sftp_enabled: false`を正直に返す。
+        let mut sender = connect(addr).await;
+        let auth_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/sftp/connection-info")
+            .header("x-admin-token", "test-sftp-info-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let auth_resp = sender.send_request(auth_req).await.unwrap();
+        assert_eq!(auth_resp.status(), StatusCode::OK);
+        let body_bytes = http_body_util::BodyExt::collect(auth_resp.into_body()).await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["sftp_enabled"], serde_json::json!(false), "OPEN_WEB_SERVER_SFTP_BIND is unset in this test, so the response must honestly report sftp_enabled=false");
+        assert!(body.get("host").is_some(), "response should always include a host field, even if unresolved");
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
     }
