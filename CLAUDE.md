@@ -581,6 +581,21 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23(続き) `open-cuda`側でGPU圧縮/暗号化カーネル(ChaCha20)
+  実装完了——`accel.rs::AccelBackend::Gpu`の実装候補ができた
+  (関連リポジトリ動向の記録)**: このリポジトリの`accel.rs`が
+  定義した`AccelBackend`(`Cpu`/`Gpu`/`Npu`/`HardwareAccelerator`)
+  抽象化のうち、`Gpu`は要求時に`Cpu`へフォールバックする未実装の
+  拡張点だった。`open-cuda`の`opencuda-directx`クレートに
+  ChaCha20 GPUカーネル(DXIL/HLSL)が実装され、RustCrypto製
+  `chacha20`クレートとの数値一致を実機(NVIDIA GT 730)で検証済み
+  (コミット`ec6acf1`、詳細は`open-cuda`側CLAUDE.md HANDOFF参照)。
+  **正直な開示・残作業**: (a) 認証タグ(Poly1305)のGPU実装が無く
+  完全なAEADにはなっていない、(b) 小サイズペイロードでのH2D/D2H
+  オーバーヘッドが実利益を生むかの実ベンチマークが未実施、
+  (c) このリポジトリの`accel.rs`自体への実際の統合(`open-cuda`への
+  依存追加)はまだ行っていない——次回セッションでの着手事項。
+
 - **2026-07-23 通信層にIOWN/APN×Smart-TCPの適応制御(`RS-SmartTCP`)と
   圧縮+暗号化のハードウェアアクセラレータ抽象化(`accel.rs`)を追加
   ——アーキテクチャ位置づけ(RPoem≈Tomcat、open-web-server≈Apache+
