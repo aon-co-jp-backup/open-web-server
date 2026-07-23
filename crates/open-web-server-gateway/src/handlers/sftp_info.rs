@@ -2,11 +2,14 @@
 //! を1回のAPI呼び出しで確認できるようにするヘルパー(既存の
 //! `OPEN_WEB_SERVER_ADMIN_TOKEN`/`KeyGuardian`認証を再利用)。
 //!
-//! DDNSホスト名(`OPEN_WEB_SERVER_DDNS_UPDATE_URL`のホスト名部分は
-//! プロバイダ固有なので推測しない)ではなく、シンプルに直近取得した
-//! グローバルIPを`api.ipify.org`へその場で問い合わせて返す。DDNSで
-//! 固定ホスト名を運用している場合は`OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`
-//! で明示的に上書きできる。
+//! ホスト名の優先順位(2026-07-23改修、DDNS/無料ドメイン設定との連動):
+//! 1. `OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`(明示的な手動指定、最優先)
+//! 2. `OPEN_WEB_SERVER_DUCKDNS_DOMAIN`(無料DDNSで確保した永続
+//!    サブドメイン、`.duckdns.org`を補完して返す——固定IPが無い環境でも
+//!    「一度設定すれば変わらない」ホスト名として、その場で取得した
+//!    生グローバルIPより実用上ずっと有用なため優先する)
+//! 3. その場で`api.ipify.org`へ問い合わせて取得した生グローバルIP
+//!    (DDNSを何も設定していない場合のフォールバック)
 
 use std::sync::Arc;
 
@@ -47,8 +50,15 @@ pub async fn connection_info(state: Arc<AppState>, req: &Request<Incoming>) -> R
 
     let detected_public_ip = fetch_public_ip().await;
 
+    let duckdns_host = std::env::var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN")
+        .ok()
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| format!("{d}.duckdns.org"));
+
     let host = std::env::var("OPEN_WEB_SERVER_SFTP_PUBLIC_HOST")
         .ok()
+        .filter(|h| !h.trim().is_empty())
+        .or(duckdns_host)
         .or_else(|| detected_public_ip.clone());
 
     let example_command = match (&host, port) {

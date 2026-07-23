@@ -67,3 +67,6 @@ upnp = ["dep:igd-next"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+# free_domain.rs(DuckDNS連携)のHTTPクライアント呼び出しロジックを、
+# 実サービスへ接続せずモックサーバーで検証するため。
+wiremock = "0.6"

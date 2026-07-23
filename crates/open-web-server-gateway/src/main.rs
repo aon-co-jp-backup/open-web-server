@@ -13,6 +13,8 @@ mod app_proxy;
 mod compression;
 #[cfg(feature = "ddns")]
 mod ddns;
+#[cfg(feature = "ddns")]
+mod free_domain;
 mod handlers;
 mod keyring;
 mod middleware;
@@ -83,6 +85,11 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         // を1回のAPI呼び出しで確認できるヘルパー(sftp featureの有無に
         // 関わらず常時応答し、`sftp_enabled: false`で状態を正直に返す)。
         (Method::GET, "/admin/sftp/connection-info") => handlers::sftp_info::connection_info(state, &req).await,
+        // 無料DDNS(DuckDNS)によるサブドメイン取得〜自動更新セットアップ
+        // (`free_domain.rs`参照、`ddns` feature無効時は503を返す)。
+        (Method::POST, "/admin/ddns/setup-free-domain") => {
+            handlers::free_domain::setup_free_domain(state, req).await
+        }
         // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
         // prefixマッチより先に評価する必要がある(先に評価されると
         // `:host`が`"foo.example.com/tls"`ごと拾われてしまうため)。
@@ -310,6 +317,13 @@ async fn main() -> anyhow::Result<()> {
     // `OPEN_WEB_SERVER_DDNS_UPDATE_URL`未設定なら何もしない)。
     #[cfg(feature = "ddns")]
     ddns::spawn_if_configured();
+
+    // 無料DDNSドメイン(DuckDNS、`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/
+    // `OPEN_WEB_SERVER_DUCKDNS_TOKEN`未設定なら何もしない)。上記の
+    // 汎用URLテンプレート方式(`OPEN_WEB_SERVER_DDNS_UPDATE_URL`)と
+    // 独立して併存できる。
+    #[cfg(feature = "ddns")]
+    free_domain::spawn_if_configured();
 
     // 組み込みSFTPサーバー(`sftp` feature時のみ、`OPEN_WEB_SERVER_SFTP_BIND`
     // 未設定なら何もしない)。
@@ -634,5 +648,49 @@ mod tests {
         assert!(body.get("host").is_some(), "response should always include a host field, even if unresolved");
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// `OPEN_WEB_SERVER_DUCKDNS_DOMAIN`が設定されている場合、
+    /// `/admin/sftp/connection-info`が生グローバルIPではなく
+    /// `<domain>.duckdns.org`をホスト名として優先的に返すことを実証する
+    /// (DDNS/無料ドメイン設定との連動)。
+    #[tokio::test]
+    async fn sftp_connection_info_prefers_duckdns_domain_over_raw_ip() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-duckdns-priority-secret");
+        std::env::remove_var("OPEN_WEB_SERVER_SFTP_BIND");
+        std::env::remove_var("OPEN_WEB_SERVER_SFTP_PUBLIC_HOST");
+        std::env::set_var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN", "my-test-host");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/sftp/connection-info")
+            .header("x-admin-token", "test-duckdns-priority-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            body["host"],
+            serde_json::json!("my-test-host.duckdns.org"),
+            "DuckDNS domain must be preferred over a raw detected IP for a stable, copy-pasteable connection command"
+        );
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+        std::env::remove_var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN");
     }
 }

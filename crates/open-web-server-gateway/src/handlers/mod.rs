@@ -1,3 +1,4 @@
+pub mod free_domain;
 pub mod items;
 pub mod keys;
 pub mod sftp_info;

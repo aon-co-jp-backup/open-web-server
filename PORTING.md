@@ -299,6 +299,51 @@ OpenSSH形式(`ssh-ed25519 AAAA... comment`)がそのまま使える。UPnPは
 API呼び出しの型・ロジックレベルに留まる、正直な開示は`upnp.rs`の
 モジュールdoc参照)。
 
+### 4.9 無料DDNS(DuckDNS)自動ドメイン取得〜自動更新(2026-07-23新設、`ddns` feature配下)
+
+固定IPを持たない環境向けに、**無料で・有効期限切れの心配無く**使える
+サブドメインを本ソフトウェア側で完結して運用する機能。第一候補として
+DuckDNS(https://www.duckdns.org/)を採用した理由(裏取り込み):
+
+- 無料、更新APIは`GET`リクエスト1本(`https://www.duckdns.org/update?
+  domains=<name>&token=<token>&ip=<ip>`)。
+- **有効期限切れの概念が無い**——No-IP無料プランのような「30日ごとに
+  メール内リンクを手動クリックしないと失効する」制約が無いため、今回の
+  「自動更新で永久に使える」要件に合致する(No-IPはこの理由で候補から
+  除外した)。
+
+```bash
+OPEN_WEB_SERVER_DUCKDNS_DOMAIN=myhost \
+OPEN_WEB_SERVER_DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+./open-web-server
+```
+
+上記2環境変数のみで、既存`ddns.rs`と同じ「5分間隔でグローバルIP変化を
+検知し自動更新」ループが起動する(`free_domain.rs`)。既存の汎用URL
+テンプレート方式(`OPEN_WEB_SERVER_DDNS_UPDATE_URL`)とは独立して併存
+可能。
+
+管理API`POST /admin/ddns/setup-free-domain`(`x-admin-token`認証、
+`{"domain": "myhost", "token": "..."}`)で即時疎通確認ができる。
+**正直な開示**: DuckDNSアカウント自体(トークン発行)はduckdns.orgへの
+ユーザー自身のOAuthログインが必要で、これは本ソフトウェアから自動化
+しない(他社サービスの認証情報を代行取得しない既存方針)。またこの
+APIは疎通確認のみを行い、環境変数自体の永続化(設定ファイル書き込み等)
+は行わない——恒久的な自動更新には上記環境変数を設定した上での再起動が
+必要。
+
+`GET /admin/sftp/connection-info`は、`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`が
+設定されていれば(`OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`の次に)その場で
+取得した生グローバルIPより優先してホスト名として使う——DDNSで確保した
+「一度設定すれば変わらない」永続ホスト名の方が、固定IPが無い環境の
+SFTP接続コマンドとして実用上ずっと有用なため。
+
+**移植時の注意**: DuckDNS実サービスへの実接続は、本リポジトリの
+開発・検証環境からは(外部ネットワーク制約または実トークン未保有により)
+確認できていない——`wiremock`によるモックHTTPサーバーでHTTPクライアント
+呼び出しロジックのみを検証済み(`free_domain.rs`のテスト参照)。実運用
+前に、実際のDuckDNSトークンで一度は疎通確認すること。
+
 ## 5. 動作確認
 
 ```bash

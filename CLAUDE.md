@@ -581,6 +581,73 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23 無料DDNS(DuckDNS)による永久サブドメイン自動取得〜自動更新、
+  SFTP接続情報との連動を新規実装(ユーザー指示「固定IPではないDDNSの場合の
+  簡単ドメイン設定を、できれば無料のドメインを自動更新で永久に使える様に」)**:
+  1. **プロバイダ選定(裏取り込み)**: DuckDNSを第一候補として採用。
+     無料・更新APIは`GET`1本・**有効期限切れの概念が無い**(No-IP無料プランに
+     ある「30日ごとの手動確認メールクリック」の制約が無いため、今回の
+     「自動更新で永久に使える」要件に唯一合致すると判断——No-IPはこの点で
+     候補から除外)。**正直な開示**: DuckDNSアカウント自体(トークン発行)は
+     ユーザーがduckdns.orgでOAuthログインして取得する必要があり、これは
+     本ソフトウェアからは自動化しない(他社サービスの認証情報を代行取得
+     しない既存方針)。
+  2. **新規`crates/open-web-server-gateway/src/free_domain.rs`**:
+     DuckDNS更新API(`https://www.duckdns.org/update?domains=...&token=...
+     &ip=...`)の薄いクライアント。既存`ddns.rs`と同じ「5分間隔でグローバル
+     IP変化を検知」ループを持つが、`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/
+     `OPEN_WEB_SERVER_DUCKDNS_TOKEN`の2環境変数のみで動く独立した経路として
+     実装(既存の汎用URLテンプレート方式`OPEN_WEB_SERVER_DDNS_UPDATE_URL`と
+     併存可能、両方設定されていれば両方が独立して動く)。
+  3. **新規管理API`POST /admin/ddns/setup-free-domain`**
+     (`handlers/free_domain.rs`、既存の`OPEN_WEB_SERVER_ADMIN_TOKEN`認証を
+     再利用): サブドメイン名+DuckDNSトークンを受け取り即座に1回更新を試行、
+     疎通確認結果と「これ以降は環境変数設定+再起動で自動更新ループに
+     組み込まれる」という案内を正直に返す(このAPI呼び出し自体は環境変数を
+     永続化しない、という制約も明記)。`ddns` feature無効ビルドでは
+     `503 Service Unavailable`を返す。
+  4. **`handlers/sftp_info.rs`をDDNSと連動**: ホスト名の優先順位を
+     `OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`(手動指定) → `OPEN_WEB_SERVER_
+     DUCKDNS_DOMAIN`(`.duckdns.org`を補完) → その場で取得した生グローバル
+     IP、の3段に変更。DDNSで確保した永続ホスト名を生IPより優先することで、
+     `example_command`が「一度設定すれば変わらない、コピペで毎回使える」
+     SFTP接続コマンドになる。
+  5. **`open-easy-web`側にUI新設**(別リポジトリ、詳細は同リポジトリの
+     CLAUDE.md参照): 「簡単ドメイン設定」ウィザード
+     (`src/api_free_domain.rs`/`src/free_domain_ui.rs`)を追加、
+     (a) DuckDNS外部リンク案内 → (b) サブドメイン名+トークン入力 →
+     (c) `setup-free-domain`即時疎通確認 → (d) 成功後にSFTP接続コマンド例
+     表示、の4ステップを1画面に集約(過剰実装を避けた)。
+  - **検証**: `cargo build --workspace`(featureフラグ無し)・
+    `cargo build -p open-web-server-gateway --features ddns,sftp,upnp`
+    ともに警告0件(pre-existingの無関係な5件のdead_code警告[acme.rs/
+    keyring.rs/php_server.rs/tenant_router.rs/web_vhost.rs]のみ残置、
+    今回の新規コードからの警告は無し)。`cargo test --workspace`
+    全green。DuckDNS実サービスへの実接続は本サンドボックス環境から
+    検証できなかったため、`wiremock`によるモックHTTPサーバーで
+    `update_duckdns`のHTTPクライアント呼び出しロジックのみを検証
+    (既存の`ddns.rs`のテストパターンに合わせた、正直な制約として記録)。
+    加えて実HTTP経由のe2eテストを2件追加:
+    `sftp_connection_info_prefers_duckdns_domain_over_raw_ip`
+    (`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`設定時に生IPでなく
+    `<domain>.duckdns.org`が返ることを実HTTP経由で確認)、既存の
+    `sftp_connection_info_requires_admin_auth_and_reports_honest_state_
+    over_real_http`も引き続きgreen。`open-easy-web`側UIは実ブラウザ
+    (Claude Browser pane、`python -m http.server`でのローカル配信)で
+    白画面・コンソールエラーが無いことを確認済み。
+  - **正直な限界**: (1) DuckDNS実サービスとの実接続確認は未実施
+    (トークンが無い・外部ネットワーク制約の可能性、モック検証のみ)。
+    (2) Android版は既存HANDOFFの通りクロスコンパイル実証止まりのため、
+    今回追加したDDNS/SFTP機能もAndroidで実際に使えるのはAPK化完了後
+    (実配布・フォアグラウンドサービス化は依然未着手)。Windows/Linuxでは
+    今回の実装がそのまま動く。
+  - 次にすべきこと: (1) 実DuckDNSトークンでの実接続E2E検証、(2)
+    `POST /admin/ddns/setup-free-domain`をこのAPI呼び出し単体でも
+    `OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/`TOKEN`環境変数への永続化まで
+    面倒を見る(設定ファイル書き込み等)かどうかの検討——現状は
+    「疎通確認のみ、恒久化は環境変数の手動設定+再起動」という
+    スコープに留めている。
+
 - **2026-07-23(続き) Apache+Nginxハイブリッド互換性の監査+2件対応
   (ユーザー指示「open-web-serverの完成度・実用性・互換性・連携性を
   向上して」)**:
