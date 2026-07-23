@@ -8,6 +8,7 @@
 //! ルーティング/ハンドラの API 形状は元々の Poem 実装と互換性を保ちつつ、
 //! パッケージとしては Poem に依存しない (2026-07-10 スタック方針転換)。
 
+mod access_log;
 mod acme;
 mod app_proxy;
 mod compression;
@@ -212,6 +213,7 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
 async fn route(
     state: Arc<AppState>,
     req: Request<Incoming>,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
@@ -235,6 +237,9 @@ async fn route(
     // 先に複製しておく必要がある。
     let accept_encoding_headers = req.headers().clone();
     let cors_request_headers = req.headers().clone();
+    let access_logger = state.access_logger.clone();
+    let log_method = method.to_string();
+    let log_path = path.clone();
 
     async move {
         let started = std::time::Instant::now();
@@ -242,11 +247,18 @@ async fn route(
         let response = compression::maybe_gzip(&accept_encoding_headers, response).await;
         let response = middleware::cors::apply_response_headers(&cors_request_headers, response);
 
-        tracing::Span::current().record("status", response.status().as_u16());
-        tracing::info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "request completed"
-        );
+        let status = response.status().as_u16();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        tracing::Span::current().record("status", status);
+        tracing::info!(elapsed_ms, "request completed");
+
+        // 構造化アクセスログ(`OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら
+        // `access_logger`は`None`で、この分岐自体が何もしない)。
+        if let Some(logger) = access_logger {
+            logger
+                .log(log_method, log_path, status, elapsed_ms, peer_addr.map(|a| a.to_string()))
+                .await;
+        }
 
         Ok(response)
     }
@@ -257,7 +269,7 @@ async fn route(
 /// TCP接続を受け付け続け、1接続ごとに HTTP/1.1 サーバを `spawn` する。
 async fn accept_loop(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     loop {
-        let (stream, _peer_addr) = match listener.accept().await {
+        let (stream, peer_addr) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to accept connection");
@@ -269,7 +281,7 @@ async fn accept_loop(listener: TcpListener, state: Arc<AppState>) -> anyhow::Res
         let state = state.clone();
 
         tokio::spawn(async move {
-            let service = service_fn(move |req| route(state.clone(), req));
+            let service = service_fn(move |req| route(state.clone(), req, Some(peer_addr)));
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 tracing::warn!(error = %err, "connection error");
             }
@@ -288,7 +300,7 @@ async fn accept_tls_loop(
     acceptor: tokio_rustls::TlsAcceptor,
 ) -> anyhow::Result<()> {
     loop {
-        let (stream, _peer_addr) = match listener.accept().await {
+        let (stream, peer_addr) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to accept TLS connection");
@@ -308,7 +320,7 @@ async fn accept_tls_loop(
                 }
             };
             let io = TokioIo::new(tls_stream);
-            let service = service_fn(move |req| route(state.clone(), req));
+            let service = service_fn(move |req| route(state.clone(), req, Some(peer_addr)));
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                 tracing::warn!(error = %err, "tls connection error");
             }

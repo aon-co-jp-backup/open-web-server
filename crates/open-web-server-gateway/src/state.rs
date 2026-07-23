@@ -3,6 +3,7 @@ use std::sync::Arc;
 use open_web_server_ledger::{DbStateReader, Ledger, LedgerConfig};
 use open_web_server_wire::TenantCertResolver;
 
+use crate::access_log::{AccessLogConfig, AccessLogger};
 use crate::acme::ChallengeStore;
 use crate::free_domain::DomainRegistry;
 use crate::keyring::{GuardianConfig, KeyGuardian};
@@ -43,6 +44,10 @@ pub struct AppState {
     /// 無料DDNS(DuckDNS)ドメインの動的レジストリ(最大`MAX_DUCKDNS_DOMAINS`
     /// 件、`free_domain`参照)。
     pub free_domains: Arc<DomainRegistry>,
+    /// 構造化アクセスログ(JSON Lines + サイズローテーション、`access_log`
+    /// 参照)。`OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら`None`(既定無効、
+    /// 既存の`tracing`ベースのリクエストログとは独立して並存する)。
+    pub access_logger: Option<Arc<AccessLogger>>,
 }
 
 impl AppState {
@@ -66,6 +71,7 @@ impl AppState {
         let web_vhosts = Arc::new(WebVhostRegistry::new());
         let php_pool = Arc::new(PhpServerPool::from_env());
         let free_domains = Arc::new(DomainRegistry::new());
+        let access_logger = AccessLogConfig::from_env().map(|cfg| Arc::new(AccessLogger::new(cfg)));
 
         Ok(Self {
             ledger,
@@ -77,6 +83,7 @@ impl AppState {
             web_vhosts,
             php_pool,
             free_domains,
+            access_logger,
         })
     }
 

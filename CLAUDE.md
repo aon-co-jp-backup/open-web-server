@@ -581,6 +581,67 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24 RS-LinkFusion連携の実機検証(コード変更不要と確認)+
+  構造化アクセスログ(ローテーション付き)の新規実装
+  ——ユーザー指示「RS-LinkFusionとの連携強化、商用Webサーバーの良い所取り
+  を日英Web検索の上で実装」**:
+  1. **RS-LinkFusion(WAN/LAN/WiFiボンディングツール)との統合を実機検証
+     (結論: 追加のコード変更は不要、既に機能する)**: `open-web-server`は
+     元々`OPEN_WEB_SERVER_BIND`環境変数で任意のアドレスへbindでき
+     (`main.rs`、既定`0.0.0.0:8080`)、特定のネットワークインターフェースに
+     関する知識を一切持たない設計になっている。これを実際に検証するため、
+     (a) `open-web-server`を`127.0.0.1:18099`で起動、(b) `RS-LinkFusion`の
+     `serve --bind 127.0.0.1:15900 --target 127.0.0.1:18099`(ボンディング
+     受け口)、(c) `connect --listen 127.0.0.1:15199 --remote 127.0.0.1
+     --remote-port 15900`(ボンディング接続元)を実際に起動し、
+     `curl http://127.0.0.1:15199/healthz`で3回連続`200 ok`を確認。
+     `aggligator`側のログで実TCPリンク確立、`open-web-server`側の
+     `tracing`ログで`GET /healthz status=200`のリクエスト到達を両方
+     確認した(モックではなく実プロセス3つ・実TCPソケットでの検証)。
+     **正直な限界**: この検証は`serve`/`connect`(TCPポートフォワード
+     モード)であり、`gateway-serve`/`gateway-connect`(TUN仮想アダプタ
+     方式、OSレベルの全トラフィックをボンディングする本命のシナリオ)は
+     Windowsで`wintun.dll`ドライバ+管理者権限が必要で、この開発環境は
+     非管理者権限のため実機検証できなかった(`whoami`相当の確認で
+     `IsInRole(Administrator)=False`)。ただし`open-web-server`側の設計
+     (bindアドレスを外部から注入できるだけでネットワークインターフェース
+     に関知しない)はTUNモードでも変わらないため、結論は同じ——
+     `OPEN_WEB_SERVER_BIND`をRS-LinkFusionのTUN仮想アダプタのIP
+     (既定`10.66.0.2`等)に向けるだけで動くはずである。**次回、管理者
+     権限のある実機環境がある場合はTUNモードでの同様の検証を行うこと**。
+  2. **商用Webサーバーとの機能差分調査(日英Web検索)**: 「nginx access
+     log rotation structured JSON logging best practice」「Webサーバー
+     アクセスログ ローテーション 構造化ログ ベストプラクティス」で検索。
+     共通して推奨されていたのは(a) JSON形式の構造化ログ
+     (Elasticsearch/Grafana Loki等との親和性)、(b) サイズ/日付ベースの
+     ローテーション+古い世代の圧縮保持、の2点。`open-web-server`には
+     この時点で運用者向けの永続アクセスログが存在せず(既存の`tracing`は
+     開発者向けOTLPエクスポート用途で、標準出力のみ・ローテーション無し)、
+     この差分を実装対象に選定した。
+  3. **構造化アクセスログを新規実装**(`crates/open-web-server-gateway/
+     src/access_log.rs`、新規モジュール): JSON Lines形式
+     (`{"ts":...,"method":...,"path":...,"status":...,"elapsed_ms":...,
+     "remote_addr":...}`)、`OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら
+     既定無効(既存動作に一切影響しない)。有効時は
+     `OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES`(既定10MiB)超過で
+     `access.log.1.gz`へ`flate2`(既存`compression.rs`と同じcrateを再利用、
+     新規依存無し)でgzip圧縮ローテーション、`OPEN_WEB_SERVER_ACCESS_
+     LOG_MAX_BACKUPS`(既定5)世代までシフト保持。ファイルI/Oは
+     `tokio::task::spawn_blocking`へ退避し(CLAUDE.mdの既存方針通り)、
+     書き込み失敗はリクエスト処理をブロックしない(監査ログ
+     `FileAuditLog`と同じ「権威パスを止めない」設計)。`main.rs`の
+     `accept_loop`/`accept_tls_loop`で`peer_addr`を捕捉し`route()`まで
+     配線、`AppState.access_logger`(`Option<Arc<AccessLogger>>`)経由で
+     呼び出す。**検証**: 単体テスト4件(JSON Lines書き込み・サイズ超過時
+     のローテーション+gzip展開検証・複数世代シフト・既定無効の確認)、
+     加えて実バイナリを`OPEN_WEB_SERVER_ACCESS_LOG_PATH`+極小
+     `OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES=500`で起動し、実`curl`複数回で
+     `access.log`へのJSON行追記と`access.log.1.gz`への実際のローテーション
+     ・gzip圧縮(`gzip -dc`で展開し中身を確認)を実機確認済み。
+     `cargo test -p open-web-server-gateway --features ddns,sftp,upnp --
+     --test-threads=1`は**87件全green**(新規4件を含む、既存83件は
+     無変更でgreenのまま)。
+
 - **2026-07-23(続き) 残課題3項目(CORS対応・DuckDNS実応答検証・Android
   APK化着手)——ユーザー指示「正直な残課題を進めて」**:
   1. **CORS対応(最も明確に前進・完了)**: 新規`middleware/cors.rs`。

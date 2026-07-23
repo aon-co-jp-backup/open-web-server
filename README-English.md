@@ -409,6 +409,27 @@ open-web-server/
   distribution are intentionally out of scope for this pass — see
   `CLAUDE.md`'s HANDOFF entry for the exact build/emulator verification
   status.
+- [x] **Structured access log with size-based rotation** (2026-07-24,
+  `access_log`, opt-in) — modeled on Nginx/Apache operational best
+  practices found via bilingual (JA/EN) web search: JSON Lines access
+  logs plus size/date-based rotation with compression. Disabled by
+  default; set `OPEN_WEB_SERVER_ACCESS_LOG_PATH` to enable. Rotates to
+  gzip-compressed `.1.gz`/`.2.gz`/... generations once
+  `OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES` (default 10MiB) is exceeded,
+  keeping up to `OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS` (default 5)
+  generations. File I/O runs on `spawn_blocking` and never blocks the
+  request path on write failure. Verified with 4 unit tests plus a real
+  binary run (`curl` against a live server with a tiny max-size,
+  confirming both the JSON lines and the gzip rotation on disk).
+- [x] **RS-LinkFusion (WAN/LAN/WiFi bonding) integration verified live**
+  (2026-07-24) — confirmed with a real 3-process test (this server +
+  RS-LinkFusion `serve` + RS-LinkFusion `connect`, real TCP sockets, `curl`
+  through the bonded tunnel) that **no code changes are needed**: this
+  server already binds to any address via `OPEN_WEB_SERVER_BIND` and has
+  no interface-specific logic. The TUN-adapter mode (`gateway-serve`/
+  `gateway-connect`, the scenario that bonds all OS-level traffic) needs
+  admin privileges on Windows and was not verified in this non-admin
+  sandbox — the same binding design should still apply.
 
 ## License
 

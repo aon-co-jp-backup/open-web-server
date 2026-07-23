@@ -408,6 +408,67 @@ OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS="http://localhost:8080,https://wizard.examp
 オリジンでのヘッダー有無・プリフライト応答・既定無効時の非干渉を
 検証済み。
 
+### 4.11 構造化アクセスログ+ローテーション(2026-07-24新設、既定無効・オプトイン)
+
+商用Webサーバー(Nginx/Apache)の運用ベストプラクティス(日英Web検索で
+確認: JSON構造化ログ+サイズ/日付ベースのローテーション+圧縮保持)を
+参考に、監査・分析用途の永続アクセスログを追加。既存の`tracing`ベースの
+リクエストログ(標準出力/OTLP向け、開発者用途)とは独立して並存する。
+
+```bash
+OPEN_WEB_SERVER_ACCESS_LOG_PATH=/var/log/open-web-server/access.log \
+OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES=10485760 \
+OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS=5 \
+./open-web-server
+```
+
+- `OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら完全に無効(ファイルI/Oを
+  一切行わない、既定動作に影響なし)。
+- 1行1リクエストのJSON Lines
+  (`{"ts":"2026-07-24T...","method":"GET","path":"/healthz","status":200,
+  "elapsed_ms":3,"remote_addr":"127.0.0.1:12345"}`)。
+- ファイルサイズが`OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES`(既定10MiB)を
+  超えると、`access.log`を`access.log.1.gz`へgzip圧縮しつつローテートし、
+  既存の`.1.gz`〜`.(N-1).gz`は`.2.gz`〜`.N.gz`へ世代シフトする
+  (`OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS`、既定5世代)。
+- ファイルI/Oは`tokio::task::spawn_blocking`へ退避、書き込み失敗は
+  リクエスト処理自体をブロックしない(`FileAuditLog`と同じ設計方針)。
+
+**移植時の注意**: 新規クレート依存は不要(`flate2`/`serde_json`は既存の
+`compression.rs`/API層で既に使用済み)。`crates/open-web-server-gateway/
+src/access_log.rs`単体で持ち出せる(`AppState.access_logger`フィールドと
+`main.rs`の`route()`/`accept_loop`/`accept_tls_loop`3箇所への配線が必要)。
+
+### 4.12 RS-LinkFusion(WAN/LAN/WiFiボンディング)との連携(2026-07-24、実機検証済み・追加コード不要)
+
+同一PCに`open-web-server`と`RS-LinkFusion`(`https://github.com/aon-co-jp/
+RS-LinkFusion`)を両方インストールし、複数回線をボンディングした上で
+Webサーバーを動かすシナリオは、**`open-web-server`側の追加実装なしで
+既に機能する**ことを実機検証済み(`open-web-server`はbindアドレスを
+環境変数で受け取るだけでネットワークインターフェースに関知しない設計
+のため)。
+
+```bash
+# 1) open-web-server をローカルの任意アドレスで起動
+OPEN_WEB_SERVER_BIND=127.0.0.1:18099 ./open-web-server
+
+# 2) RS-LinkFusion のボンディング受け口(TCPポートフォワードモード)
+rs-linkfusion serve --bind 127.0.0.1:15900 --target 127.0.0.1:18099 --key <hex鍵>
+
+# 3) RS-LinkFusion のボンディング接続元
+rs-linkfusion connect --listen 127.0.0.1:15199 --remote 127.0.0.1 --remote-port 15900 --key <hex鍵>
+
+# 4) ボンディング経由でopen-web-serverへ到達することを確認
+curl http://127.0.0.1:15199/healthz   # => "ok" (200)
+```
+
+**TUN仮想アダプタ方式(`gateway-serve`/`gateway-connect`、OSレベルの
+全トラフィックをボンディングする本命シナリオ)についても設計上は同様に
+動くはずだが、Windows実機での`wintun.dll`+管理者権限が必要なため今回の
+開発環境(非管理者権限)では未検証**——`OPEN_WEB_SERVER_BIND`をTUN
+仮想アダプタのIP(RS-LinkFusion既定`10.66.0.2`等)に向けるだけで動作する
+想定。詳細は`RS-LinkFusion/PORTING.md`側にも追記済み。
+
 ## 5. 動作確認
 
 ```bash
