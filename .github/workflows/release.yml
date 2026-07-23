@@ -27,6 +27,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # open-web-server-wireがRS-SmartTCPをpath依存(../../../RS-SmartTCP、
+      # リポジトリルートの1つ上)で参照しているため、CI環境でも同じ
+      # 相対位置(`$GITHUB_WORKSPACE`の1つ上=`../RS-SmartTCP`)にsibling
+      # リポジトリをcheckoutする(2026-07-23、v0.1.0タグでの初回リリースで
+      # 発覚したビルド失敗の修正)。
+      - uses: actions/checkout@v4
+        with:
+          repository: aon-co-jp/RS-SmartTCP
+          path: ../RS-SmartTCP
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -45,6 +54,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: aon-co-jp/RS-SmartTCP
+          path: ../RS-SmartTCP
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
