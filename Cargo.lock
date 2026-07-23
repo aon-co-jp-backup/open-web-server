@@ -1641,6 +1641,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "flate2",
  "http 1.4.2",
  "http-body-util",
  "hyper",

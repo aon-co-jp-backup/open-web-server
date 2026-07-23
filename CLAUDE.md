@@ -581,6 +581,47 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23(続き) Apache+Nginxハイブリッド互換性の監査+2件対応
+  (ユーザー指示「open-web-serverの完成度・実用性・互換性・連携性を
+  向上して」)**:
+  1. **監査結果**: `static_files`/`php_server`/`web_vhost`/TLS終端/
+     `acme`/`tenant_router`の6大機能はすべて実装済み・`main.rs`から
+     実際に配線済みと確認(過去に繰り返し見つかった「文書上完了・
+     実際は未接続」という欠陥パターンは、この6項目には再発していな
+     かった)。一方、Apache互換(.htaccess相当・mod_rewrite相当・
+     Basic/Digest認証・CGI実行)・Nginx互換(gzip/brotli圧縮・
+     レート制限・キャッシュ・複数バックエンドへのロードバランシング)
+     は監査時点でいずれも**未着手**と判明。
+  2. **`cargo test --workspace`実行で発見したflakyテストを修正**:
+     `keyguardian_issued_key_authorizes_admin_requests_over_real_http`
+     が並列実行時に稀に`401`(期待`201`)で失敗する既知の問題
+     (CLAUDE.md自己申告済み)の実原因を特定——同じ`main.rs`内の
+     `sftp_connection_info_...`テストと**同一のグローバル環境変数
+     `OPEN_WEB_SERVER_ADMIN_TOKEN`を異なる値で同時に書き換えていた**
+     ため。`tokio::sync::Mutex`で両テストの環境変数操作区間を直列化し
+     解消(`cargo test`を5回連続実行しflakyが再発しないことを確認)。
+  3. **Nginx互換のgzip圧縮を新規実装**(`compression.rs`): RPoem側
+     `open-runo-router::middleware_hyper::with_compression`の実績ある
+     ロジックを、この`open-web-server-gateway`の`Response<BoxBody>`
+     (`Full<Bytes>`)型に合わせて移植。`route()`関数でdispatch後に
+     `compression::maybe_gzip`を挟む形で配線。二重圧縮回避・256バイト
+     未満は無圧縮・`Accept-Encoding`未対応クライアントはスキップ、
+     という既存のRPoem実装と同じ安全設計を踏襲。
+     **検証**: `cargo test -p open-web-server-gateway`**56件全green**
+     (既存52件+新規4件: 大きく反復するボディの実圧縮・非対応
+     クライアントでの無圧縮・小ボディでの無圧縮・既存
+     `Content-Encoding`がある場合の二重圧縮回避)。実サーバーを
+     `127.0.0.1:18099`で起動し`curl`で`/healthz`(2バイト、閾値未満)
+     への`Accept-Encoding: gzip`付きリクエストが正しく無圧縮のまま
+     返ることを確認(**正直な限界**: 256バイト超の実エンドポイントを
+     手早く見つけられず、実際に圧縮が発動する経路の実HTTP確認は
+     単体テストでの代替検証に留まった)。
+  - 次にすべきこと: (1) Apache互換の.htaccess相当/mod_rewrite相当/
+    Basic・Digest認証/CGI実行(すべて未着手)、(2) Nginx互換の
+    brotli圧縮・レート制限・キャッシュ・複数バックエンドへの
+    ロードバランシング(すべて未着手)、(3) 圧縮が実際に発動する
+    大きめのレスポンスを返す実エンドポイントでのHTTP経由の実発動確認。
+
 - **2026-07-23(続き) 組み込みSFTPサーバー + UPnP IGD自動ポート開放を実装
   ——ユーザー指示「固定IPでなくてもSFTP等の接続を簡単にして、必要なら
   簡単接続用プラグインアプリも」**:

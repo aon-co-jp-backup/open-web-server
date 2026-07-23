@@ -10,6 +10,7 @@
 
 mod acme;
 mod app_proxy;
+mod compression;
 #[cfg(feature = "ddns")]
 mod ddns;
 mod handlers;
@@ -199,11 +200,16 @@ async fn route(
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    // Nginx互換のgzip圧縮(compression.rs)を適用する際、レスポンス側
+    // だけを見ても`Accept-Encoding`は分からない(すでにreqをdispatchへ
+    // 渡した後では読めなくなる)ため、先にヘッダだけ複製しておく。
+    let accept_encoding_headers = req.headers().clone();
     let span = tracing::info_span!("http_request", %method, %path, status = tracing::field::Empty);
 
     async move {
         let started = std::time::Instant::now();
         let response = dispatch(state, req).await;
+        let response = compression::maybe_gzip(&accept_encoding_headers, response).await;
 
         tracing::Span::current().record("status", response.status().as_u16());
         tracing::info!(
@@ -370,6 +376,17 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// `OPEN_WEB_SERVER_ADMIN_TOKEN`はプロセス全体で共有されるグローバル
+    /// 環境変数であり、これを一時的に書き換えるテスト同士を`cargo test`の
+    /// 既定の並列実行に任せると、片方のテストが読む直前にもう片方が
+    /// 上書きしてしまうflaky failureが実際に発生する(2026-07-23発見:
+    /// `keyguardian_issued_key_authorizes_admin_requests_over_real_http`が
+    /// 稀に`401`〈期待`201`〉で落ちる原因を追ったところ、
+    /// `sftp_connection_info_...`と同じ環境変数を別の値で同時に
+    /// 書き換えていたことが判明)。このMutexで両テストの環境変数操作
+    /// 区間を直列化し、競合を解消する。
+    static ADMIN_TOKEN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     // 本物のTLSハンドシェイクを検証するための「どんな証明書でも受け入れる」
     // テスト専用verifier(自己署名証明書のため信頼アンカーを持たない)。
     // 本番コードはこれを一切使わない——`open-web-server-wire::tls`の
@@ -486,8 +503,10 @@ mod tests {
     ///     もう通らないこと、を確認する。
     #[tokio::test]
     async fn keyguardian_issued_key_authorizes_admin_requests_over_real_http() {
-        // 他の並行テストと共有ポートを踏まないよう、このテスト専用の
-        // 値を使い、テスト終了時に必ず元へ戻す。
+        // 他の並行テストと同じ`OPEN_WEB_SERVER_ADMIN_TOKEN`を書き換える
+        // テストが同時に走らないよう直列化する(このモジュール冒頭の
+        // `ADMIN_TOKEN_ENV_LOCK`のdoc参照)。
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-bootstrap-secret");
 
         let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
@@ -569,6 +588,7 @@ mod tests {
     /// は`sftp_enabled: false`を正直に返す、ことを実証する。
     #[tokio::test]
     async fn sftp_connection_info_requires_admin_auth_and_reports_honest_state_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-sftp-info-secret");
         std::env::remove_var("OPEN_WEB_SERVER_SFTP_BIND");
 
