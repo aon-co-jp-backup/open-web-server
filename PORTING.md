@@ -334,3 +334,16 @@ impl PayloadAccelerator {
 **IOWN/APN×Smart-TCPハイブリッド適応制御**: [RS-SmartTCP](https://github.com/aon-co-jp/RS-SmartTCP)
 参照(RFC 6298/9002準拠のSRTT/RTTVAR EWMA、独立リポジトリとして移植
 可能)。
+
+**Apache/Tomcat互換の多言語アプリケーションサーバー対応(2026-07-23、
+ユーザー指示、正本は`open-raid-z/CLAUDE.md`同名節参照)**: このリポジトリ
+(`app_proxy`/`tenant_router`)を他プロジェクトへ移植する際、「JavaのApache
+のように動作し、Ruby on Rails/PHP+Laravel/Python+FastAPI等、言語を問わず
+バックエンドを指せる」という設計を維持すること。転送先はプレーンHTTPの
+ため、特定言語向けの専用実装(例: PHP専用の特別なプロキシロジック)を
+追加しないこと——`backend_addr`が単体でHTTPサーバーとして応答しさえ
+すれば、`TenantConfig`への登録だけで任意の言語・フレームワークを
+ホストできる、という汎用性こそがこのモジュールの価値。移植先で
+PHP-FPM/FastCGI等の本番グレード直結経路を追加する場合も、この
+汎用リバースプロキシ経路とは独立したオプトイン機能として実装し、
+既存の言語非依存パスを壊さないこと。

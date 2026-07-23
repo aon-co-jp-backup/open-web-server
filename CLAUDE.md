@@ -1719,6 +1719,19 @@ ACME)まで実装・実検証済みとなり、Apache+Nginxハイブリッド仕
 ミッションクリティカルな用途向けに、24時間365日ノンストップの
 サーバー対応WEBサイト開発を全面的にバックアップするフレームワーク・
 ミドルウェアとして機能することを目指す。
+
+### Apache/Tomcat互換性の目標(ユーザー指示、2026-07-23、正本はopen-raid-z参照)
+
+正本(`open-raid-z/CLAUDE.md`同名節)にユーザー指示原文・現状の到達点・
+残るギャップを記録済み。要約: このリポジトリ(open-web-server)をJavaの
+Apacheのように、RPoemをApacheのTomcatのように——Java・Ruby on Rails・
+PHP/Laravel・Python/FastAPI等、言語を問わず連携できる汎用性を高める。
+**このリポジトリの`app_proxy`/`tenant_router`は既にプレーンHTTPで転送
+する設計のため、上記いずれの言語のアプリケーションサーバーも(単体で
+HTTPサーバーとして起動しさえすれば)同じ仕組みで指せる**——2026-07-14
+実装済みで新規コード不要、`POST /admin/tenants`への登録のみで足りる。
+残るギャップはRPoem側`tenant_bridge`との実際のクロスリポジトリ配線
+(`open-easy-web`経由、次回着手事項)とPHP-FPM等の本番グレード直結経路。
 ---
 
 ## エコシステム全体マップ(2026-07-21追記)
