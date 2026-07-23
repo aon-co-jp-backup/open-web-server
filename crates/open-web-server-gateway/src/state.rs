@@ -4,6 +4,7 @@ use open_web_server_ledger::{DbStateReader, Ledger, LedgerConfig};
 use open_web_server_wire::TenantCertResolver;
 
 use crate::acme::ChallengeStore;
+use crate::free_domain::DomainRegistry;
 use crate::keyring::{GuardianConfig, KeyGuardian};
 use crate::php_server::PhpServerPool;
 use crate::tenant_router::TenantRegistry;
@@ -39,6 +40,9 @@ pub struct AppState {
     pub web_vhosts: Arc<WebVhostRegistry>,
     /// PHPビルトインサーバのサブプロセスプール(`php_server`参照)。
     pub php_pool: Arc<PhpServerPool>,
+    /// 無料DDNS(DuckDNS)ドメインの動的レジストリ(最大`MAX_DUCKDNS_DOMAINS`
+    /// 件、`free_domain`参照)。
+    pub free_domains: Arc<DomainRegistry>,
 }
 
 impl AppState {
@@ -61,6 +65,7 @@ impl AppState {
         let keyring = Arc::new(KeyGuardian::load_from_disk(GuardianConfig::from_env()));
         let web_vhosts = Arc::new(WebVhostRegistry::new());
         let php_pool = Arc::new(PhpServerPool::from_env());
+        let free_domains = Arc::new(DomainRegistry::new());
 
         Ok(Self {
             ledger,
@@ -71,6 +76,7 @@ impl AppState {
             keyring,
             web_vhosts,
             php_pool,
+            free_domains,
         })
     }
 

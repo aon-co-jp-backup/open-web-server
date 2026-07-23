@@ -13,7 +13,6 @@ mod app_proxy;
 mod compression;
 #[cfg(feature = "ddns")]
 mod ddns;
-#[cfg(feature = "ddns")]
 mod free_domain;
 mod handlers;
 mod keyring;
@@ -87,8 +86,17 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::GET, "/admin/sftp/connection-info") => handlers::sftp_info::connection_info(state, &req).await,
         // 無料DDNS(DuckDNS)によるサブドメイン取得〜自動更新セットアップ
         // (`free_domain.rs`参照、`ddns` feature無効時は503を返す)。
+        // 複数回呼べば最大`free_domain::MAX_DUCKDNS_DOMAINS`件まで追加登録できる。
         (Method::POST, "/admin/ddns/setup-free-domain") => {
             handlers::free_domain::setup_free_domain(state, req).await
+        }
+        // 登録済みDuckDNSドメイン一覧(残り枠の確認にも使う)。
+        (Method::GET, "/admin/ddns/domains") => {
+            handlers::free_domain::list_domains(state, &req).await
+        }
+        (Method::DELETE, p) if p.starts_with("/admin/ddns/domains/") => {
+            let domain = p.trim_start_matches("/admin/ddns/domains/").to_string();
+            handlers::free_domain::remove_domain(state, &req, &domain).await
         }
         // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
         // prefixマッチより先に評価する必要がある(先に評価されると
@@ -318,12 +326,15 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "ddns")]
     ddns::spawn_if_configured();
 
-    // 無料DDNSドメイン(DuckDNS、`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/
-    // `OPEN_WEB_SERVER_DUCKDNS_TOKEN`未設定なら何もしない)。上記の
+    // 無料DDNSドメイン(DuckDNS、最大`free_domain::MAX_DUCKDNS_DOMAINS`件
+    // まで動的登録・自動更新)。従来の単一ドメイン用環境変数
+    // `OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/`OPEN_WEB_SERVER_DUCKDNS_TOKEN`は
+    // 1件目のドメインとして起動時にシードする(後方互換)。上記の
     // 汎用URLテンプレート方式(`OPEN_WEB_SERVER_DDNS_UPDATE_URL`)と
     // 独立して併存できる。
+    state.free_domains.seed_from_env().await;
     #[cfg(feature = "ddns")]
-    free_domain::spawn_if_configured();
+    free_domain::spawn_if_configured(state.free_domains.clone());
 
     // 組み込みSFTPサーバー(`sftp` feature時のみ、`OPEN_WEB_SERVER_SFTP_BIND`
     // 未設定なら何もしない)。
@@ -661,8 +672,12 @@ mod tests {
         std::env::remove_var("OPEN_WEB_SERVER_SFTP_BIND");
         std::env::remove_var("OPEN_WEB_SERVER_SFTP_PUBLIC_HOST");
         std::env::set_var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN", "my-test-host");
+        std::env::set_var("OPEN_WEB_SERVER_DUCKDNS_TOKEN", "test-token");
 
         let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        // 実バイナリの`main()`と同様、起動時シードを明示的に呼ぶ(registry
+        // は`AppState::from_env()`単体では空のまま、という設計のため)。
+        state.free_domains.seed_from_env().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(accept_loop(listener, state.clone()));
@@ -692,5 +707,84 @@ mod tests {
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
         std::env::remove_var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN");
+        std::env::remove_var("OPEN_WEB_SERVER_DUCKDNS_TOKEN");
+    }
+
+    /// エンドツーエンド検証: `GET /admin/ddns/domains`・
+    /// `DELETE /admin/ddns/domains/:domain`が、実HTTP経由で登録済み
+    /// ドメイン一覧・残り枠・削除を正しく反映することを実証する
+    /// (ユーザー指示、2026-07-23の複数ドメイン対応)。
+    #[tokio::test]
+    async fn ddns_domains_list_and_delete_work_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-ddns-domains-secret");
+        std::env::remove_var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN");
+        std::env::remove_var("OPEN_WEB_SERVER_DUCKDNS_TOKEN");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        state.free_domains.register("alpha".to_string(), "t1".to_string()).await.unwrap();
+        state.free_domains.register("beta".to_string(), "t2".to_string()).await.unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // 認証無しでは拒否される。
+        let mut sender = connect(addr).await;
+        let unauth_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/ddns/domains")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(unauth_req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+
+        // 一覧に2件+残り枠18件が反映される。
+        let mut sender = connect(addr).await;
+        let list_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/ddns/domains")
+            .header("x-admin-token", "test-ddns-domains-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let list_resp = sender.send_request(list_req).await.unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body_bytes = http_body_util::BodyExt::collect(list_resp.into_body()).await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["count"], serde_json::json!(2));
+        assert_eq!(body["capacity"], serde_json::json!(crate::free_domain::MAX_DUCKDNS_DOMAINS));
+        assert_eq!(body["remaining_capacity"], serde_json::json!(crate::free_domain::MAX_DUCKDNS_DOMAINS - 2));
+
+        // 削除後、一覧から1件消え、残り枠も1件増える。
+        let mut sender = connect(addr).await;
+        let del_req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/admin/ddns/domains/alpha")
+            .header("x-admin-token", "test-ddns-domains-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(del_req).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(state.free_domains.len().await, 1);
+
+        // 存在しないドメインの削除は404。
+        let mut sender = connect(addr).await;
+        let del_missing_req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/admin/ddns/domains/alpha")
+            .header("x-admin-token", "test-ddns-domains-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(del_missing_req).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
     }
 }

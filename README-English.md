@@ -213,6 +213,51 @@ HTTP (see this file's HANDOFF section for details). Vhosts can be
 declared via `web_vhosts.toml` (same TOML convention as `domains.toml`)
 or added dynamically via the admin API (`POST /admin/web-vhosts`).
 
+### 8. Embedded SFTP server + UPnP auto port-forwarding, and free DDNS domain automation (up to 20 domains, 2026-07-23)
+
+For home servers and other environments without a static IP, two
+independent, opt-in features (`sftp` / `upnp` / `ddns` Cargo features,
+all off by default) let `open-web-server` be reached and administered
+without depending on an external `sshd` or a paid domain:
+
+- **Embedded SFTP server** (`sftp.rs`, `russh` + `russh-sftp`, pure
+  Rust): public-key auth by default, path-traversal protection reused
+  from `static_files.rs`. **UPnP IGD auto port-forwarding** (`upnp.rs`,
+  `igd-next`) is an explicit opt-in helper (`OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true`)
+  that never blocks SFTP startup if it fails.
+- **Free DDNS domain automation** (`free_domain.rs`) picks
+  [DuckDNS](https://www.duckdns.org/) as the first-choice free provider
+  after an honest comparison: DuckDNS's update API is a single `GET`
+  request and, crucially, **has no expiry concept** — unlike No-IP's free
+  tier, which requires clicking a confirmation link by email every 30
+  days (disqualifying it from the "renews forever, unattended" goal).
+  Set `OPEN_WEB_SERVER_DUCKDNS_DOMAIN` / `OPEN_WEB_SERVER_DUCKDNS_TOKEN`
+  and the server auto-renews that hostname every 5 minutes whenever your
+  global IP changes.
+  - **Up to `MAX_DUCKDNS_DOMAINS` = 20 domains per instance**, managed
+    through a dynamic registry (`DomainRegistry`) that follows the same
+    `RwLock<HashMap<..>>` pattern as `tenant_router::TenantRegistry` —
+    domains can be added/removed at runtime, no restart required. A
+    21st distinct domain is rejected with an explicit `400 Bad Request`
+    (never a silent failure).
+  - `POST /admin/ddns/setup-free-domain` registers one domain and
+    verifies connectivity immediately; call it again to register more
+    domains (up to the cap). `GET /admin/ddns/domains` lists registered
+    domains and remaining capacity. `DELETE /admin/ddns/domains/:domain`
+    deregisters one.
+  - `GET /admin/sftp/connection-info` prefers a registered DuckDNS
+    hostname over a freshly-detected raw IP (optionally picked via
+    `?host=<domain>` when multiple domains are registered), so the
+    example SFTP command stays stable once set up.
+  - **Honest disclosure**: creating the DuckDNS account itself (OAuth
+    login via GitHub/Google/Reddit to obtain a token) is not automated
+    by this software — we do not acquire third-party credentials on a
+    user's behalf. Connectivity to the real DuckDNS service has not been
+    verified from this sandbox environment; the HTTP client logic is
+    covered by tests against a mock server (`wiremock`) instead. A
+    matching wizard UI (registered-domain list + add form) ships in
+    `open-easy-web`.
+
 ---
 
 ## Quick Start

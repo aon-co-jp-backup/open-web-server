@@ -581,6 +581,56 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-23(続き) 無料DDNS(DuckDNS)を単一ドメインから最大20ドメイン
+  対応へ拡張(ユーザー追加指示「open-web-server/open-easy-webを同時に
+  インストールした一台に20ドメインまで取得と自動更新可能にして」)**:
+  1. **`free_domain.rs`を単一ドメイン設定からレジストリ設計へ再設計**:
+     既存`tenant_router::TenantRegistry`(`RwLock<HashMap<..>>`による動的
+     登録・削除、再起動不要)と同じパターンを踏襲した`DomainRegistry`を
+     新設(「サブドメイン名→DuckDNSトークン」を保持)。上限は
+     `pub const MAX_DUCKDNS_DOMAINS: usize = 20`としてマジックナンバーを
+     避けて定数化。21件目の新規登録は`FreeDomainError::CapacityExceeded`
+     を経由して明示的な400エラー(理由付きメッセージ、削除してから
+     再試行するよう案内)で拒否する——無言で失敗させない設計。既存の
+     単一ドメイン用環境変数`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/`_TOKEN`は
+     `DomainRegistry::seed_from_env()`で起動時に1件目としてシードする形で
+     後方互換を維持。5分間隔の自動更新ループも、登録済み全ドメイン
+     (最大20件)を毎回順に更新するよう拡張。
+  2. **`POST /admin/ddns/setup-free-domain`は複数回呼べば複数ドメインを
+     追加登録できる**設計に変更(1回の呼び出しは1ドメインの登録+即時
+     疎通確認、レスポンスに`registered_count`/`remaining_capacity`を追加)。
+     新規`GET /admin/ddns/domains`(登録済み一覧+残り枠)・
+     `DELETE /admin/ddns/domains/:domain`(個別削除)を追加、いずれも
+     既存の`x-admin-token`/`KeyGuardian`認証パターンを再利用。
+  3. **`handlers/sftp_info.rs`を複数ドメイン対応に整合**: `?host=<domain>`
+     クエリパラメータで、登録済みドメインの中からSFTP接続用ホスト名を
+     選択できるようにした(未指定時は登録済みドメインのうち辞書順先頭を
+     既定値とする)。レスポンスに`available_duckdns_domains`
+     (登録済み全ドメインのフルホスト名一覧)を追加し、UI側で選択肢として
+     使えるようにした。
+  4. **`open-easy-web`側UIも一覧+追加フォーム形式へ更新**(詳細は同
+     リポジトリのCLAUDE.md参照): 登録済みドメイン一覧(残り枠表示・
+     個別削除ボタン)、追加フォーム、SFTP接続コマンド取得時のドメイン
+     選択`<select>`を追加。
+  - **検証**: `cargo build --workspace`(featureフラグ無し)・
+    `cargo build -p open-web-server-gateway --features ddns,sftp,upnp`
+    ともに警告0件(pre-existingの無関係な5件のdead_code警告のみ残置)。
+    `cargo test -p open-web-server-gateway --features ddns,sftp,upnp`
+    **73件全green**(新規: `registry_enforces_capacity_limit`
+    [21件目で明示的に拒否されることを確認]・
+    `registry_allows_re_registering_existing_domain_at_capacity`・
+    `registry_remove_then_list_reflects_change`・
+    `seed_from_env_is_a_noop_without_env_vars`・実HTTP経由の
+    `ddns_domains_list_and_delete_work_over_real_http`
+    [認証無し401・一覧2件+残り枠18件・削除後1件+404を実HTTPで確認]、
+    既存の`sftp_connection_info_prefers_duckdns_domain_over_raw_ip`も
+    継続green)。`cargo test --workspace`(featureフラグ無し)も
+    全green。`open-easy-web`側UIは実ブラウザ(Claude Browser pane)で
+    一覧+追加フォームが正しく描画され、白画面・コンソールエラーが
+    無いことを確認済み。
+  - **正直な限界**: 実DuckDNSトークンでの複数ドメイン実接続E2Eは未実施
+    (単一ドメイン版と同じ制約、モック+ロジック検証のみ)。
+
 - **2026-07-23 無料DDNS(DuckDNS)による永久サブドメイン自動取得〜自動更新、
   SFTP接続情報との連動を新規実装(ユーザー指示「固定IPではないDDNSの場合の
   簡単ドメイン設定を、できれば無料のドメインを自動更新で永久に使える様に」)**:

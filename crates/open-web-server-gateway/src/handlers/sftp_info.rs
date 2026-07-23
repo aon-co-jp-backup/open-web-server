@@ -2,14 +2,20 @@
 //! を1回のAPI呼び出しで確認できるようにするヘルパー(既存の
 //! `OPEN_WEB_SERVER_ADMIN_TOKEN`/`KeyGuardian`認証を再利用)。
 //!
-//! ホスト名の優先順位(2026-07-23改修、DDNS/無料ドメイン設定との連動):
+//! ホスト名の優先順位(2026-07-23改修、複数DuckDNSドメイン対応との連動):
 //! 1. `OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`(明示的な手動指定、最優先)
-//! 2. `OPEN_WEB_SERVER_DUCKDNS_DOMAIN`(無料DDNSで確保した永続
-//!    サブドメイン、`.duckdns.org`を補完して返す——固定IPが無い環境でも
-//!    「一度設定すれば変わらない」ホスト名として、その場で取得した
-//!    生グローバルIPより実用上ずっと有用なため優先する)
-//! 3. その場で`api.ipify.org`へ問い合わせて取得した生グローバルIP
-//!    (DDNSを何も設定していない場合のフォールバック)
+//! 2. `?host=<domain>`クエリパラメータで指定された、登録済みDuckDNS
+//!    ドメイン(`.duckdns.org`を補完して返す)——1インスタンスに複数
+//!    ドメインが登録されている場合に、どれをSFTP接続用に使うか選べる。
+//! 3. 登録済みDuckDNSドメインが1件以上あれば、その先頭(辞書順)のもの
+//!    (`?host=`未指定時の既定値)——固定IPが無い環境でも「一度設定すれば
+//!    変わらない」ホスト名として、その場で取得した生グローバルIPより
+//!    実用上ずっと有用なため優先する。
+//! 4. その場で`api.ipify.org`へ問い合わせて取得した生グローバルIP
+//!    (DDNSを何も登録していない場合のフォールバック)
+//!
+//! レスポンスには、選ばれなかった分も含め登録済み全DuckDNSドメインの
+//! ホスト名一覧(`available_duckdns_domains`)を常に含める。
 
 use std::sync::Arc;
 
@@ -23,8 +29,7 @@ use crate::state::AppState;
 
 #[derive(Serialize)]
 pub struct SftpConnectionInfo {
-    /// SFTP接続に使うホスト名(`OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`優先、
-    /// 未設定なら現在検知できたグローバルIP)。
+    /// SFTP接続に使うホスト名(優先順位はモジュールdoc参照)。
     pub host: String,
     /// SFTPサーバーがbindしているポート(`OPEN_WEB_SERVER_SFTP_BIND`から抽出)。
     pub port: Option<u16>,
@@ -34,6 +39,9 @@ pub struct SftpConnectionInfo {
     pub example_command: Option<String>,
     /// SFTPサーバー自体が有効化されているか(`OPEN_WEB_SERVER_SFTP_BIND`の有無)。
     pub sftp_enabled: bool,
+    /// このインスタンスに登録済みの全DuckDNSドメイン(フルホスト名、
+    /// `?host=`で選択できる候補一覧)。
+    pub available_duckdns_domains: Vec<String>,
 }
 
 pub async fn connection_info(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
@@ -50,15 +58,29 @@ pub async fn connection_info(state: Arc<AppState>, req: &Request<Incoming>) -> R
 
     let detected_public_ip = fetch_public_ip().await;
 
-    let duckdns_host = std::env::var("OPEN_WEB_SERVER_DUCKDNS_DOMAIN")
-        .ok()
-        .filter(|d| !d.trim().is_empty())
-        .map(|d| format!("{d}.duckdns.org"));
+    let registered_domains = state.free_domains.list().await;
+    let available_duckdns_domains: Vec<String> =
+        registered_domains.iter().map(|d| d.full_hostname.clone()).collect();
+
+    let requested_host = req.uri().query().and_then(|q| {
+        q.split('&').find_map(|kv| kv.strip_prefix("host=")).map(str::to_string)
+    });
+
+    let selected_duckdns_host = match requested_host {
+        // 明示的にクエリで選ばれたドメインが、実際に登録済みか確認する
+        // (未登録のホスト名を無条件に信じない)。
+        Some(requested) => registered_domains
+            .iter()
+            .find(|d| d.domain == requested || d.full_hostname == requested)
+            .map(|d| d.full_hostname.clone()),
+        // 未指定時は、登録済みドメインのうち先頭(辞書順)を既定値とする。
+        None => registered_domains.first().map(|d| d.full_hostname.clone()),
+    };
 
     let host = std::env::var("OPEN_WEB_SERVER_SFTP_PUBLIC_HOST")
         .ok()
         .filter(|h| !h.trim().is_empty())
-        .or(duckdns_host)
+        .or(selected_duckdns_host)
         .or_else(|| detected_public_ip.clone());
 
     let example_command = match (&host, port) {
@@ -72,11 +94,8 @@ pub async fn connection_info(state: Arc<AppState>, req: &Request<Incoming>) -> R
         detected_public_ip,
         example_command,
         sftp_enabled,
+        available_duckdns_domains,
     };
-
-    if !sftp_enabled {
-        return json_response(StatusCode::OK, &info);
-    }
 
     json_response(StatusCode::OK, &info)
 }

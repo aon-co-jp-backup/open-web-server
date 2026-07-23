@@ -323,26 +323,48 @@ OPEN_WEB_SERVER_DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
 テンプレート方式(`OPEN_WEB_SERVER_DDNS_UPDATE_URL`)とは独立して併存
 可能。
 
-管理API`POST /admin/ddns/setup-free-domain`(`x-admin-token`認証、
-`{"domain": "myhost", "token": "..."}`)で即時疎通確認ができる。
+#### 複数ドメイン対応(2026-07-23追記、最大20ドメイン)
+
+1インスタンスにつき最大`free_domain::MAX_DUCKDNS_DOMAINS`(=20)件まで、
+DuckDNSサブドメインを動的に登録・自動更新できる。設計は既存の
+`tenant_router::TenantRegistry`と同じ`RwLock<HashMap<..>>`パターン
+(`free_domain::DomainRegistry`)。上記の環境変数は1件目のドメインとして
+起動時にシードされる(後方互換)。
+
+- `POST /admin/ddns/setup-free-domain`(`x-admin-token`認証、
+  `{"domain": "myhost", "token": "..."}`)は**複数回呼べば複数ドメインを
+  追加登録**できる。1回の呼び出しは1ドメインの登録+即時疎通確認。
+  21件目以降は`400 Bad Request`+理由付きメッセージで明示的に拒否される
+  (無言で失敗しない)。
+- `GET /admin/ddns/domains` — 登録済みドメイン一覧+残り登録可能件数。
+- `DELETE /admin/ddns/domains/:domain` — 登録解除(自動更新ループの対象
+  から即座に外れる)。
+
 **正直な開示**: DuckDNSアカウント自体(トークン発行)はduckdns.orgへの
 ユーザー自身のOAuthログインが必要で、これは本ソフトウェアから自動化
 しない(他社サービスの認証情報を代行取得しない既存方針)。またこの
-APIは疎通確認のみを行い、環境変数自体の永続化(設定ファイル書き込み等)
-は行わない——恒久的な自動更新には上記環境変数を設定した上での再起動が
-必要。
+APIは登録+疎通確認のみを行い、環境変数自体の永続化(設定ファイル
+書き込み等)は行わない——恒久的な自動更新には上記環境変数を設定した
+上での再起動が必要(ただし動的登録経由のドメインはプロセス再起動不要で
+即座に自動更新ループへ組み込まれる)。
 
-`GET /admin/sftp/connection-info`は、`OPEN_WEB_SERVER_DUCKDNS_DOMAIN`が
-設定されていれば(`OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`の次に)その場で
-取得した生グローバルIPより優先してホスト名として使う——DDNSで確保した
-「一度設定すれば変わらない」永続ホスト名の方が、固定IPが無い環境の
-SFTP接続コマンドとして実用上ずっと有用なため。
+`GET /admin/sftp/connection-info`は、登録済みDuckDNSドメインがあれば
+(`OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`の次に)その場で取得した生グローバル
+IPより優先してホスト名として使う——DDNSで確保した「一度設定すれば
+変わらない」永続ホスト名の方が、固定IPが無い環境のSFTP接続コマンドと
+して実用上ずっと有用なため。複数ドメイン登録時は`?host=<domain>`
+クエリパラメータでどのドメインを使うか選べる(未指定時は登録済み
+ドメインのうち辞書順先頭が既定値)。レスポンスの
+`available_duckdns_domains`で登録済み全ドメインのフルホスト名一覧を
+確認できる。
 
 **移植時の注意**: DuckDNS実サービスへの実接続は、本リポジトリの
 開発・検証環境からは(外部ネットワーク制約または実トークン未保有により)
 確認できていない——`wiremock`によるモックHTTPサーバーでHTTPクライアント
 呼び出しロジックのみを検証済み(`free_domain.rs`のテスト参照)。実運用
-前に、実際のDuckDNSトークンで一度は疎通確認すること。
+前に、実際のDuckDNSトークンで一度は疎通確認すること。20件の上限も
+実DuckDNSサービス側の制約ではなく、本ソフトウェア独自の運用上限
+(マジックナンバー化を避けた定数`MAX_DUCKDNS_DOMAINS`)である点に注意。
 
 ## 5. 動作確認
 
