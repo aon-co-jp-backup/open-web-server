@@ -13,10 +13,16 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        // 実機/エミュレータで最も一般的なABIをまず対象にする(過剰実装を
-        // 避け、まずaarch64一気通貫を実証する最小スコープ)。
+        // 実機のスマホ/タブレットは`arm64-v8a`(2026年時点の主流ABI)、
+        // x86_64はこの開発機のAVD(Pixel_9_Pro、Google Play系エミュレータ
+        // イメージはx86_64)で実機能検証するために追加した(2026-07-24、
+        // 実エミュレータでの`/healthz`応答確認のために必須と判明——
+        // arm64-v8a単体のjniLibsではx86_64エミュレータの
+        // `nativeLibraryDir`にネイティブバイナリが展開されず、
+        // 「native binary not found」で起動に失敗した実測結果を受けての
+        // 追加)。
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -36,6 +42,17 @@ android {
 
     buildFeatures {
         viewBinding = false
+    }
+
+    // 既定(AGP/Android 6.0+)ではネイティブライブラリはAPK内から直接実行
+    // され、`nativeLibraryDir`配下には展開されない(`status=run-from-apk`)。
+    // 本アプリは`ProcessBuilder`で実ファイルパスとして起動する必要がある
+    // ため、旧来通りインストール時に展開される動作を明示的に強制する
+    // (2026-07-24、実機検証で`nativeLibraryDir`が空だったため発覚・追加)。
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 

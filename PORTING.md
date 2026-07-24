@@ -469,6 +469,64 @@ curl http://127.0.0.1:15199/healthz   # => "ok" (200)
 仮想アダプタのIP(RS-LinkFusion既定`10.66.0.2`等)に向けるだけで動作する
 想定。詳細は`RS-LinkFusion/PORTING.md`側にも追記済み。
 
+### 4.11 Android版(`android/`、2026-07-23〜24新設、3電源プロファイル対応)
+
+`android/`配下のKotlin/Gradleプロジェクトは、`open-web-server-gateway`
+本体をクロスコンパイルして起動するだけの単一Activityシェル。移植先で
+このAndroid版を使う場合の手順:
+
+```bash
+# 1) 対象ABIを両方クロスビルド(実機arm64-v8a + このマシンのx86_64 AVD)
+cargo ndk -t arm64-v8a build --release --bin open-web-server
+cargo ndk -t x86_64-linux-android build --release --bin open-web-server
+
+# 2) それぞれ`lib<任意名>.so`にリネームしてjniLibsへ配置
+#    (実行ファイルを.soの皮を被せてnativeLibraryDir配下に置く、という
+#    Termux等が使う既知の手法——`assets/`直下は最近のAndroidのW^X制約下
+#    では実行できないため)
+cp target/aarch64-linux-android/release/open-web-server \
+   android/app/src/main/jniLibs/arm64-v8a/libopenwebserver.so
+cp target/x86_64-linux-android/release/open-web-server \
+   android/app/src/main/jniLibs/x86_64/libopenwebserver.so
+
+# 3) ビルド(Windows、gradlewを使わずキャッシュ済みgradle配布物を直接叩く例)
+gradle assembleDebug --no-daemon
+```
+
+**実機能で踏んだ2つの罠(移植先でも同じことが起きるので明記)**:
+1. **ABI不一致**: `jniLibs`に対象デバイス/エミュレータのABIのバイナリが
+   無いと、`nativeLibraryDir`に何も展開されず`ProcessBuilder`の起動が
+   `binary exists: false`で失敗する。実機スマホ/タブレットは
+   `arm64-v8a`が主流だが、x86_64エミュレータで検証する場合は
+   `x86_64`も追加で必要。
+2. **ネイティブライブラリが展開されない(Android 6.0+既定)**:
+   `build.gradle.kts`に`packaging { jniLibs { useLegacyPackaging =
+   true } }`が無いと、ネイティブライブラリはAPK内から直接実行され
+   (`status=run-from-apk`)、`nativeLibraryDir`ディレクトリ自体には
+   一切展開されない。`ProcessBuilder`に実ファイルパスを渡す必要がある
+   本アプリの構成では必須の設定。
+
+**3電源プロファイル**(`PowerProfile.kt`/`ProfileSelectActivity.kt`):
+🔋省電力/⚖️通常はどちらも`WakeLock`を取得しない(Android標準の
+Doze/App Standbyに逆らわない、というのがそのまま「省電力対応」の実体)。
+🔌常時電源接続のみ`PARTIAL_WAKE_LOCK`を保持する(`WAKE_LOCK`権限が
+必要)。ホーム画面には3つの専用アイコン(`activity-alias`、色分け+
+ラベル文字列でプロファイル名を明示)も用意しており、`ProfileSelect
+Activity`(起動時選択画面)を経由せずアイコンから直接そのプロファイルで
+起動できる。
+
+**adbの`unauthorized`問題を踏んだ場合の対処**: ヘッドレス
+(`-no-window`)でエミュレータを起動すると`adb devices`が
+`unauthorized`のまま解消しないことがある(この開発環境で実際に発生)。
+GUI操作可能な環境であれば、`-no-window`を外してウィンドウ付きで起動し、
+完全ブートまで待つ(明示的な承認ダイアログのタップは不要だった)ことで
+解消した。
+
+**正直な制限事項**: 実機(物理スマホ/タブレット)での検証は未実施
+(x86_64エミュレータでのみ実証済み)。APK署名・Google Play配布・
+フォアグラウンドサービス化・Doze中のネットワークI/O制限自体の回避は
+スコープ外のまま。
+
 ## 5. 動作確認
 
 ```bash

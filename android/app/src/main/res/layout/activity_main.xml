@@ -19,6 +19,25 @@
         android:layout_marginTop="16dp"
         android:text="Start server" />
 
+    <!--
+      open-easy-webとSETで使う位置づけ(2026-07-24追記)——このアプリ自体は
+      ドメイン設定/SFTP情報確認機能を持たないが、同一端末/同一LAN上で
+      配信されているopen-easy-webウィザードへのワンタップ導線を用意する。
+    -->
+    <Button
+        android:id="@+id/openEasyWebButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/open_easy_web_button" />
+
+    <Button
+        android:id="@+id/changeProfileButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/change_profile_button" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"

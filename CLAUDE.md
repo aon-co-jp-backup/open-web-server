@@ -581,6 +581,112 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き) Android版: 3電源プロファイル実装+adb unauthorized
+  問題の解決+実エミュレータでの`/healthz`実応答確認(ユーザー追加指示
+  「open-easy-webとSETのopen-web-serverのAndroidスマホの省電力版/普通版/
+  電源常時接続版とタブレットのインストーラー付きアプリの完成を
+  目指して」)**:
+  1. **adb `unauthorized`問題は「GUI操作可能なセッションで通常起動
+     (`-no-window`を外す)+完全ブートまで待つ」ことで解決した**。
+     `computer-use`(このマシンの実デスクトップを操作できるツール)経由で
+     `qemu-system-x86_64.exe`(エミュレータのウィンドウを持つ実プロセス)
+     へのアクセス許可を得た上でウィンドウ付きエミュレータを起動したところ、
+     **明示的な承認ダイアログをタップする必要は無く**、単に完全ブート
+     まで待つだけで`adb devices`が`unauthorized`から`device`へ自然に
+     遷移した。前回セッションの`-no-window`実行で解消しなかった理由は
+     今回も完全には特定できていないが(推測: ヘッドレスでは内部的な
+     ブート完了シグナルの一部が正しく発火しない、またはウィンドウ付き
+     起動時のみ働く別の信頼確立パスがある、等)、**「ウィンドウ付きで
+     起動し、完全ブートを待つ」が再現性のある回避策**として確立できた。
+  2. **`adb install`→起動後、実際には2つの実バグが見つかり、両方修正した**
+     (「APK生成成功」だけでは不十分で、実機/エミュレータで動かして
+     初めて発覚した):
+     - **ABI不一致**: このマシンのAVD(`Pixel_9_Pro`)はx86_64だが、
+       `jniLibs`には`arm64-v8a`のバイナリしか同梱していなかったため
+       `nativeLibraryDir`にバイナリが存在せず起動に失敗した
+       (`binary exists: false`とアプリ上のログに正直に表示された——
+       この失敗時のエラー表示自体は設計通り機能した)。
+       `cargo ndk -t x86_64-linux-android build --release --bin
+       open-web-server`で追加ビルドし、`jniLibs/x86_64/
+       libopenwebserver.so`として同梱、`build.gradle.kts`の
+       `abiFilters`に`x86_64`を追加(実機のスマホ/タブレットは
+       引き続き`arm64-v8a`で動作する——両ABIを同梱)。
+     - **ネイティブライブラリが展開されない**: Android 6.0+/AGPの既定
+       挙動では、ネイティブライブラリはAPK内から直接実行され
+       (`status=run-from-apk`)、`nativeLibraryDir`ディレクトリ自体に
+       展開されない。本アプリは`ProcessBuilder`に実ファイルパスを渡す
+       必要があるため、`build.gradle.kts`に`packaging { jniLibs {
+       useLegacyPackaging = true } }`を追加し、旧来通りインストール時に
+       展開される動作を明示的に強制した。
+     この2点を修正した上で`assembleDebug`→`adb install`→
+     `LauncherAlwaysOn`アイコン相当のalias経由で起動したところ、
+     **実際に画面上のログに`binary exists: true` → `process started
+     (alive=true)` → `power: acquired PARTIAL_WAKE_LOCK (always-on
+     profile)` → `attempt 1: GET /healthz -> 200 "ok"`が表示され、
+     「Android上でopen-web-serverが実際に起動しHTTPリクエストに応答する」
+     という最優先ゴールを実機能として実証できた**(スクリーンショットで
+     確認済み)。
+  3. **3電源プロファイル実装(今回追加スコープ)**:
+     - `PowerProfile.kt`(enum、`POWER_SAVE`/`NORMAL`/`ALWAYS_ON`、
+       `SharedPreferences`への保存/復元)。
+     - `ProfileSelectActivity`(新規LAUNCHER)を起動時の選択画面として
+       追加。3つのボタンはそれぞれ絵文字(🔋/⚖️/🔌)+日本語ラベル+説明文
+       (「文字表示とアイコンの両方で区別」の要件を満たす)。
+     - **加えて、ホーム画面上に3プロファイルそれぞれの専用アイコンも
+       用意した**(`activity-alias`×3、`AndroidManifest.xml`)。緑
+       (省電力)/青(通常)/橙(常時電源接続)で色分けした簡易ベクター
+       アイコン(`ic_launcher_powersave/normal/alwayson.xml`、電池
+       +スラッシュ/天秤/プラグの簡易図形)+ラベル文字列
+       (`app_name_powersave`="open-web-server (省電力)"等)——
+       「誤って選択しないよう、省電力版はアイコン上にも『省電力』の
+       文字を明示する」という要件に対応(ラベルが図形の下/横に文字
+       として表示される、Android標準のホーム画面アイコン表示に準拠)。
+     - 電源管理の実体は`MainActivity.applyProfilePowerBehavior()`:
+       省電力/通常は`WakeLock`を一切取得しない(=Doze/App Standbyに
+       逆らわない、これが「省電力対応」の中身)。常時電源接続のみ
+       `PARTIAL_WAKE_LOCK`を取得(`WAKE_LOCK`権限追加)。
+       **正直な開示**: Doze中のネットワークI/O制限自体を回避する仕組み
+       (フォアグラウンドサービス化等)は今回のスコープ外のまま
+       (`WakeLock`の有無という最小限の実装)。バッテリー最適化
+       ホワイトリスト登録UIも未実装。
+     - **実エミュレータでの検証**: `computer-use`でホーム画面相当の
+       操作を行い、(a)常時電源接続alias起動→ステータス表示
+       「[🔌 常時電源接続] RUNNING」+ログに`PARTIAL_WAKE_LOCK`取得の
+       記録、(b)省電力alias起動→ステータス表示「[🔋⚡️✕ 省電力]」、
+       (c)`ProfileSelectActivity`の3ボタン表示、をそれぞれ
+       スクリーンショットで確認済み。通常プロファイルは同一コード
+       パス(分岐が無い方の枝)のため、コードレビューでの確認に留めた
+       (実機タップでの確認は時間の都合上省略)。
+  4. **タブレット対応の再確認**: 前回`layout-sw600dp/activity_main.xml`
+     (幅720dp上限+中央寄せ)を追加済みだったが、今回追加した
+     `activity_profile_select.xml`(ボタン3個)は単一レイアウトのまま
+     `maxWidth="640dp"`+中央寄せの指定のみで対応(スマホ/タブレット
+     両対応、専用の`layout-sw600dp`リソースは不要と判断——単純な
+     縦積みボタンUIのため、レイアウトエンジンが自然に対応する)。
+     `activity_main.xml`のタブレット版レイアウトにも新規ボタン2個
+     (open-easy-webリンク・プロファイル変更)を追加済み。
+  5. **open-easy-webとの「SET」導線(今回追加スコープ)**: `MainActivity`
+     に「🌐 open-easy-web ウィザードを開く」ボタンを追加、タップで
+     `http://127.0.0.1:8080`(同一端末/同一LAN上でopen-easy-webが
+     配信されている想定のデフォルトURL)をブラウザで開く
+     (`Intent.ACTION_VIEW`)。**正直な開示**: open-easy-web自体を
+     このAndroidアプリに同梱するものではなく(過剰実装を避けるため
+     別デプロイのまま)、あくまで「起動後にワンタップでウィザードへ
+     移動できる」という最小限の導線。URLはハードコードされており、
+     ユーザー環境によっては変更が必要(設定画面化は次回課題)。
+  - **検証まとめ**: `gradle assembleDebug`成功(x86_64+arm64両ABI
+    同梱)、実エミュレータ(`Pixel_9_Pro`、ウィンドウ付き起動)への
+    `adb install`→起動→実際の`GET /healthz -> 200 "ok"`応答を
+    スクリーンショットで確認、3電源プロファイルのうち2つ
+    (常時電源接続・省電力)を実機タップで確認、選択画面の表示も確認。
+    型チェックのみでの完了報告はしていない。**引き続き残る正直な
+    制約**: (a)通常プロファイルは未タップ確認(コードレビューのみ)、
+    (b)実機(物理スマホ/タブレット)での確認は未実施(エミュレータの
+    みで検証)、(c)Doze中のネットワークI/O制限自体の回避・
+    フォアグラウンドサービス化・APK署名/配布は今回もスコープ外のまま、
+    (d)open-easy-web連携はURL直リンクのみ(アプリ内SFTP情報表示等は
+    未実装)。
+
 - **2026-07-24 RS-LinkFusion連携の実機検証(コード変更不要と確認)+
   構造化アクセスログ(ローテーション付き)の新規実装
   ——ユーザー指示「RS-LinkFusionとの連携強化、商用Webサーバーの良い所取り

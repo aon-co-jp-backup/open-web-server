@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 常時電源接続プロファイル用アイコン(2026-07-24新設)。橙背景+プラグ。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#E65100" android:pathData="M0,0h108v108h-108z" />
+    <!-- plug body -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,44 h28 a6,6 0 0 1 6,6 v10 a20,20 0 0 1 -40,0 v-10 a6,6 0 0 1 6,-6 z" />
+    <!-- prongs -->
+    <path android:fillColor="#FFFFFF" android:pathData="M48,28 h4 v18 h-4 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M56,28 h4 v18 h-4 z" />
+    <!-- cable -->
+    <path android:fillColor="#FFFFFF" android:pathData="M52,80 v10 h14 v4 h-18 v-14 z" />
+</vector>

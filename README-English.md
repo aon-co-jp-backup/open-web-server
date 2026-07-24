@@ -398,17 +398,32 @@ open-web-server/
   `update_duckdns()` parsing logic (`body.trim_start().starts_with("OK")`).
   A full success-path E2E with a real DuckDNS account/token is still
   outside this project's automation scope (user's own action).
-- [ ] **Android app shell** (started 2026-07-23, incomplete) — a minimal
-  single-Activity Kotlin app under `android/` that launches the
-  `cargo ndk`-cross-compiled `open-web-server` binary (renamed to
-  `libopenwebserver.so` under `jniLibs/arm64-v8a/` so it lands in the
-  app's `nativeLibraryDir`, one of the few locations still executable
-  under Android 10+'s W^X restrictions) via `ProcessBuilder`, then polls
-  its own `GET /healthz` to prove the binary actually started and
-  responds. Power-profile UI, a foreground service, and signing/
-  distribution are intentionally out of scope for this pass — see
-  `CLAUDE.md`'s HANDOFF entry for the exact build/emulator verification
-  status.
+- [x] **Android app with 3 power profiles, verified live on an emulator**
+  (started 2026-07-23, expanded 2026-07-24) — a single-Activity Kotlin
+  app under `android/` that launches the `cargo ndk`-cross-compiled
+  `open-web-server` binary (both `arm64-v8a` and `x86_64`, renamed to
+  `libopenwebserver.so` under `jniLibs/`, extracted to the app's
+  `nativeLibraryDir` via `useLegacyPackaging=true`) via `ProcessBuilder`,
+  then polls its own `GET /healthz` to prove the binary actually started
+  and responds. Adds three power profiles (🔋 power-save / ⚖️ normal /
+  🔌 always-on) selectable from a launch-time picker screen and from
+  three dedicated home-screen icons (`activity-alias`, color-coded with
+  explicit text labels); only the always-on profile holds a
+  `PARTIAL_WAKE_LOCK`. A one-tap button links out to the `open-easy-web`
+  wizard (since this app is meant to be used as a pair with it). **The
+  earlier adb `unauthorized` blocker is resolved**: launching the
+  emulator with a real (non-headless) window and letting it fully boot
+  cleared the state without needing to tap any approval dialog. Verified
+  live on the `Pixel_9_Pro` AVD: installed, launched via the always-on
+  icon, and screenshotted `GET /healthz -> 200 "ok"` in the app's own
+  log after the native binary started and the wake lock was acquired.
+  Two real bugs were found and fixed along the way: an ABI mismatch
+  (only `arm64-v8a` was bundled; the AVD is `x86_64`) and native libs
+  not being extracted to disk by default on modern Android
+  (`status=run-from-apk`). Foreground-service mode, APK signing/
+  distribution, and verification on a physical device remain out of
+  scope — see `CLAUDE.md`'s HANDOFF entry for the full verification
+  log and honest limitations.
 - [x] **Structured access log with size-based rotation** (2026-07-24,
   `access_log`, opt-in) — modeled on Nginx/Apache operational best
   practices found via bilingual (JA/EN) web search: JSON Lines access
