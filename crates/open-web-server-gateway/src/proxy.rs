@@ -43,6 +43,40 @@ pub async fn forward_to(base_addr: &str, req: Request<Incoming>) -> Response<Box
     forward_to_stripped(base_addr, None, req).await
 }
 
+/// `forward_to_stripped`と同じだが、転送前にリクエストの`Host`ヘッダを
+/// `override_host`が`Some`であればその値へ書き換える(2026-07-24追記、
+/// `tenant_router::TenantConfig::override_host`向け——path_prefixタイプの
+/// テナント〈例: aruaru.tokyoの`/aruaru/`〉を、転送先バックエンドが
+/// 別ホスト名〈例: audiocafe.tokyo〉向けの設定で応答している場合に、
+/// バックエンド側へ正しいHostヘッダを送るために使う)。`override_host`が
+/// `None`の場合は`forward_to_stripped`と全く同じ挙動(既存呼び出し元への
+/// 影響なし)。
+pub async fn forward_to_stripped_with_host_override(
+    base_addr: &str,
+    strip_prefix: Option<&str>,
+    override_host: Option<&str>,
+    req: Request<Incoming>,
+) -> Response<BoxBody> {
+    let req = match override_host {
+        Some(host) => match hyper::header::HeaderValue::from_str(host) {
+            Ok(value) => {
+                let (mut parts, body) = req.into_parts();
+                parts.headers.insert(hyper::header::HOST, value);
+                Request::from_parts(parts, body)
+            }
+            Err(e) => {
+                return text_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("invalid override_host '{host}': {e}"),
+                )
+            }
+        },
+        None => req,
+    };
+
+    forward_to_stripped(base_addr, strip_prefix, req).await
+}
+
 /// `forward_to`と同じだが、転送前に`strip_prefix`(例: `"/blog"`)を
 /// リクエストパスの先頭から除去してから転送する(2026-07-22追記、
 /// `tenant_router::TenantConfig::path_prefix`向け——RS-Blog/RS-Chiketto/

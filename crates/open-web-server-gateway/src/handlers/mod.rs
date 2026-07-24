@@ -1,6 +1,7 @@
 pub mod free_domain;
 pub mod items;
 pub mod keys;
+pub mod redirects;
 pub mod sftp_info;
 pub mod state_query;
 pub mod tenants;

@@ -581,6 +581,100 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(続き10) nginx移行の残実装ギャップ3点を実装完了
+(前回チェックポイントの「次回セッション最初にすべきこと」対応)
+
+**1. ホスト名ベースの汎用301リダイレクト**: 新規`redirects.rs`
+(`RedirectRegistry`+`RedirectRule{host, redirect_to}`)、
+`main::dispatch()`の**最初**(既存の`/admin/*`・`/healthz`等すべての
+既存ハンドラより先)でHostヘッダを見てマッチすれば即301+`Location`
+(`redirect_to`+元パス・クエリを連結)を返す。管理API
+`POST/GET /admin/redirects`・`DELETE /admin/redirects/:host`
+(既存`x-admin-token`/`KeyGuardian`認証を再利用)。
+`OPEN_WEB_SERVER_REDIRECTS_FILE`環境変数での`redirects.toml`一括
+ロード対応(`redirects.toml.example`新規)。実HTTP統合テスト
+(`host_redirect_returns_301_with_location_over_real_http`)で
+登録前404→登録後301(`/healthz`ですら奪われることも確認=優先順位の
+直接証拠)→一覧反映→削除後404、を実TCP接続で検証済み。
+
+**2. PHP-FPM/FastCGI直結配信**: `web_vhost::PhpMode`
+(`BuiltinServer`〈既定、既存`php -S`のまま完全後方互換〉/
+`FastCgi{fastcgi_addr}`)を新設。日英Web検索で実在・アクティブに
+メンテされていることを確認した`fastcgi-client`0.11.1クレート
+(`runtime-tokio`feature、`Client::new_tokio`)を新規`fastcgi-client`
+Cargo feature配下(既定オフ)で追加。新規`php_fastcgi.rs`が
+`SCRIPT_FILENAME`等のCGIパラメータを組み立ててphp-fpmへ直接FastCGI
+接続し、CGI形式(`Status:`ヘッダ+空行+ボディ)の応答をパースして
+`Response`に変換する。feature無効ビルドでは`501 Not Implemented`を
+正直に返す(パニックや無言フォールバックはしない)。
+**実機検証**: WSL2 Ubuntu上に`apt-get install -y php-fpm`
+(php8.5-fpm)を実際にインストールし、`listen = 0.0.0.0:9000`へ変更、
+Windows側からWSL2 IP経由で実際にTCP到達することを確認した上で、
+`#[ignore]`統合テスト`real_php_fpm_roundtrip_over_fastcgi`
+(`OPEN_WEB_SERVER_TEST_FASTCGI_ADDR`/`_DOCROOT`環境変数で有効化)を
+実行し、**実php-fpmが生成した本文(`hello-from-php-fpm method=GET
+host=fcgi-test.example`)が実際にステータス200で返ることを確認済み**
+(型チェックのみでの完了報告ではない)。検証中に見つけた実バグ2件を
+修正: (a) `SCRIPT_FILENAME`を`std::path::Path::join`で組み立てると
+Windows開発環境ではネイティブ区切り文字(`\`)が混入し、Linux側の
+php-fpmが実際のファイルを見つけられず404になっていた——
+`SCRIPT_FILENAME`はバックエンド(php-fpm)側のファイルシステムパスで
+あり本プロセスの実行OSとは無関係、という前提を見落としていたための
+バグ。POSIX形式の`/`で手動連結するよう修正。(b) この開発環境の
+Bash実行系(MSYS/Git Bash)が環境変数値中の`/var/www/...`のような
+パスをWindowsパスへ自動変換する既知の挙動(`MSYS_NO_PATHCONV=1`が
+必要)に一度引っかかった——コード側のバグではなく検証手順側の
+注意点として記録。WSL2は前回HANDOFF記載の「アイドルタイムアウトで
+VMが停止・IPが変わる」問題に今回も遭遇し、`sleep 300`のkeep-alive
+プロセスをバックグラウンド起動して再現性を確保した(既知の対処法を
+再適用)。
+
+**3. Hostヘッダー書き換え転送**: `tenant_router::TenantConfig`に
+`override_host: Option<String>`を追加(既定`None`、既存動作と完全
+後方互換)。`proxy.rs`に`forward_to_stripped_with_host_override()`を
+新設し、`override_host`が設定されていれば転送前にリクエストの
+`Host`ヘッダをその値へ書き換えてから`forward_to_stripped`を呼ぶ。
+`main::dispatch()`の`path_prefix`/host-onlyテナント転送の両経路を
+これに差し替え。実HTTP統合テスト
+(`override_host_rewrites_host_header_before_forwarding_over_real_http`)
+で、Hostヘッダをそのままエコーバックするモックバックエンドを使い、
+`aruaru.tokyo`の`/aruaru/...`テナント(`override_host:
+"audiocafe.tokyo"`設定)への実リクエストが、実際に書き換え後の
+`audiocafe.tokyo`をバックエンドが受け取ることを確認済み。
+
+**検証まとめ**: `cargo build --tests --workspace`
+(featureフラグ無し)・`cargo build --tests -p open-web-server-gateway
+--features fastcgi-client`ともに新規warning無しで成功。
+`cargo test --workspace`(featureフラグ無し)は**110件+既存ledger/wire
+全件green**(新規: `redirects::`単体7件・`tenant_router`のoverride_host
+TOML読込1件・`web_vhost`のphp_mode既定値/TOML読込2件・main.rsの
+実HTTP統合2件を含む)。`cargo test -p open-web-server-gateway
+--features fastcgi-client`は**114件green**(`php_fastcgi::`単体4件
++実php-fpm統合1件`#[ignore]`〈手動実行で実際にgreenを確認済み、上記
+参照〉を含む)。既存テストへのリグレッションなし。
+
+**正直な未検証事項・残課題**:
+(1) `fastcgi-client` featureは既定オフのため、featureを付けずに
+ビルドした本番バイナリでは引き続き`php -S`のみが使え、php-fpm接続は
+`--features fastcgi-client`での再ビルドが必要(VPSデプロイ時の
+`cargo build --release --features fastcgi-client,acme,ddns,sftp,upnp`
+のようなfeatureフラグ追加が必要になる——次回VPSデプロイ時に対応要)。
+(2) `php_fastcgi.rs`は各リクエストごとに新規TCP/Unixソケット接続を
+張る単純な実装で、php-fpm側の接続プーリング/keep-aliveは活用しない
+(将来の最適化候補として明記のみ、今回は範囲外)。
+(3) Unixドメインソケット(`/run/php/php8.3-fpm.sock`形式)経由の
+接続は非unixプラットフォームでは`501`を返すコードパスのみで、
+実機検証はTCP経由(`172.22.9.49:9000`)のみ実施——実運用でよく使われる
+Unixソケット経由の実機検証は次回、Linux環境から直接検証することを
+推奨する。
+(4) リダイレクト機能・Hostヘッダー書き換え機能は実VPS環境
+(aruaru.tokyo/audiocafe.tokyo実ドメイン)へは未デプロイ、この開発
+環境での実HTTP統合テストでの検証に留まる——次回VPSデプロイ時に
+実ドメインでの動作確認が必要。
+(5) 前回チェックポイントに記載の最終カットオーバー(nginx停止→
+80/443切り替え)は今回も未実施のまま(このセッションのスコープは
+コード実装のみ、実デプロイ・nginx設定変更はユーザー指示により対象外)。
+
 ### 2026-07-24セッション末尾チェックポイント(リミット接近のため記録)
 
 **目的**: VPS(ConoHa、`ssh conoha`)上でnginxが担っている全ドメインを、

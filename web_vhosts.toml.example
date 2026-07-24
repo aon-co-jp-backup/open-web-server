@@ -21,6 +21,17 @@
 #   "nginx"  -> try_files $uri $uri/ =404; 相当、フォールバックせず404
 #               (既定値、省略時はこちら=既存動作と完全互換)。
 
+# php_mode (2026-07-24追加、本番向けphp-fpm/FastCGI直結対応):
+# php_enabled = true の場合の実際の配信方式を選べる。
+#   省略時(既定) -> 開発用の`php -S`ビルトインサーバーをサブプロセス
+#                    起動してリバースプロキシする従来方式。
+#   [webvhost.php_mode]
+#   mode = "fast_cgi"
+#   fastcgi_addr = "127.0.0.1:9000"  # または "/run/php/php8.3-fpm.sock"
+#     -> 既に稼働しているphp-fpmへFastCGI経由で直接接続する(サブプロセス
+#        は起動しない)。この機能は`fastcgi-client` Cargo featureでのみ
+#        有効(未有効ビルドでは501を返す、詳細はCLAUDE.md HANDOFF参照)。
+
 [[webvhost]]
 host = "audiocafe.tokyo"
 docroot = "F:/open-runo/audiocafe.tokyo"

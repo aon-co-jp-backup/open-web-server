@@ -58,6 +58,13 @@ pub struct TenantConfig {
     /// はいずれも`/`をトップとして期待するルーティング実装のため)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_prefix: Option<String>,
+    /// 転送先へ送るリクエストの`Host`ヘッダを、元のリクエストのHostの
+    /// ままではなくこの値へ書き換える(2026-07-24追記、aruaru.tokyoの
+    /// `/aruaru/`等をaudiocafe.tokyo側へHostヘッダ書き換え付きで転送する
+    /// 用途)。`None`(既定)なら従来通りHostヘッダは書き換えない
+    /// (完全な後方互換)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_host: Option<String>,
 }
 
 /// ルーティング済みテナントの実行時ハンドル。
@@ -333,6 +340,7 @@ mod tests {
             backend_addr: "127.0.0.1:9001".to_string(),
             db_uri: "postgres://localhost/db".to_string(),
             path_prefix: None,
+            override_host: None,
         }
     }
 
@@ -343,6 +351,7 @@ mod tests {
             backend_addr: backend_addr.to_string(),
             db_uri: "postgres://localhost/db".to_string(),
             path_prefix: Some(prefix.to_string()),
+            override_host: None,
         }
     }
 
@@ -538,6 +547,36 @@ mod tests {
         assert_eq!(registry.len().await, 2);
         assert!(registry.resolve("shop.example.com", "/").await.is_some());
         assert!(registry.resolve("app.example.com", "/").await.is_some());
+    }
+
+    /// `override_host`がTOMLから正しく読み込まれ、未指定なら`None`のまま
+    /// (既存動作との完全な後方互換)であることを確認する(2026-07-24追記)。
+    #[tokio::test]
+    async fn load_from_toml_with_and_without_override_host() {
+        let registry = TenantRegistry::new();
+        let toml_str = r#"
+            [[domain]]
+            host = "aruaru.tokyo"
+            backend = "open_runo"
+            backend_addr = "127.0.0.1:4400"
+            db_uri = "postgres://localhost/aruaru"
+            path_prefix = "/aruaru"
+            override_host = "audiocafe.tokyo"
+
+            [[domain]]
+            host = "shop.example.com"
+            backend = "open_runo"
+            backend_addr = "127.0.0.1:9001"
+            db_uri = "postgres://localhost/shop"
+        "#;
+
+        registry.load_from_toml(toml_str).await.unwrap();
+
+        let with_override = registry.resolve("aruaru.tokyo", "/aruaru/x").await.unwrap();
+        assert_eq!(with_override.config.override_host.as_deref(), Some("audiocafe.tokyo"));
+
+        let without_override = registry.resolve("shop.example.com", "/").await.unwrap();
+        assert_eq!(without_override.config.override_host, None);
     }
 
     #[tokio::test]

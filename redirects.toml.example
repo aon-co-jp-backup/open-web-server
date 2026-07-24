@@ -1,0 +1,29 @@
+# ホスト名ベースの汎用301リダイレクト設定例(nginxの
+# `server_name www.example.com; return 301 https://example.com$request_uri;`
+# 相当、2026-07-24追加)。
+#
+# 使い方:
+#   OPEN_WEB_SERVER_REDIRECTS_FILE=./redirects.toml ./open-web-server
+#
+# 起動後も再起動不要で追加/削除できる:
+#   curl -X POST http://localhost:8080/admin/redirects \
+#     -H 'content-type: application/json' \
+#     -H 'x-admin-token: <token>' \
+#     -d '{"host":"www.audiocafe.tokyo","redirect_to":"https://audiocafe.tokyo"}'
+#   curl -X DELETE http://localhost:8080/admin/redirects/www.audiocafe.tokyo \
+#     -H 'x-admin-token: <token>'
+#   curl http://localhost:8080/admin/redirects -H 'x-admin-token: <token>'
+#
+# `redirect_to`はスキーム込みの完全なベースURL。元リクエストのパス+
+# クエリ(`$request_uri`相当)は自動的に付与されるため、`redirect_to`自体に
+# パスを含める必要はない。この機能は`web_vhost`/`tenant_router`のどの
+# ルーティングよりも先に評価される(該当ホストは常にリダイレクトのみ、
+# という性質のため)。
+
+[[redirect]]
+host = "www.audiocafe.tokyo"
+redirect_to = "https://audiocafe.tokyo"
+
+[[redirect]]
+host = "www.aruaru.tokyo"
+redirect_to = "https://aruaru.tokyo"

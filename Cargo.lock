@@ -749,6 +749,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastcgi-client"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b409ecd0fc9c98728dd739e4328b25b0b61cfbba5c5c4d7dab200339286f6e89"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-io",
+ "futures-util",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1685,6 +1701,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "fastcgi-client",
  "flate2",
  "http 1.4.2",
  "http-body-util",
@@ -3378,6 +3395,7 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "futures-util",
  "pin-project-lite",

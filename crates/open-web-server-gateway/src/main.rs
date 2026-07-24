@@ -21,8 +21,11 @@ mod oauth_provider;
 mod handlers;
 mod keyring;
 mod middleware;
+#[cfg(feature = "fastcgi-client")]
+mod php_fastcgi;
 mod php_server;
 mod proxy;
+mod redirects;
 mod response;
 #[cfg(feature = "sftp")]
 mod sftp;
@@ -57,6 +60,28 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         return resp;
     }
 
+    // ホスト名ベースの汎用301リダイレクト(2026-07-24追記、`redirects`
+    // 参照): 「該当ホストへのアクセスは常にリダイレクトのみ」という
+    // 性質上、`web_vhost`/`tenant_router`は言うまでもなく、`/admin/*`・
+    // `/healthz`等の既存ハンドラより先にチェックする(該当ホストで
+    // 登録されたパスが偶然管理APIと衝突しても、意図通り常にリダイレクト
+    // が優先される)。
+    if let Some(host_header) = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(rule) = state.redirects.resolve(host_header).await {
+            let path_and_query = req
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/")
+                .to_string();
+            return redirects::build_redirect_response(&rule, &path_and_query);
+        }
+    }
+
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
@@ -64,6 +89,16 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::POST, "/api/v1/items/grant") => handlers::items::grant_item(state, req).await,
         (Method::POST, "/api/v1/transactions/charge") => {
             handlers::transactions::charge(state, req).await
+        }
+        (Method::POST, "/admin/redirects") => {
+            handlers::redirects::upsert_redirect(state, req).await
+        }
+        (Method::GET, "/admin/redirects") => {
+            handlers::redirects::list_redirects(state, &req).await
+        }
+        (Method::DELETE, p) if p.starts_with("/admin/redirects/") => {
+            let host = p.trim_start_matches("/admin/redirects/").to_string();
+            handlers::redirects::remove_redirect(state, &req, &host).await
         }
         (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
         (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
@@ -165,9 +200,10 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
                 None => None,
             };
             if let Some(tenant) = prefix_tenant {
-                return proxy::forward_to_stripped(
+                return proxy::forward_to_stripped_with_host_override(
                     &tenant.config.backend_addr,
                     tenant.config.path_prefix.as_deref(),
+                    tenant.config.override_host.as_deref(),
                     req,
                 )
                 .await;
@@ -192,9 +228,10 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
 
             match tenant {
                 Some(tenant) => {
-                    proxy::forward_to_stripped(
+                    proxy::forward_to_stripped_with_host_override(
                         &tenant.config.backend_addr,
                         tenant.config.path_prefix.as_deref(),
+                        tenant.config.override_host.as_deref(),
                         req,
                     )
                     .await
@@ -351,6 +388,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState::from_env()?);
     state.load_domains_from_env().await?;
     state.load_web_vhosts_from_env().await?;
+    state.load_redirects_from_env().await?;
 
     // 固定IPを持たない自宅サーバー等向け(`ddns` feature時のみ、
     // `OPEN_WEB_SERVER_DDNS_UPDATE_URL`未設定なら何もしない)。
@@ -931,6 +969,208 @@ mod tests {
         assert!(allow_methods.contains("POST"));
 
         std::env::remove_var("OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS");
+    }
+
+    /// エンドツーエンド検証(ユーザー指示、2026-07-24 ホスト名ベースの
+    /// 汎用301リダイレクト対応): `POST /admin/redirects`で登録した
+    /// ルールが、実HTTP経由で正しく`301`+`Location`ヘッダー(元パス+
+    /// クエリを保持)を返すこと、`web_vhost`/`tenant_router`のどの
+    /// ハンドラよりも先に評価されること(登録ホストへの`/healthz`even
+    /// リクエストもリダイレクトされる、既存ハンドラを奪って優先される
+    /// ことの直接証拠)、削除後は通常のルーティングに戻ることを検証する。
+    #[tokio::test]
+    async fn host_redirect_returns_301_with_location_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-redirect-secret");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // 登録前は該当Hostでも通常通り(未知テナント・未知vhostなので404)。
+        let mut sender = connect(addr).await;
+        let before_req = Request::builder()
+            .method(Method::GET)
+            .uri("/some/path")
+            .header("host", "www.redirect-test.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(before_req).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        // 登録する。
+        let mut sender = connect(addr).await;
+        let register_body = serde_json::json!({
+            "host": "www.redirect-test.example",
+            "redirect_to": "https://redirect-test.example"
+        }).to_string();
+        let register_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/redirects")
+            .header("x-admin-token", "test-redirect-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(register_body)))
+            .unwrap();
+        assert_eq!(sender.send_request(register_req).await.unwrap().status(), StatusCode::CREATED);
+
+        // 登録後: 任意のパス+クエリが301+正しいLocationへ書き換わる。
+        let mut sender = connect(addr).await;
+        let redirect_req = Request::builder()
+            .method(Method::GET)
+            .uri("/foo/bar?x=1")
+            .header("host", "www.redirect-test.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let redirect_resp = sender.send_request(redirect_req).await.unwrap();
+        assert_eq!(redirect_resp.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            redirect_resp.headers().get(hyper::header::LOCATION).unwrap(),
+            "https://redirect-test.example/foo/bar?x=1"
+        );
+
+        // 既存ハンドラ(`/healthz`)よりも先に評価されることの直接証拠:
+        // 登録済みHostで`/healthz`を叩いても301になる(200にならない)。
+        let mut sender = connect(addr).await;
+        let healthz_req = Request::builder()
+            .method(Method::GET)
+            .uri("/healthz")
+            .header("host", "www.redirect-test.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let healthz_resp = sender.send_request(healthz_req).await.unwrap();
+        assert_eq!(
+            healthz_resp.status(),
+            StatusCode::MOVED_PERMANENTLY,
+            "a registered redirect host must take priority over the /healthz handler itself"
+        );
+
+        // 一覧に反映される。
+        let mut sender = connect(addr).await;
+        let list_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/redirects")
+            .header("x-admin-token", "test-redirect-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let list_resp = sender.send_request(list_req).await.unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_bytes = http_body_util::BodyExt::collect(list_resp.into_body()).await.unwrap().to_bytes();
+        let list_body: serde_json::Value = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_body.as_array().unwrap().len(), 1);
+
+        // 削除後は通常のルーティング(404)に戻る。
+        let mut sender = connect(addr).await;
+        let delete_req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/admin/redirects/www.redirect-test.example")
+            .header("x-admin-token", "test-redirect-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(delete_req).await.unwrap().status(), StatusCode::OK);
+
+        let mut sender = connect(addr).await;
+        let after_req = Request::builder()
+            .method(Method::GET)
+            .uri("/some/path")
+            .header("host", "www.redirect-test.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(after_req).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// エンドツーエンド検証(ユーザー指示、2026-07-24 Hostヘッダー書き換え
+    /// 転送対応): `tenant_router::TenantConfig::override_host`が設定
+    /// されたpath_prefixテナントへのリクエストが、実際に転送先バック
+    /// エンド(モック、受け取ったHostヘッダーをそのままエコーバックする)
+    /// へ**書き換え後の**Hostヘッダーで届くことを実HTTP経由で検証する。
+    #[tokio::test]
+    async fn override_host_rewrites_host_header_before_forwarding_over_real_http() {
+        use hyper::service::service_fn;
+
+        // Hostヘッダーをそのままプレーンテキストで返すだけのモック
+        // バックエンド。
+        async fn echo_host_backend(listener: TcpListener) {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                tokio::spawn(async move {
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    let service = service_fn(|req: Request<Incoming>| async move {
+                        let host = req
+                            .headers()
+                            .get(hyper::header::HOST)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        Ok::<_, std::convert::Infallible>(
+                            hyper::Response::builder()
+                                .status(StatusCode::OK)
+                                .body(http_body_util::Full::new(bytes::Bytes::from(host)))
+                                .unwrap(),
+                        )
+                    });
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+
+        let backend_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = backend_listener.local_addr().unwrap();
+        tokio::spawn(echo_host_backend(backend_listener));
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        state
+            .tenants
+            .add(tenant_router::TenantConfig {
+                host: "aruaru.tokyo".to_string(),
+                backend: tenant_router::BackendKind::OpenRuno,
+                backend_addr: backend_addr.to_string(),
+                db_uri: "postgres://localhost/db".to_string(),
+                path_prefix: Some("/aruaru".to_string()),
+                override_host: Some("audiocafe.tokyo".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/aruaru/some/page")
+            .header("host", "aruaru.tokyo")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        let echoed_host = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert_eq!(
+            echoed_host, "audiocafe.tokyo",
+            "the backend must receive the override_host value, not the original request Host header ('aruaru.tokyo')"
+        );
     }
 
     /// CORSが未設定(既定=無効)の場合、既存動作を一切変えないことの実HTTP

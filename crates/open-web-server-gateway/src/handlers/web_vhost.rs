@@ -19,7 +19,7 @@ use crate::proxy;
 use crate::response::{json_response, read_json_body, text_response, BoxBody};
 use crate::state::AppState;
 use crate::static_files;
-use crate::web_vhost::{CompatMode, WebVhostConfig, WebVhostError};
+use crate::web_vhost::{CompatMode, PhpMode, WebVhostConfig, WebVhostError};
 
 pub async fn dispatch(
     state: Arc<AppState>,
@@ -40,13 +40,46 @@ pub async fn dispatch(
         return serve_static_vhost(&vhost.docroot, &path, vhost.compat_mode);
     }
 
-    match state.php_pool.ensure_running(&vhost.docroot).await {
-        Ok(addr) => proxy::forward_to(&addr, req).await,
-        Err(e) => text_response(
-            StatusCode::BAD_GATEWAY,
-            format!("failed to start php built-in server for this vhost: {e}"),
-        ),
+    match &vhost.php_mode {
+        PhpMode::BuiltinServer => match state.php_pool.ensure_running(&vhost.docroot).await {
+            Ok(addr) => proxy::forward_to(&addr, req).await,
+            Err(e) => text_response(
+                StatusCode::BAD_GATEWAY,
+                format!("failed to start php built-in server for this vhost: {e}"),
+            ),
+        },
+        PhpMode::FastCgi { fastcgi_addr } => {
+            dispatch_fastcgi(fastcgi_addr, &vhost.docroot, req).await
+        }
     }
+}
+
+/// `PhpMode::FastCgi`向けの委譲。`fastcgi-client` featureが有効な場合のみ
+/// 実際にphp-fpmへFastCGI経由で接続する(`php_fastcgi`参照)。無効な
+/// ビルドでは正直に`501 Not Implemented`を返し、パニックや無言のフォール
+/// バックはしない。
+#[cfg(feature = "fastcgi-client")]
+async fn dispatch_fastcgi(
+    fastcgi_addr: &str,
+    docroot: &std::path::Path,
+    req: Request<Incoming>,
+) -> Response<BoxBody> {
+    crate::php_fastcgi::proxy_fastcgi(fastcgi_addr, docroot, req).await
+}
+
+#[cfg(not(feature = "fastcgi-client"))]
+async fn dispatch_fastcgi(
+    fastcgi_addr: &str,
+    _docroot: &std::path::Path,
+    _req: Request<Incoming>,
+) -> Response<BoxBody> {
+    text_response(
+        StatusCode::NOT_IMPLEMENTED,
+        format!(
+            "this build was compiled without the 'fastcgi-client' feature; \
+             cannot reach php-fpm at '{fastcgi_addr}'"
+        ),
+    )
 }
 
 /// PHP無効な静的サイトの配信を行う。Apache互換モードでは、リクエスト

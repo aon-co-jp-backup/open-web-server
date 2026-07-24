@@ -8,6 +8,7 @@ use crate::acme::ChallengeStore;
 use crate::free_domain::DomainRegistry;
 use crate::keyring::{GuardianConfig, KeyGuardian};
 use crate::php_server::PhpServerPool;
+use crate::redirects::RedirectRegistry;
 use crate::tenant_router::TenantRegistry;
 use crate::web_vhost::WebVhostRegistry;
 
@@ -39,6 +40,10 @@ pub struct AppState {
     /// 配信エンジン構想、`web_vhost`参照。既存の`tenants`(APIバックエンド
     /// 向け)とは独立した設定空間)。
     pub web_vhosts: Arc<WebVhostRegistry>,
+    /// ホスト名ベースの汎用301リダイレクトルールレジストリ(`redirects`
+    /// 参照、2026-07-24追記)。`tenants`/`web_vhosts`いずれとも独立した
+    /// 設定空間で、`main::dispatch()`の他のどのハンドラより先に評価される。
+    pub redirects: Arc<RedirectRegistry>,
     /// PHPビルトインサーバのサブプロセスプール(`php_server`参照)。
     pub php_pool: Arc<PhpServerPool>,
     /// 無料DDNS(DuckDNS)ドメインの動的レジストリ(最大`MAX_DUCKDNS_DOMAINS`
@@ -93,6 +98,7 @@ impl AppState {
         let acme_challenges = Arc::new(ChallengeStore::new());
         let keyring = Arc::new(KeyGuardian::load_from_disk(GuardianConfig::from_env()));
         let web_vhosts = Arc::new(WebVhostRegistry::new());
+        let redirects = Arc::new(RedirectRegistry::new());
         let php_pool = Arc::new(PhpServerPool::from_env());
         let free_domains = Arc::new(DomainRegistry::new());
         let access_logger = AccessLogConfig::from_env().map(|cfg| Arc::new(AccessLogger::new(cfg)));
@@ -107,6 +113,7 @@ impl AppState {
             acme_challenges,
             keyring,
             web_vhosts,
+            redirects,
             php_pool,
             free_domains,
             access_logger,
@@ -141,6 +148,13 @@ impl AppState {
         let count = self.web_vhosts.load_from_toml(&toml_str).await?;
         tracing::info!(count, path, "loaded web vhosts from file");
         Ok(())
+    }
+
+    /// `OPEN_WEB_SERVER_REDIRECTS_FILE`で指定された`redirects.toml`が
+    /// あれば起動時に一括ロードする(ホスト名ベースの汎用301リダイレクト
+    /// ルール、2026-07-24追記)。
+    pub async fn load_redirects_from_env(&self) -> anyhow::Result<()> {
+        crate::redirects::load_redirects_from_env(&self.redirects).await
     }
 }
 

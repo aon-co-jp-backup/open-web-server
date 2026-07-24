@@ -43,6 +43,38 @@ impl Default for CompatMode {
     }
 }
 
+/// `php_enabled=true`時の実際の配信方式(2026-07-24追加)。
+///
+/// **背景・正直な開示**: 従来`php_enabled=true`は常に`php -S`(PHP
+/// ビルトイン開発用サーバー)をサブプロセス起動してリバースプロキシする
+/// 実装のみだった(`php_server.rs`のdoc comment参照)。しかし実際の
+/// 本番運用(例: VPS上のaudiocafe.tokyo)は`root /var/www/audiocafe.tokyo`
+/// + php-fpm(本番向けFastCGI常駐プロセス)という構成であり、`php -S`とは
+/// 別物——`php -S`はドキュメント上も「本番運用での使用は非推奨」と
+/// 明記された開発補助ツールに過ぎない。この列挙型で配信方式を選択可能に
+/// し、既存の`php -S`運用は`BuiltinServer`として完全後方互換のまま残す。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "mode")]
+pub enum PhpMode {
+    /// 既存実装(既定): `php -S`をdocrootごとにサブプロセス起動して
+    /// リバースプロキシする(`php_server::PhpServerPool`参照)。
+    BuiltinServer,
+    /// 本番向け: 既に稼働しているphp-fpmのFastCGIソケット/アドレスへ
+    /// `fastcgi-client`クレート経由で直接リクエストを渡す(サブプロセス
+    /// は起動しない、既存のphp-fpmプロセスへ接続するだけ)。
+    /// `fastcgi_addr`は`"127.0.0.1:9000"`のようなTCPアドレス、または
+    /// Unixドメインソケットパス(例: `"/run/php/php8.3-fpm.sock"`)。
+    FastCgi { fastcgi_addr: String },
+}
+
+impl Default for PhpMode {
+    fn default() -> Self {
+        // 既存の`php_enabled=true`の挙動(`php -S`サブプロセス)と完全に
+        // 後方互換にするため、既定は`BuiltinServer`のまま。
+        PhpMode::BuiltinServer
+    }
+}
+
 /// 1つの静的/PHPサイトvhost設定。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebVhostConfig {
@@ -58,6 +90,10 @@ pub struct WebVhostConfig {
     /// 既存動作と同じ「フォールバック無しの404」)。
     #[serde(default)]
     pub compat_mode: CompatMode,
+    /// `php_enabled=true`時の配信方式(2026-07-24追加、既定は既存の
+    /// `php -S`ビルトインサーバー方式=完全後方互換)。
+    #[serde(default)]
+    pub php_mode: PhpMode,
 }
 
 fn default_php_enabled() -> bool {
@@ -146,6 +182,7 @@ mod tests {
             docroot: PathBuf::from("/var/www/example"),
             php_enabled: true,
             compat_mode: CompatMode::default(),
+            php_mode: PhpMode::default(),
         }
     }
 
@@ -191,6 +228,39 @@ mod tests {
         let legacy = registry.resolve("legacy.example.com").await.unwrap();
         assert_eq!(legacy.compat_mode, CompatMode::Nginx);
         assert!(legacy.php_enabled);
+    }
+
+    /// `php_mode`未指定時は既存の`php -S`挙動(`BuiltinServer`)のまま
+    /// (2026-07-24追加、後方互換の確認)。
+    #[test]
+    fn php_mode_defaults_to_builtin_server_for_backward_compat() {
+        assert_eq!(PhpMode::default(), PhpMode::BuiltinServer);
+    }
+
+    /// `php_mode = { mode = "fast_cgi", fastcgi_addr = "..." }`をTOMLから
+    /// 正しく読み込めることを確認する(本番向けphp-fpm/FastCGI直結対応、
+    /// 2026-07-24追加)。
+    #[tokio::test]
+    async fn load_from_toml_with_fastcgi_php_mode() {
+        let registry = WebVhostRegistry::new();
+        let toml_str = r#"
+            [[webvhost]]
+            host = "audiocafe.tokyo"
+            docroot = "/var/www/audiocafe.tokyo"
+            php_enabled = true
+            [webvhost.php_mode]
+            mode = "fast_cgi"
+            fastcgi_addr = "127.0.0.1:9000"
+        "#;
+
+        registry.load_from_toml(toml_str).await.unwrap();
+        let vhost = registry.resolve("audiocafe.tokyo").await.unwrap();
+        assert_eq!(
+            vhost.php_mode,
+            PhpMode::FastCgi {
+                fastcgi_addr: "127.0.0.1:9000".to_string()
+            }
+        );
     }
 
     #[tokio::test]
