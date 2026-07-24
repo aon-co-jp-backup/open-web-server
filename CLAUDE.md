@@ -581,6 +581,40 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き9) ACMEクライアントの重複アカウント作成バグを修正
+  (実VPSでの複数ドメイン移行作業中に発見、ユーザー指示「ACMEクライアント
+  の重複アカウント作成バグを先に修正してから再開」)**:
+  1. **発見した実バグ**: `obtain_certificate_http01()`が呼ばれるたびに
+     `AcmeClient::discover()`内で毎回`AcmeAccountKey::generate()`し、
+     新規ACMEアカウントを登録していた。実際のCA(Let's Encrypt)は
+     アカウントを鍵で識別するため、同じ鍵で`new_account`を送れば既存
+     アカウントを200で返すだけで新規登録にならない——鍵を使い捨てに
+     していたことが、複数ドメインへ短時間で証明書発行した際に
+     Let's Encryptの「同一IPからの新規アカウント登録: 3時間に10件まで」
+     レート制限へ実際に到達する原因になっていた(本番VPSでのnginx→
+     open-web-server移行作業中、8ドメイン目以降で発覚)。
+  2. **修正**: `AcmeAccountKey`にPKCS#8バイト列の保持
+     (`to_pkcs8_bytes`)・復元(`from_pkcs8_bytes`)・ファイル永続化
+     (`load_or_generate`、`keyring::KeyGuardian`と同じ一時ファイル+
+     rename方式)を追加。`obtain_certificate_http01()`は
+     `OPEN_WEB_SERVER_ACME_ACCOUNT_KEY_PATH`(既定
+     `acme-account-key.der`)から鍵を読み込み・無ければ生成して
+     永続化し、以後の呼び出し(同一プロセス内・再起動後とも)は
+     同じアカウント鍵を再利用する。`AcmeClient::discover_with_account_key`
+     を新設し、既存の`discover()`(テスト・使い捨て用途向けに残置)は
+     内部でこれを呼ぶ薄いラッパーにした。
+  3. **検証**: 新規単体テスト3件(PKCS8往復での鍵一致・
+     `load_or_generate`の永続化+再利用実証・壊れたファイルでもパニック
+     せずフォールバック生成)を追加、既存の実HTTP経由モックCA統合テスト
+     (`full_http01_flow_against_mock_ca_with_real_challenge_loopback`)
+     も継続green。`cargo test -p open-web-server-gateway --features
+     acme,ddns,sftp,upnp -- --test-threads=1`は**114件全green**。
+  - 次にすべきこと: VPS側へこの修正をデプロイし直し、Let's Encryptの
+    レート制限解除(2026-07-24 05:13 UTC頃)後に残りドメイン
+    (aon.tokyo/aon.co.jp/e-gov.info/aruaru.tokyoとそれぞれのwww)の
+    証明書取得を再開する。同一アカウント鍵を使うため、以後は
+    新規登録扱いにならずレート制限を消費しない見込み。
+
 - **2026-07-24(続き8) 自社ドメイン(aon.co.jp/runo.tokyo、将来nasa.tokyo/
   icpo.tokyo)配下への無料サブドメイン発行機能の第一実装(ユーザー指示
   「DuckDNSのような無料サブドメイン取得+自動更新を、ユーザー自身の所有

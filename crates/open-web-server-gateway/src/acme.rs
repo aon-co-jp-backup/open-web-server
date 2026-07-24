@@ -120,9 +120,23 @@ mod client {
 
     /// An ACME account's ES256 (ECDSA P-256 + SHA-256) key pair. Every ACME
     /// request is a JWS signed with this key.
+    ///
+    /// **Persist and reuse this key across `obtain_certificate_http01` calls
+    /// (both within a process and across restarts).** A real ACME CA (e.g.
+    /// Let's Encrypt) identifies an *account* by its key, not by directory
+    /// URL or contact email — sending `new_account` with a previously-seen
+    /// key returns the *existing* account (HTTP 200) rather than creating a
+    /// new one. Generating a fresh key per call, as this code originally
+    /// did, registers a brand-new ACME account on every single certificate
+    /// request, which quickly exhausts Let's Encrypt's
+    /// "new registrations per IP" rate limit (10 per 3 hours) when
+    /// provisioning certificates for more than a handful of domains in a
+    /// short window — discovered in production while migrating multiple
+    /// vhosts from nginx to open-web-server's own ACME client.
     pub struct AcmeAccountKey {
         key_pair: EcdsaKeyPair,
         rng: SystemRandom,
+        pkcs8: Vec<u8>,
     }
 
     impl AcmeAccountKey {
@@ -132,7 +146,46 @@ mod client {
                 .map_err(|e| anyhow!("ACME account key generation failed: {e}"))?;
             let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
                 .map_err(|e| anyhow!("ACME account key parse failed: {e}"))?;
-            Ok(Self { key_pair, rng })
+            Ok(Self { key_pair, rng, pkcs8: pkcs8.as_ref().to_vec() })
+        }
+
+        /// Reconstructs an account key from previously-saved PKCS#8 DER bytes.
+        pub fn from_pkcs8_bytes(pkcs8: &[u8]) -> Result<Self> {
+            let rng = SystemRandom::new();
+            let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8, &rng)
+                .map_err(|e| anyhow!("ACME account key parse failed: {e}"))?;
+            Ok(Self { key_pair, rng, pkcs8: pkcs8.to_vec() })
+        }
+
+        /// The PKCS#8 DER bytes, for saving to disk so the same account key
+        /// (and therefore the same ACME account) can be reused later.
+        pub fn to_pkcs8_bytes(&self) -> &[u8] {
+            &self.pkcs8
+        }
+
+        /// Loads the account key from `path` if it exists; otherwise
+        /// generates a new one and writes it (atomic tmp-file + rename, same
+        /// pattern as `keyring::KeyGuardian`'s persistence) so subsequent
+        /// calls — including after a process restart — reuse the same ACME
+        /// account instead of registering a new one each time.
+        pub fn load_or_generate(path: &std::path::Path) -> Result<Self> {
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(key) = Self::from_pkcs8_bytes(&bytes) {
+                    return Ok(key);
+                }
+                tracing::warn!(path = %path.display(), "ACME account key file unreadable/corrupt, generating a new one");
+            }
+            let key = Self::generate()?;
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let tmp_path = path.with_extension("tmp");
+            if std::fs::write(&tmp_path, key.to_pkcs8_bytes()).is_ok() {
+                let _ = std::fs::rename(&tmp_path, path);
+            } else {
+                tracing::warn!(path = %path.display(), "failed to persist new ACME account key; it will not be reused after restart");
+            }
+            Ok(key)
         }
 
         /// Raw fixed-length (r||s) ES256 signature over `message`, per
@@ -227,7 +280,19 @@ mod client {
     }
 
     impl AcmeClient {
+        /// Discovers the ACME directory and generates a fresh, one-off
+        /// account key. Prefer [`Self::discover_with_account_key`] in
+        /// production so the same account is reused across calls (see
+        /// [`AcmeAccountKey`] doc comment for why this matters for rate
+        /// limits) — this constructor remains for tests and any caller that
+        /// deliberately wants a disposable account.
         pub async fn discover(directory_url: &str) -> Result<Self> {
+            Self::discover_with_account_key(directory_url, AcmeAccountKey::generate()?).await
+        }
+
+        /// Discovers the ACME directory using a caller-supplied (and
+        /// presumably persisted/reused) account key.
+        pub async fn discover_with_account_key(directory_url: &str, account_key: AcmeAccountKey) -> Result<Self> {
             let http = reqwest::Client::new();
             let directory: AcmeDirectory = http
                 .get(directory_url)
@@ -237,7 +302,7 @@ mod client {
                 .json()
                 .await
                 .map_err(|e| anyhow!("ACME directory parse failed: {e}"))?;
-            Ok(Self { http, directory, account_key: AcmeAccountKey::generate()?, kid: None, nonce: None })
+            Ok(Self { http, directory, account_key, kid: None, nonce: None })
         }
 
         async fn fetch_nonce(&self) -> Result<String> {
@@ -464,7 +529,17 @@ mod client {
         contact_email: &str,
         challenges: &Arc<ChallengeStore>,
     ) -> Result<(String, String)> {
-        let mut client = AcmeClient::discover(directory_url).await?;
+        // Reuse one persisted ACME account key across every call (see
+        // `AcmeAccountKey` doc comment) instead of registering a brand-new
+        // account per domain, which otherwise burns through Let's Encrypt's
+        // "new registrations per IP" rate limit after only a handful of
+        // domains. Path is overridable via `OPEN_WEB_SERVER_ACME_ACCOUNT_KEY_PATH`
+        // (falls back to a relative default so single-domain/dev use still
+        // works without any env var set).
+        let key_path = std::env::var("OPEN_WEB_SERVER_ACME_ACCOUNT_KEY_PATH")
+            .unwrap_or_else(|_| "acme-account-key.der".to_string());
+        let account_key = AcmeAccountKey::load_or_generate(std::path::Path::new(&key_path))?;
+        let mut client = AcmeClient::discover_with_account_key(directory_url, account_key).await?;
         client.new_account(&[contact_email.to_string()], true).await?;
         let (order, order_url) = client.new_order(&[domain.to_string()]).await?;
 
@@ -527,6 +602,47 @@ mod client {
             let a = AcmeAccountKey::generate().unwrap();
             let b = AcmeAccountKey::generate().unwrap();
             assert_ne!(a.thumbprint(), b.thumbprint());
+        }
+
+        #[test]
+        fn pkcs8_round_trip_preserves_the_same_key() {
+            let original = AcmeAccountKey::generate().unwrap();
+            let restored = AcmeAccountKey::from_pkcs8_bytes(original.to_pkcs8_bytes()).unwrap();
+            assert_eq!(original.thumbprint(), restored.thumbprint());
+        }
+
+        #[test]
+        fn load_or_generate_persists_and_reuses_the_same_account_key() {
+            let dir = std::env::temp_dir().join(format!("owc-acme-key-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let path = dir.join("account-key.der");
+
+            let first = AcmeAccountKey::load_or_generate(&path).unwrap();
+            let second = AcmeAccountKey::load_or_generate(&path).unwrap();
+
+            // This is the actual bug fix under test: without persistence,
+            // every call used to generate a fresh key (and thus register a
+            // brand-new ACME account), which exhausted Let's Encrypt's
+            // "new registrations per IP" rate limit after just a handful of
+            // domains during a real production migration.
+            assert_eq!(first.thumbprint(), second.thumbprint());
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn load_or_generate_falls_back_to_a_new_key_on_corrupt_file() {
+            let dir = std::env::temp_dir().join(format!("owc-acme-key-corrupt-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("account-key.der");
+            std::fs::write(&path, b"not a valid pkcs8 key").unwrap();
+
+            // Must not panic on a corrupt file -- falls back to a fresh key.
+            let key = AcmeAccountKey::load_or_generate(&path);
+            assert!(key.is_ok());
+
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
