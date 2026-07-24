@@ -19,6 +19,15 @@ cause double-charging or silent data loss.
 
 ---
 
+> **2026-07-24 update**: migrating away from nginx in production, toward
+> open-web-server's own TLS termination (automatic ACME certificates) plus
+> `web_vhost`/`tenant_router`. Real Let's Encrypt certificates have been
+> obtained for every domain on the VPS; the final cutover (stopping nginx)
+> is still pending. See the HANDOFF checkpoint in `CLAUDE.md` for details
+> and next steps.
+
+---
+
 ## Why open-web-server Exists
 
 Typical billing/payment paths in web servers carry these residual risks:

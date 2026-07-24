@@ -581,6 +581,73 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24セッション末尾チェックポイント(リミット接近のため記録)
+
+**目的**: VPS(ConoHa、`ssh conoha`)上でnginxが担っている全ドメインを、
+open-web-server自身のTLS終端(ACME自動取得)+`web_vhost`/`tenant_router`
+へ完全移行し、nginxを廃止する(ユーザー指示、「open-web-serverをWEBサーバー
+として、nginxの代わりにできないか」から発展)。
+
+**完了したこと**:
+1. ACMEクライアントの重複アカウント作成バグを修正(下記詳細エントリ参照、
+   コミット`42928c1`、VPSへデプロイ済み)。
+2. VPS上の**全13ドメイン+wwwバリアントで実Let's Encrypt証明書の取得に
+   成功**(1つの再利用アカウントで、レート制限の再消費なし):
+   karu.tokyo・runo.tokyo・audiocafe.tokyo・easy-web.tokyo・easyweb.tokyo・
+   aon.tokyo・aon.co.jp・e-gov.info・aruaru.tokyoとそれぞれのwww版。
+3. 途中で発見・修正した実バグ2件(いずれもVPS上のnginx設定ファイルの
+   問題、コード側の問題ではない): `aruaru.tokyo`・`www.audiocafe.tokyo`の
+   nginx設定に、`location`ブロックより先に評価される「サーバー直下の
+   `return 301`」があり、ACMEチャレンジパスを問答無用でHTTPSへ
+   リダイレクトしていた(`if`ディレクティブと同様、素の`server{}`直下の
+   `return`はlocationマッチングより先にrewriteフェーズで無条件実行される、
+   というnginxの仕様が原因)。`return`を`location /`内へ移すことで解消
+   (VPS上の`/etc/nginx/conf.d/aruaru.tokyo.conf`・`audiocafe.tokyo.conf`を
+   直接編集、変更前は`.bak-20260724-premigrate`で退避済み)。
+4. **本番トラフィックには一切影響していない**——ここまでの変更は
+   (a) nginxの`/.well-known/acme-challenge/`パスのみをopen-web-server
+   (127.0.0.1:8103)へブリッジ、(b) open-web-server自体にテスト専用の
+   TLSポート(8443、`/etc/systemd/system/open-web-server.service`に
+   `OPEN_WEB_SERVER_TLS_BIND=0.0.0.0:8443`を追加、
+   `.bak-premigrate`で退避済み)を追加、(c) 証明書・テナント登録、
+   の3点のみで、実ユーザーが見る80/443番の経路(nginx)は無変更。
+   `karu.tokyo`はテストポート8443で実際にTLS+ルーティングまで
+   フルパスの動作確認済み(実Let's Encrypt証明書での実TLSハンドシェイク
+   + リバースプロキシ経由の実HTML取得)。
+
+**次回セッション最初にすべきこと(優先順)**:
+1. **証明書の再取得は不要**(全13ドメイン分取得済み、ただし
+   `TenantCertResolver`はプロセス再起動で消える設計のため、
+   `systemctl restart open-web-server`した場合は
+   `POST /admin/tenants/<host>/tls/acme`で再登録が必要——ACME
+   アカウント鍵は永続化済みなので再登録自体はレート制限を消費しない)。
+2. **nginxが担っている以下の挙動をopen-web-server側で再現する実装が
+   必要**(これが完全移行の残作業、証明書取得より大きい):
+   - `www.audiocafe.tokyo`/`www.aruaru.tokyo`のような「wwwから裸ドメインへ
+     の301リダイレクト」——open-web-serverに現状この汎用機能(ホスト名
+     ベースの単純リダイレクト)が無い。`tenant_router`か`web_vhost`に
+     redirect用の設定項目を追加するのが妥当と思われる。
+   - `audiocafe.tokyo`のPHP直接配信(`root /var/www/audiocafe.tokyo`+
+     `index.php`、単純なリバースプロキシではなく静的+PHP混在) —
+     既存の`web_vhost`(`php_enabled=true`)がそのまま使えるはずだが
+     実際にVPS上のドキュメントルート・PHP-FPM経路との整合を要確認。
+   - `aruaru.tokyo`の`/aruaru/`・`/aruaru-lady/`・`/rakuten-mobile/`
+     サブパスを、Hostヘッダーを`audiocafe.tokyo`に書き換えてaudiocafe側
+     (127.0.0.1:4400)へ転送する仕組み——`tenant_router`の
+     `path_prefix`機能(runo.tokyoの`/blog`等で使用中)は使えるはずだが、
+     「転送先へのHostヘッダー上書き」機能が現状あるか要確認・無ければ
+     追加実装が必要。
+3. 上記が揃った上で、各ドメインをテストポート8443(または別のテスト
+   手段)で実際に動作確認してから、**最後にnginx停止→
+   `OPEN_WEB_SERVER_BIND`/`OPEN_WEB_SERVER_TLS_BIND`を本番の80/443へ
+   切り替え**、という最終カットオーバーを実施する。この最終カット
+   オーバーは全ドメイン確認後に一度だけ行う破壊的操作なので、確認を
+   取ってから実施すること。
+4. カットオーバー完了後、`/etc/systemd/system/open-web-server.service`の
+   テスト用`OPEN_WEB_SERVER_TLS_BIND=0.0.0.0:8443`を本番用の
+   `0.0.0.0:443`に書き換え、`.bak-premigrate`ファイル群は正常稼働を
+   確認できてから削除する(まだ削除しないこと)。
+
 - **2026-07-24(続き9) ACMEクライアントの重複アカウント作成バグを修正
   (実VPSでの複数ドメイン移行作業中に発見、ユーザー指示「ACMEクライアント
   の重複アカウント作成バグを先に修正してから再開」)**:
