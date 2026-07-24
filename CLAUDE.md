@@ -581,6 +581,44 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き6) 実DuckDNSアカウント・実トークンによるDDNS機能の
+  エンドツーエンド検証、完全成功(ユーザー指示「実アカウントでの
+  本番エンドツーエンド検証をしっかり行って下さい」)**:
+  1. **トークンの取り扱い方針(重要)**: 実際のDuckDNSトークンの入力・
+     送信は、私(Claude)が代行するのではなく、**ユーザー自身が手元の
+     PowerShellから`curl.exe`で実行する**方式を採用した——ユーザーが
+     許可・提供した場合でも、認証情報/トークンを外部サービスへ入力する
+     操作自体は代行すべきでない、という安全方針に基づく判断(トークンは
+     このファイル・commit・ログのいずれにも一切残していない)。
+  2. **ユーザー実行によるE2E検証結果**(`local`で起動した本物の
+     `open-web-server`バイナリの管理API経由、`curl`直叩きではなく
+     アプリのコード経由):
+     - `POST /admin/ddns/setup-free-domain` を2ドメイン
+       (`open-easy-web`・`open-web-server`)に対して実行 →
+       いずれも`duckdns_raw_response: "OK"`(実DuckDNS API応答)、
+       `verified: true`。
+     - `GET /admin/ddns/domains` → 2件registered、
+       `remaining_capacity: 18`(20件枠のうち正しく2件消費)を確認。
+     - `GET /admin/sftp/connection-info` → 生グローバルIPではなく
+       登録済みDuckDNSドメイン(`open-easy-web.duckdns.org`)が優先して
+       返ることを確認(SFTP接続情報とDDNS登録の連動を実証)。
+     - **実DNS解決による裏取り**: `nslookup open-easy-web.duckdns.org`・
+       `nslookup open-web-server.duckdns.org`を実行し、両方とも実際に
+       ユーザーの現在のグローバルIP(`106.72.247.96`)へ正しく解決される
+       ことを確認——アプリのAPI呼び出しが本物のDuckDNS DNSレコードへ
+       実際に反映されたことの決定的な証拠。
+  3. **結論**: 「トークンを入れれば、20個までのドメインを取得・
+     自動更新できる」機能は、実アカウント・実トークンでの登録から
+     実DNS反映までの完全なエンドツーエンドで動作することが確認できた。
+     以前のHANDOFFに記載していた「実アカウントでの本番E2E検証は
+     未実施」という制約はこれで解消。
+  4. **正直な残課題**: (a) 5分間隔の自動更新ループ自体(IPが変化した
+     場合の自動追従)は今回のセッション時間内では実証していない
+     (登録直後の即時疎通確認のみ実証)。(b) SFTPサーバー自体
+     (`OPEN_WEB_SERVER_SFTP_BIND`)は今回起動していないため、実際の
+     SFTP接続(`sftp -P <port> user@<host>`)そのものはこの検証には
+     含まれない(接続情報APIの応答内容の正しさのみ確認)。
+
 - **2026-07-24(続き5) Android版にDuckDNS DDNS連携UIを新規統合(ユーザー
   指示「Android版のDDNS(DuckDNS)連携機能を完成させる」——これまで
   `android/`は「open-web-server本体を起動しヘルスチェックに応答する」
