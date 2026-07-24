@@ -581,6 +581,60 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(最終+1) Android版: 3電源プロファイル→4電源プロファイルへ拡張
+(省メモリ版を新設、ユーザー指示「省電力と省メモリは明確に別軸として区別」)
+
+1. **`PowerProfile.kt`**: `MEMORY_SAVER("memory_saver", "省メモリ", "🧠✕")`を
+   新規追加(既存`POWER_SAVE`/`NORMAL`/`ALWAYS_ON`は変更なし)。
+2. **`MainActivity.kt`の具体的施策(「省電力」とは別軸であることを実装で
+   示す)**:
+   - `healthPollIntervalMs()`: 省メモリ版は通常版と同じ1分(ポーリング
+     間隔延長=省電力の施策軸であり、省メモリ版はここを変えない)。
+   - `logBufferMaxLines()`(新規): ログ画面`StringBuilder`の保持行数上限
+     (省メモリ=40行/省電力・通常=400行/常時電源=2000行)。`trimLogBuffer()`
+     (新規)が`pollHealthz()`の各試行後に実際に古い行を破棄する。
+   - `healthBodyPreviewMaxChars()`(新規): ヘルスチェック応答本文の保持
+     文字数上限(省メモリ=64/省電力・通常=512/常時電源=4096)、
+     `pollHealthz()`で実際に切り詰めて保持する。
+   - `applyProfilePowerBehavior()`に`MEMORY_SAVER`分岐を追加(WakeLock
+     取得なし、上記のキャッシュ/バッファ縮小のみを行うことをログに明記)。
+   - `accelBackendEnvValue()`: 省メモリ版も省電力/通常と同じ`"cpu"`。
+   - **正直な開示**: バックグラウンド先読み・プリフェッチは元々本アプリに
+     存在しないため、「行わない」という施策は実装上「元から無い」ことの
+     確認に留まる(新規の抑制コードは無い)。実装した具体的施策は
+     上記のログ行数/応答本文保持サイズの上限のみ。
+3. **電源切断時ダイアログを2択→3択へ変更**(`onPowerDisconnected()`):
+   `setPositiveButton`(省電力版へ切替、既定推奨)/
+   `setNeutralButton`(省メモリ版へ切替)/`setNegativeButton`(普通版
+   [通常版]のままにする)の3ボタン構成。
+4. **UI**: `activity_profile_select.xml`に`buttonMemorySaver`を先頭に
+   追加(絵文字🧠+日本語ラベル+説明文、既存3択と同じ見た目パターン)。
+   `strings.xml`に`app_name_memorysaver`/`profile_memory_saver_button`/
+   `profile_memory_saver_desc`を追加。新規`ic_launcher_memorysaver.xml`
+   (紫背景+メモリチップ図形、既存の緑/青/橙と重複しない配色)。
+   `AndroidManifest.xml`に`LauncherMemorySaver`活動-aliasを追加
+   (`LAUNCH_MEMORY_SAVER`アクション)。`ProfileSelectActivity.kt`に
+   `buttonMemorySaver`のクリックリスナーを追加。
+5. **検証**: `gradle :app:assembleDebug`(`~/.gradle/wrapper/dists/
+   gradle-8.11.1-all`配下のキャッシュ済みgradleバイナリを直接実行)で
+   **BUILD SUCCESSFUL**を確認(既存jniLibs[arm64-v8a/x86_64]同梱のまま、
+   新規warning無し)。**正直な制限**: 本パスでは実機/エミュレータでの
+   実地検証(電源切断シミュレート・3択ダイアログの実タップ)は実施して
+   いない——ビルド成功(型チェック+APK生成)までの確認に留まる。前回
+   HANDOFF(2026-07-24続き3・続き)記載の実機/エミュレータ検証実績は
+   既存の3プロファイル部分についてのものであり、今回追加した省メモリ版
+   固有の分岐は未実機検証のまま。
+6. **未実装として明記(過剰実装回避、ユーザー指示通り)**: 外付けGPU
+   検出のAndroid側実装は行っていない——`OPEN_WEB_SERVER_ACCEL_BACKEND`
+   環境変数がRust側へ渡る既存の仕組みのみに委ね、Android自体が外付けGPU
+   を一般的にサポートする標準APIを持たないための判断(コード内docにも
+   明記済み)。
+- 次にすべきこと: (1) 実機/エミュレータでの4択ダイアログ・省メモリ版
+  アイコン起動の実地検証、(2) 省メモリ版のキャッシュ上限を将来的に
+  ネイティブ`open-web-server`本体側の設定(環境変数等)とも連携させる
+  拡張(現状はAndroidシェル側のログ/表示バッファのみが対象、ネイティブ
+  プロセス自体のメモリ使用量には影響しない——正直な開示)。
+
 ### 2026-07-24(最終) VPS本番カットオーバー完了 — nginx廃止、open-web-serverが80/443を直接受ける構成へ移行
 
 **ユーザー指示「実施して」を受け、最終カットオーバーを実施し成功**:

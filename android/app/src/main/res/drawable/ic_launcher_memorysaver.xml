@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  省メモリプロファイル用アイコン(2026-07-24新設)。紫背景+チップ(メモリ
+  モジュール)図形+斜線(「省メモリ=保持量を控えめにする」を示す)。
+  他3プロファイル(緑=省電力/青=通常/橙=常時電源)と重複しない配色
+  (紫)にして、ホーム画面上で誤って選択しないよう明確に区別する——
+  実際の「省メモリ」の文字はランチャー上のラベル(`app_name_memorysaver`)
+  側で表示される。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#6A1B9A" android:pathData="M0,0h108v108h-108z" />
+    <!-- memory chip body -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,36 h40 a4,4 0 0 1 4,4 v28 a4,4 0 0 1 -4,4 h-40 a4,4 0 0 1 -4,-4 v-28 a4,4 0 0 1 4,-4 z" />
+    <!-- chip pins (top) -->
+    <path android:fillColor="#FFFFFF" android:pathData="M44,30 h4 v6 h-4 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M52,30 h4 v6 h-4 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M60,30 h4 v6 h-4 z" />
+    <!-- chip pins (bottom) -->
+    <path android:fillColor="#FFFFFF" android:pathData="M44,72 h4 v6 h-4 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M52,72 h4 v6 h-4 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M60,72 h4 v6 h-4 z" />
+    <!-- diagonal slash for "memory save" -->
+    <path android:fillColor="#6A1B9A" android:pathData="M28,74 L76,26 L82,32 L34,80 Z" />
+</vector>

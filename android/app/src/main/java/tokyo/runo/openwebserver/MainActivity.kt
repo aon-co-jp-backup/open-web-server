@@ -27,8 +27,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * open-web-server Android版シェル(2026-07-23着手、2026-07-24に3電源
- * プロファイル対応・open-easy-web連携導線を追加)。
+ * open-web-server Android版シェル(2026-07-23着手、2026-07-24に4電源
+ * プロファイル[省メモリ/省電力/通常/常時電源接続]対応・open-easy-web
+ * 連携導線を追加)。
  *
  * このActivity自体はサーバー機能を一切実装しない。クロスコンパイル済みの
  * `open-web-server`ネイティブ実行ファイル(`jniLibs/<abi>/libopenwebserver.so`
@@ -67,8 +68,58 @@ class MainActivity : AppCompatActivity() {
      */
     private fun healthPollIntervalMs(profile: PowerProfile): Long = when (profile) {
         PowerProfile.POWER_SAVE -> 5 * 60_000L // 5分
+        // 省メモリ版はポーリング頻度自体は通常版と同じにする(ポーリング
+        // 間隔の延長は「省電力」の施策軸であり、「省メモリ」の施策軸
+        // [下記memoryCacheLimitBytes/logBufferMaxLines等]とは別物として
+        // 明確に区別する、ユーザー指示2026-07-24)。
+        PowerProfile.MEMORY_SAVER -> 60_000L // 1分(通常と同じ)
         PowerProfile.NORMAL -> 60_000L // 1分
         PowerProfile.ALWAYS_ON -> 5_000L // 5秒
+    }
+
+    /**
+     * 省メモリ版の具体的施策その1(2026-07-24追加、ユーザー指示
+     * 「省電力と省メモリは別軸として区別すること」への対応)。
+     * ログ画面(`logText`)に保持する行数の上限——省メモリ版は履歴
+     * バッファを大きく縮小し、それ以外は緩やかな上限とする。実際に
+     * `StringBuilder`の内容を`appendLine`のたびにこの行数へ切り詰める
+     * ことで、長時間稼働時のメモリ使用量差として実際に効果を持つ。
+     */
+    private fun logBufferMaxLines(profile: PowerProfile): Int = when (profile) {
+        PowerProfile.MEMORY_SAVER -> 40
+        PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> 400
+        PowerProfile.ALWAYS_ON -> 2000
+    }
+
+    /**
+     * 省メモリ版の具体的施策その2。ヘルスチェックの結果本文
+     * (`pollHealthz`が記録する`body`)を保持する最大バイト数——省メモリ
+     * 版は長いレスポンスボディを大きく切り詰めて保持しないようにする
+     * (バックグラウンドでの先読み・プリフェッチは元々本アプリに存在
+     * しないため、キャッシュ/バッファサイズの縮小という形で「メモリ
+     * 使用量を実際に減らす」施策を実装する)。
+     */
+    private fun healthBodyPreviewMaxChars(profile: PowerProfile): Int = when (profile) {
+        PowerProfile.MEMORY_SAVER -> 64
+        PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> 512
+        PowerProfile.ALWAYS_ON -> 4096
+    }
+
+    /**
+     * ログバッファを`logBufferMaxLines(currentProfile)`件までに切り詰める
+     * (先頭[古い行]から破棄)。`StringBuilder`をまるごと作り直す単純な
+     * 実装だが、呼び出し頻度はヘルスチェックのポーリング間隔と同程度
+     * (最速でも常時電源接続版の5秒に1回)のため実用上問題にならない。
+     */
+    private fun trimLogBuffer(log: StringBuilder) {
+        val maxLines = logBufferMaxLines(currentProfile)
+        val lines = log.lines()
+        if (lines.size > maxLines) {
+            val trimmed = lines.takeLast(maxLines)
+            log.setLength(0)
+            log.append(trimmed.joinToString("\n"))
+            if (trimmed.isNotEmpty()) log.appendLine()
+        }
     }
 
     /**
@@ -87,7 +138,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun accelBackendEnvValue(profile: PowerProfile): String = when (profile) {
         PowerProfile.ALWAYS_ON -> "hardware_accelerator"
-        PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> "cpu"
+        PowerProfile.MEMORY_SAVER, PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> "cpu"
     }
 
     private var healthPollJob: Job? = null
@@ -204,6 +255,17 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(receiver, filter)
     }
 
+    /**
+     * 電源切断時の確認ダイアログ(2026-07-24、2択→3択へ変更、ユーザー
+     * 指示「省電力版に切り替えますか?省メモリ版に切り替えますか?もしくは
+     * 普通版に切り替えますか?」)。`AlertDialog`のボタンは実用上3つまでが
+     * 適切なため、`setPositiveButton`/`setNegativeButton`/
+     * `setNeutralButton`の3ボタン構成を採用(3択リストダイアログではなく
+     * こちらを選んだ理由: 既存の2択ボタン実装からの変更が最小で済み、
+     * 各選択肢の推奨度をボタンの目立たせ方[Positiveを既定推奨として先頭
+     * 表示]で表現しやすいため)。既定推奨(強調表示)は既存方針を踏襲し
+     * 「省電力」を第一候補のまま維持する。
+     */
     private fun onPowerDisconnected() {
         if (currentProfile != PowerProfile.ALWAYS_ON) return
         if (isFinishing || isDestroyed) return
@@ -211,13 +273,17 @@ class MainActivity : AppCompatActivity() {
             .setTitle("電源が外れました")
             .setMessage(
                 "常時電源接続モードで動作中に電源が外れました。\n" +
-                    "省電力モードに切り替えますか?それとも通常モードの" +
-                    "ままにしますか?\n(推奨: 省電力モード)"
+                    "省電力版に切り替えますか?省メモリ版に切り替えますか?\n" +
+                    "もしくは普通版(通常版)に切り替えますか?\n" +
+                    "(推奨: 省電力版)"
             )
-            .setPositiveButton("省電力モードへ切替") { _, _ ->
+            .setPositiveButton("省電力版へ切替") { _, _ ->
                 switchProfileAndRestart(PowerProfile.POWER_SAVE)
             }
-            .setNegativeButton("通常モードのままにする") { _, _ ->
+            .setNeutralButton("省メモリ版へ切替") { _, _ ->
+                switchProfileAndRestart(PowerProfile.MEMORY_SAVER)
+            }
+            .setNegativeButton("普通版(通常版)のままにする") { _, _ ->
                 switchProfileAndRestart(PowerProfile.NORMAL)
             }
             .setCancelable(false)
@@ -264,6 +330,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun resolveProfile(): PowerProfile {
         return when (intent?.action) {
+            "tokyo.runo.openwebserver.LAUNCH_MEMORY_SAVER" -> PowerProfile.MEMORY_SAVER
             "tokyo.runo.openwebserver.LAUNCH_POWER_SAVE" -> PowerProfile.POWER_SAVE
             "tokyo.runo.openwebserver.LAUNCH_NORMAL" -> PowerProfile.NORMAL
             "tokyo.runo.openwebserver.LAUNCH_ALWAYS_ON" -> PowerProfile.ALWAYS_ON
@@ -299,6 +366,18 @@ class MainActivity : AppCompatActivity() {
             }
             PowerProfile.POWER_SAVE -> {
                 log.appendLine("power: no WakeLock acquired (power-save profile, Doze-friendly)")
+            }
+            PowerProfile.MEMORY_SAVER -> {
+                // 「省電力」とは別軸: WakeLockの有無ではなく、ログ保持行数
+                // (`logBufferMaxLines`)・ヘルスチェック本文の保持サイズ
+                // (`healthBodyPreviewMaxChars`)を大きく絞ることでメモリ
+                // 使用量そのものを減らす、というのがこのプロファイルの
+                // 実体。詳細な数値差は各関数のdoc参照。
+                log.appendLine(
+                    "memory: log buffer capped at ${logBufferMaxLines(currentProfile)} lines, " +
+                        "health body preview capped at ${healthBodyPreviewMaxChars(currentProfile)} chars " +
+                        "(memory-saver profile, no background prefetch/no large caches)"
+                )
             }
             PowerProfile.NORMAL -> {
                 log.appendLine("power: no WakeLock acquired (normal profile)")
@@ -417,10 +496,14 @@ class MainActivity : AppCompatActivity() {
                 val code = conn.responseCode
                 val body = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
-                log.appendLine("attempt ${attempt + 1}: GET /healthz -> $code \"$body\"")
+                val maxPreview = healthBodyPreviewMaxChars(currentProfile)
+                val bodyPreview = if (body.length > maxPreview) body.take(maxPreview) + "…(truncated)" else body
+                log.appendLine("attempt ${attempt + 1}: GET /healthz -> $code \"$bodyPreview\"")
+                trimLogBuffer(log)
                 if (code == 200) return true
             } catch (e: Exception) {
                 log.appendLine("attempt ${attempt + 1}: GET /healthz failed: ${e.message}")
+                trimLogBuffer(log)
             }
         }
         return false
