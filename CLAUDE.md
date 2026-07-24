@@ -581,6 +581,20 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(最終+2) nasa.tokyo/icpo.tokyoをVPS本番へ追加デプロイ完了
+
+VPS(ConoHa)へ新規`nasa.tokyo`・`icpo.tokyo`リポジトリをclone・
+`cargo build --release`・systemdサービス化(`nasa-tokyo.service`
+`127.0.0.1:4700`、`icpo-tokyo.service` `127.0.0.1:4800`)し、
+open-web-serverの`tenant_router`へ4件(bare+www×2ドメイン)登録。
+ユーザーがConoHa DNS管理画面でAレコード(`160.251.237.162`)を設定後、
+実Let's Encrypt証明書を全4件取得し、`https://nasa.tokyo/`・
+`https://icpo.tokyo/`とそれぞれのwww版が実インターネット経由で
+HTTPS 200で応答することを確認済み。断り書き(「実際のNASA/ICPOとは
+無関係の独立プロジェクト」、日英併記)も実際の本文に含まれることを
+`curl`で確認済み。これでopen-web-server配下の全10ドメイン
+(既存8+今回2)が本番稼働中。
+
 ### 2026-07-24(最終+1) Android版: 3電源プロファイル→4電源プロファイルへ拡張
 (省メモリ版を新設、ユーザー指示「省電力と省メモリは明確に別軸として区別」)
 
