@@ -60,4 +60,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // DuckDNSトークンの安全な永続化(2026-07-24追加)。平文SharedPreferences
+    // には保存せず、Android推奨のEncryptedSharedPreferences経由で保存する。
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

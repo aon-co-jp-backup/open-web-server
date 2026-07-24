@@ -38,6 +38,18 @@
         android:layout_marginTop="8dp"
         android:text="@string/change_profile_button" />
 
+    <!--
+      DuckDNS DDNSドメイン設定画面への導線(2026-07-24新設)。
+      Rust側`free_domain.rs`の管理API(POST /admin/ddns/setup-free-domain等)
+      をこのAndroidアプリ内から使えるようにする。
+    -->
+    <Button
+        android:id="@+id/ddnsSetupButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/ddns_setup_button" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"

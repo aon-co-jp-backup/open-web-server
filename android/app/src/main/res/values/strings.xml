@@ -18,4 +18,13 @@
 
     <string name="open_easy_web_button">🌐 open-easy-web ウィザードを開く</string>
     <string name="change_profile_button">電源プロファイルを変更</string>
+    <string name="ddns_setup_button">🌍 DuckDNSドメイン設定</string>
+
+    <string name="ddns_setup_title">DuckDNS ドメイン設定</string>
+    <string name="ddns_setup_explainer">duckdns.org で取得したサブドメイン名とトークンを登録すると、起動中のopen-web-serverが5分間隔で自動的にIPを更新します(最大20ドメインまで)。トークン自体はduckdns.orgへのログインで取得してください(このアプリは代行取得しません)。</string>
+    <string name="ddns_admin_token_hint">管理APIトークン(サーバー起動時と共通の値)</string>
+    <string name="ddns_subdomain_hint">サブドメイン名(例: myhost)</string>
+    <string name="ddns_token_hint">DuckDNSトークン</string>
+    <string name="ddns_register_button">登録する</string>
+    <string name="ddns_registered_list_title">登録済みドメイン</string>
 </resources>

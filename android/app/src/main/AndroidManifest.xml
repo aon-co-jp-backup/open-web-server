@@ -49,6 +49,15 @@
             android:exported="false" />
 
         <!--
+          DuckDNS DDNSドメイン設定画面(2026-07-24新設)。`MainActivity`から
+          のみ起動される内部画面(LAUNCHERではない)。
+        -->
+        <activity
+            android:name=".DdnsSetupActivity"
+            android:exported="false"
+            android:label="@string/ddns_setup_title" />
+
+        <!--
           3電源プロファイルそれぞれの専用ホーム画面アイコン(2026-07-24
           新設)。「アイコン上にも省電力の文字を明示する」要件に対し、
           アイコン自体は色+シンボルで区別(緑=省電力/青=通常/橙=常時電源)、

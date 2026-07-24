@@ -45,6 +45,13 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_PROFILE = "profile"
+
+        /**
+         * サーバーのbindポート(2026-07-24、`DdnsSetupActivity`からも
+         * 同じローカルポートへ管理APIを叩く必要があるため`companion
+         * object`定数として公開)。
+         */
+        const val SERVER_PORT = 18099
     }
 
     private var serverProcess: Process? = null
@@ -110,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         val startButton = findViewById<Button>(R.id.startButton)
         val openEasyWebButton = findViewById<Button>(R.id.openEasyWebButton)
         val changeProfileButton = findViewById<Button>(R.id.changeProfileButton)
+        val ddnsSetupButton = findViewById<Button>(R.id.ddnsSetupButton)
 
         statusText.text =
             "open-web-server [${currentProfile.emoji} ${currentProfile.label}モード] (not started)"
@@ -154,6 +162,10 @@ class MainActivity : AppCompatActivity() {
         changeProfileButton.setOnClickListener {
             startActivity(Intent(this, ProfileSelectActivity::class.java))
             finish()
+        }
+
+        ddnsSetupButton.setOnClickListener {
+            startActivity(Intent(this, DdnsSetupActivity::class.java))
         }
 
         registerPowerConnectionReceiver()
@@ -320,6 +332,16 @@ class MainActivity : AppCompatActivity() {
             pb.environment()["OPEN_WEB_SERVER_BIND"] = "127.0.0.1:$bindPort"
             pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfile)
             log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfile)}")
+
+            // DuckDNS DDNS設定画面(2026-07-24追加)からRust側管理API
+            // (`/admin/ddns/*`)を叩けるようにするため、`SecureDdnsStore`に
+            // 保存済みの管理トークンをこのプロセスの`OPEN_WEB_SERVER_
+            // ADMIN_TOKEN`として渡す(未設定ならRust側は無認証のまま起動、
+            // 既存の後方互換動作)。トークン自体はログへ出力しない。
+            SecureDdnsStore.getAdminToken(this)?.let { token ->
+                pb.environment()["OPEN_WEB_SERVER_ADMIN_TOKEN"] = token
+                log.appendLine("admin token: configured (value not logged)")
+            }
             pb.redirectErrorStream(true)
             val process = pb.start()
             serverProcess = process

@@ -581,6 +581,89 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き5) Android版にDuckDNS DDNS連携UIを新規統合(ユーザー
+  指示「Android版のDDNS(DuckDNS)連携機能を完成させる」——これまで
+  `android/`は「open-web-server本体を起動しヘルスチェックに応答する」
+  実証止まりだった、Rust側`free_domain.rs`の管理API(`POST /admin/ddns/
+  setup-free-domain`等)をアプリ内から使えるようにした)**:
+  1. **Rust側に「直近の更新状態」を追加**(`crates/open-web-server-gateway/
+     src/free_domain.rs`): `DomainRegistry`に`last_update:
+     RwLock<HashMap<String, DomainUpdateStatus>>`を追加し、新規
+     `DomainUpdateStatus { ok, ip, raw_response, checked_at_unix }`を
+     `RegisteredDomainSummary.last_update`として`GET /admin/ddns/domains`の
+     レスポンスに含めた。5分間隔の自動更新ループ(`net::run_loop`)・
+     `POST /admin/ddns/setup-free-domain`の即時疎通確認、両方の経路で
+     `record_update_result()`を呼び、成功/失敗・反映IP・確認時刻(Unix
+     エポック秒)を記録する。これはAndroid側が要求する「直近の更新成功/
+     失敗、最後に反映されたIP」を実際に返すためのAPI拡張であり、既存の
+     レスポンス形状には後方互換な追加フィールドのみ(既存フィールドは
+     無変更)。`cargo test -p open-web-server-gateway --features
+     ddns,sftp,upnp`のうち`free_domain::`配下7件全green(既存6件+
+     ロジック変更を含む再検証)。
+  2. **`SecureDdnsStore.kt`(新規)**: `androidx.security:security-crypto`
+     (`build.gradle.kts`へ新規依存追加)の`EncryptedSharedPreferences`
+     (`MasterKey`によるAndroid Keystore保護、AES256_SIV/AES256_GCM)で、
+     (a)管理APIトークン(`x-admin-token`相当、`MainActivity`のサーバー
+     起動時`OPEN_WEB_SERVER_ADMIN_TOKEN`環境変数としても再利用)、
+     (b)直近入力したDuckDNSトークン(UX目的の入力欄プリフィルのみ)を
+     保存する。**平文`SharedPreferences`には一切保存しない**、
+     `Log.*`への出力も行っていない。
+  3. **`DdnsSetupActivity.kt`(新規)+`activity_ddns_setup.xml`(新規)**:
+     (a)管理APIトークン入力欄(`inputType="textPassword"`でマスク表示)、
+     (b)サブドメイン名入力欄、(c)DuckDNSトークン入力欄(同じくマスク
+     表示)、(d)「登録する」ボタンで`POST /admin/ddns/setup-free-domain`
+     (ローカルホスト`127.0.0.1:18099`、`x-admin-token`ヘッダ)を呼ぶ、
+     (e)登録済みドメイン一覧(`GET /admin/ddns/domains`)+個別削除ボタン
+     (`DELETE /admin/ddns/domains/:domain`)を実装。HTTPクライアントは
+     既存`MainActivity`のヘルスチェック実装と同じ`HttpURLConnection`
+     のみ(新規HTTPライブラリ依存を追加しない)、JSONは標準の`org.json`。
+  4. **ポーリング表示(要件3対応)**: `startPolling()`が15秒間隔で
+     `GET /admin/ddns/domains`を呼び、Rust側`DomainRegistry.last_update`
+     が持つ「直近の更新成功/失敗・反映IP・確認時刻」をドメインごとの行に
+     表示する。**正直な開示**: 5分間隔の自動更新ループ自体はRust側
+     プロセス内で既に動作する前提(このActivityはその状態を表示する
+     だけで、ポーリング間隔[15秒]自体が更新間隔[5分]ではない——短い
+     間隔で「変化があれば速く気づける」ようにする表示目的の値)。
+  5. **`MainActivity.kt`**: 新規ボタン「🌍 DuckDNSドメイン設定」を追加し
+     `DdnsSetupActivity`へ遷移。サーバープロセス起動時、
+     `SecureDdnsStore`に保存済みの管理トークンがあれば
+     `OPEN_WEB_SERVER_ADMIN_TOKEN`環境変数として渡すよう
+     `startServerProcess()`を拡張(未設定時は従来通り無認証起動、
+     既存動作を壊さない)。`SERVER_PORT`定数を`companion object`へ追加し
+     `DdnsSetupActivity`と共有。
+  6. **ビルド確認**: `cargo check -p open-web-server-gateway --features
+     ddns,sftp,upnp`警告のみ(既存dead_code、新規警告なし)で成功。
+     Android側は`gradle :app:assembleDebug`が**実際に成功**し
+     `android/app/build/outputs/apk/debug/app-debug.apk`
+     (約20.3MB、既存jniLibs[arm64-v8a/x86_64]同梱のまま)を生成した。
+     ビルド中に1件の実バグを発見・修正: KotlinのKDocコメント内に
+     `/admin/ddns/*`という文字列を書いたところ、Kotlinはブロック
+     コメントのネストを許可するため`/*`部分が新たなコメント開始と
+     解釈され`Unclosed comment`のコンパイルエラーになった——
+     `/admin/ddns/...`という表記に修正して解決(コード自体のロジック
+     バグではなくドキュメント文字列の書き方の問題)。
+  7. **正直な制限事項(誇張しない)**: (a) 実機/エミュレータでの実地
+     検証はこのパスでは実施していない——ビルド成功(APK生成)までの
+     確認に留まる(前回HANDOFFで実機/エミュレータ検証済みだった
+     ヘルスチェック機能自体には変更を加えていないため、その部分の
+     既存の実証結果には影響しない)。(b) 管理APIトークンの入力欄には、
+     ユーザー自身が入力した値をマスク解除せずに復元表示する(入力欄への
+     プリフィル)——これはEncryptedSharedPreferencesからの読み出しであり
+     平文ファイル保存ではないが、画面上でパスワードマスク解除ボタン等の
+     追加のクリック操作なしに文字が入っていることは視認できる(入力欄
+     自体の性質上、標準的なAndroidの`textPassword`挙動の範囲内)。
+     (c) `OPEN_WEB_SERVER_ADMIN_TOKEN`未設定のままサーバーを起動した
+     場合、Rust側は無認証で管理APIを受け付ける既存の後方互換動作の
+     ままなので、DDNS設定画面を使う前に一度管理トークンを入力して
+     サーバーを(再)起動することを推奨する動線にはなっていない
+     (画面内の案内文で明示している程度に留まる、専用のオンボーディング
+     フローは今回のスコープ外)。
+  - 次にすべきこと: (1) 実機/エミュレータでの`DdnsSetupActivity`実地
+    検証(登録→一覧反映→削除の実UI操作)、(2) 管理トークン未設定時に
+    サーバー起動前に警告する導線の追加、(3) DuckDNS実アカウントでの
+    実接続検証(既存の制約と同じ、他社サービスの認証情報を代行取得
+    しない方針のため今回も未実施)。
+
 - **2026-07-24(続き4) `web_vhost::CompatMode`(Apache互換/Nginx互換)を新設
   (ユーザー指示、open-easy-web側「初回セットアップガイド」画面の
   「Apache互換モードで起動」「Nginx互換モードで起動」ボタンと対応)**:

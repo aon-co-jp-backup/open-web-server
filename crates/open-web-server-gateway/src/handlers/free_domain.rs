@@ -98,6 +98,10 @@ pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> 
             .await
         {
             Ok(result) => {
+                state
+                    .free_domains
+                    .record_update_result(&payload.domain, result.ok, None, result.raw_body.clone())
+                    .await;
                 let full_hostname = format!("{}.duckdns.org", payload.domain);
                 let registered_count = state.free_domains.len().await;
                 let remaining_capacity = MAX_DUCKDNS_DOMAINS.saturating_sub(registered_count);

@@ -57,17 +57,58 @@ pub struct RegisteredDomainSummary {
     pub domain: String,
     /// 完全なホスト名(例: `"myhost.duckdns.org"`)。
     pub full_hostname: String,
+    /// 直近の自動更新試行の結果(Android/UI側のポーリング表示用、
+    /// 2026-07-24追加)。一度も更新試行されていない場合は`None`。
+    pub last_update: Option<DomainUpdateStatus>,
+}
+
+/// 1ドメインの直近の更新試行結果(成功/失敗・反映IP・試行時刻)。
+/// Unixエポック秒で時刻を保持する(クライアント側でのタイムゾーン変換を
+/// 前提にしない、単純なJSON数値としてAndroid側が扱いやすい形式)。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DomainUpdateStatus {
+    pub ok: bool,
+    /// 反映を試みたグローバルIP(取得できなかった場合は`None`)。
+    pub ip: Option<String>,
+    /// DuckDNS APIの生レスポンス(失敗時の原因調査用)。
+    pub raw_response: String,
+    /// Unixエポック秒。
+    pub checked_at_unix: u64,
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// 「サブドメイン名 → DuckDNSトークン」を保持する動的レジストリ
 /// (`tenant_router::TenantRegistry`と同じ`RwLock<HashMap<..>>`パターン)。
 pub struct DomainRegistry {
     entries: RwLock<HashMap<String, String>>,
+    /// ドメインごとの直近の更新試行結果(2026-07-24追加、Android版の
+    /// DDNS状態ポーリング表示のために新設)。
+    last_update: RwLock<HashMap<String, DomainUpdateStatus>>,
 }
 
 impl DomainRegistry {
     pub fn new() -> Self {
-        Self { entries: RwLock::new(HashMap::new()) }
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            last_update: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// 更新試行結果を記録する(`ddns` feature配下・即時疎通確認の両方から
+    /// 呼ばれる)。
+    #[cfg_attr(not(feature = "ddns"), allow(dead_code))]
+    pub async fn record_update_result(&self, domain: &str, ok: bool, ip: Option<String>, raw_response: String) {
+        let mut guard = self.last_update.write().await;
+        guard.insert(
+            domain.to_string(),
+            DomainUpdateStatus { ok, ip, raw_response, checked_at_unix: now_unix() },
+        );
     }
 
     /// `OPEN_WEB_SERVER_DUCKDNS_DOMAIN`/`OPEN_WEB_SERVER_DUCKDNS_TOKEN`
@@ -108,17 +149,21 @@ impl DomainRegistry {
         if guard.remove(domain).is_none() {
             return Err(FreeDomainError::NotFound(domain.to_string()));
         }
+        drop(guard);
+        self.last_update.write().await.remove(domain);
         Ok(())
     }
 
     /// 登録済みドメインの一覧(トークンは含まない)。
     pub async fn list(&self) -> Vec<RegisteredDomainSummary> {
         let guard = self.entries.read().await;
+        let status_guard = self.last_update.read().await;
         let mut out: Vec<RegisteredDomainSummary> = guard
             .keys()
             .map(|domain| RegisteredDomainSummary {
                 domain: domain.clone(),
                 full_hostname: format!("{domain}.duckdns.org"),
+                last_update: status_guard.get(domain).cloned(),
             })
             .collect();
         out.sort_by(|a, b| a.domain.cmp(&b.domain));
@@ -232,14 +277,23 @@ mod net {
                                 match update_duckdns(&client, domain, token, Some(&ip)).await {
                                     Ok(result) if result.ok => {
                                         tracing::info!("DuckDNS: update succeeded ({domain}.duckdns.org -> {ip})");
+                                        registry
+                                            .record_update_result(domain, true, Some(ip.clone()), result.raw_body)
+                                            .await;
                                     }
                                     Ok(result) => {
                                         all_ok = false;
                                         tracing::warn!("DuckDNS: update for '{domain}' responded with failure body: {}", result.raw_body);
+                                        registry
+                                            .record_update_result(domain, false, Some(ip.clone()), result.raw_body)
+                                            .await;
                                     }
                                     Err(e) => {
                                         all_ok = false;
                                         tracing::warn!("DuckDNS: update request for '{domain}' failed: {e}");
+                                        registry
+                                            .record_update_result(domain, false, Some(ip.clone()), e.to_string())
+                                            .await;
                                     }
                                 }
                             }
