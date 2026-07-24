@@ -50,6 +50,18 @@
         android:layout_marginTop="8dp"
         android:text="@string/ddns_setup_button" />
 
+    <!--
+      ハードウェア検出結果の表示ボタン(2026-07-24(続き)新設)。
+      `HardwareAccelDetector`が実際に検出したGPU/NPU/外部ディスプレイ
+      情報をダイアログで表示する。
+    -->
+    <Button
+        android:id="@+id/hardwareInfoButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/hardware_info_button" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"

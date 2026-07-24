@@ -126,8 +126,12 @@ class MainActivity : AppCompatActivity() {
      * ハードウェアアクセラレーター(CPU+GPU+NPU)対応の指示
      * (`open-web-server-wire::accel::AccelBackend`、環境変数
      * `OPEN_WEB_SERVER_ACCEL_BACKEND`、`state.rs::accel_backend_from_env()`
-     * が解釈)。常時電源接続版のみ`hardware_accelerator`を要求し、省電力/
-     * 通常は明示的に`cpu`を指定する。**正直な開示**: 本体(Rust)側は
+     * が解釈)。2026-07-24(続き)、ユーザー指示「実際に検出ロジックを
+     * 実装してほしい」を受け、`"hardware_accelerator"`固定値から
+     * `HardwareAccelDetector`が実際に検出したGPU/NPU/外部ディスプレイ
+     * 情報を反映した値へ変更した(常時電源接続版のみ)。省電力/省メモリ/
+     * 通常は引き続き明示的に`cpu`を指定する(ハードウェア検出自体は
+     * 常時電源接続版専用のスコープのまま)。**正直な開示**: 本体(Rust)側は
      * 現時点でこの値を`AppState.accel_backend`に保持・起動ログへ出力
      * するのみで、実際の圧縮/暗号化処理へは未配線(Gpu/Npu/
      * HardwareAcceleratorはいずれも常にCpu実装にフォールバックする、
@@ -137,9 +141,16 @@ class MainActivity : AppCompatActivity() {
      * WakeLock有無とポーリング間隔の差のみ。
      */
     private fun accelBackendEnvValue(profile: PowerProfile): String = when (profile) {
-        PowerProfile.ALWAYS_ON -> "hardware_accelerator"
+        PowerProfile.ALWAYS_ON -> hardwareDetection.toAccelBackendEnvValue()
         PowerProfile.MEMORY_SAVER, PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> "cpu"
     }
+
+    /**
+     * ハードウェア検出結果(2026-07-24(続き)新設)。`onCreate`内で1度だけ
+     * 検出し、サーバー起動時の環境変数生成・検出画面表示の両方で使い回す
+     * (毎回EGLコンテキストを作り直すコストを避けるため)。
+     */
+    private lateinit var hardwareDetection: HardwareAccelDetector.DetectionResult
 
     private var healthPollJob: Job? = null
     private var powerConnectionReceiver: BroadcastReceiver? = null
@@ -162,6 +173,7 @@ class MainActivity : AppCompatActivity() {
 
         currentProfile = resolveProfile()
         PowerProfile.save(this, currentProfile)
+        hardwareDetection = HardwareAccelDetector.detect(this)
 
         val statusText = findViewById<TextView>(R.id.statusText)
         val logText = findViewById<TextView>(R.id.logText)
@@ -169,6 +181,11 @@ class MainActivity : AppCompatActivity() {
         val openEasyWebButton = findViewById<Button>(R.id.openEasyWebButton)
         val changeProfileButton = findViewById<Button>(R.id.changeProfileButton)
         val ddnsSetupButton = findViewById<Button>(R.id.ddnsSetupButton)
+        val hardwareInfoButton = findViewById<Button>(R.id.hardwareInfoButton)
+
+        hardwareInfoButton.setOnClickListener {
+            showHardwareInfoDialog()
+        }
 
         statusText.text =
             "open-web-server [${currentProfile.emoji} ${currentProfile.label}モード] (not started)"
@@ -383,6 +400,27 @@ class MainActivity : AppCompatActivity() {
                 log.appendLine("power: no WakeLock acquired (normal profile)")
             }
         }
+    }
+
+    /**
+     * ハードウェア検出結果の表示ダイアログ(2026-07-24(続き)新設)。
+     * 検出画面(設定画面や常時電源接続選択時)にGPU名・NPU利用可否・
+     * 外部ディスプレイ有無をユーザーへ表示する要件への対応。
+     */
+    private fun showHardwareInfoDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("検出したハードウェア情報 / Detected Hardware Info")
+            .setMessage(
+                hardwareDetection.toHumanReadableSummary() +
+                    "\n\n常時電源接続モードで起動した場合、OPEN_WEB_SERVER_ACCEL_BACKEND=\"" +
+                    hardwareDetection.toAccelBackendEnvValue() +
+                    "\" として渡されます。" +
+                    "\nWhen started in Always-On mode, OPEN_WEB_SERVER_ACCEL_BACKEND=\"" +
+                    hardwareDetection.toAccelBackendEnvValue() +
+                    "\" will be passed."
+            )
+            .setPositiveButton("閉じる / Close", null)
+            .show()
     }
 
     private fun openEasyWeb() {

@@ -581,6 +581,82 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(最終+3) Android版: 実ハードウェア検出ロジックの実装+実エミュレータ検証
+(ユーザー指示「外付けGPU検出は実装しない、という前回判断を撤回し、実際に検出ロジックを
+実装してほしい」、追加指示「検出結果・4プロファイル説明文を日英併記」)
+
+1. **新規`HardwareAccelDetector.kt`**: 過剰実装を避けつつ実際に検出する。
+   - **内部GPU**: `EGL14`で1x1のpbufferサーフェスを一時生成し
+     `GLES10.glGetString(GL_RENDERER/GL_VENDOR)`を取得後、即座に破棄
+     (`GLSurfaceView`のような画面表示用ライフサイクル管理は行わない、
+     一般的な最小限のEGLコンテキスト管理パターン)。Vulkan対応は
+     `PackageManager.FEATURE_VULKAN_HARDWARE_VERSION`ハードウェア
+     featureフラグでの軽い判定(**実装当初`ActivityManager#
+     deviceHasVulkanSupport()`という実在しないAPIを書いてしまい
+     ビルドで発覚・修正した実バグ**)。
+   - **NPU**: NPU専用のfeature flagは標準に無いため、`Build.VERSION.
+     SDK_INT >= 27`(NNAPI導入バージョン)をNPU利用可能性の簡易フラグ
+     とし、Android 12+の`Build.SOC_MODEL`/`SOC_MANUFACTURER`があれば
+     併記。「NPUを直接検出した」とは主張せず「NNAPI利用可能性」という
+     正直な粒度に留めた。
+   - **外付けGPU**: 直接検出は行わず、`DisplayManager#getDisplays()`が
+     2件以上を返すかどうかで`external_display_hint`という正直な粒度の
+     フラグのみ(「外部ディスプレイ接続を検出した」であり「外付けGPUを
+     検出した」ではないと明記)。
+   - `toAccelBackendEnvValue()`が検出できた情報のみを`"gpu:...;npu:...
+     ;external_display_hint"`形式に組み立て、`OPEN_WEB_SERVER_ACCEL_
+     BACKEND`環境変数値として使う。
+2. **`MainActivity.kt`**: `accelBackendEnvValue()`の常時電源接続分岐を
+   固定値`"hardware_accelerator"`から`hardwareDetection.
+   toAccelBackendEnvValue()`(実検出結果)へ差し替え。新規「🔍 ハードウェア
+   検出情報を表示」ボタン+`showHardwareInfoDialog()`(`AlertDialog`)を
+   追加、`activity_main.xml`(スマホ・タブレット両レイアウト)・
+   `strings.xml`に配線。
+3. **日英併記(追加指示対応)**: `HardwareAccelDetector.
+   toHumanReadableSummary()`をGPU名・Vulkan対応・NPU(NNAPI)・SoC・
+   ディスプレイ数・外部ディスプレイ接続の全項目で「日本語 / English」の
+   併記形式に変更。ハードウェア検出ダイアログのタイトル・案内文・
+   閉じるボタンも日英併記。4電源プロファイル(`strings.xml`の
+   `profile_*_desc`)も、既存が日本語のみだったため全4件+選択画面の
+   タイトル/サブタイトルに英語訳を改行併記する形で追加(既存の日本語
+   文言は変更せず追記のみ)。
+4. **ビルド・実機検証**: `gradle :app:assembleDebug`で**BUILD
+   SUCCESSFUL**(Vulkan API修正後)。**実エミュレータ(`Pixel_9_Pro`、
+   `emulator -no-window`+`adb`のみで検証——GUI操作ツールは使わず、
+   `adb shell input tap`+`adb exec-out screencap`のスクリーンショット
+   読み取りで確認)で3点とも実証済み**:
+   (a) `LauncherAlwaysOn`起動→4電源プロファイル選択導線・新規
+   「ハードウェア検出情報を表示」ボタンが実際に表示されることを
+   スクリーンショットで確認。
+   (b) `adb shell dumpsys battery unplug`で実際に電源切断をシミュレート
+   したところ、**アプリ自身が発火する`ACTION_POWER_DISCONNECTED`
+   ではなくAndroidシステム自体が実際に送るブロードキャストを捕捉し**、
+   3択ダイアログ(「省電力版へ切替」/「普通版(通常版)のままにする」/
+   「省メモリ版へ切替」)が実際に表示されることを確認
+   (`adb shell am broadcast`での手動送信は`SecurityException`
+   [protected broadcastのため一般アプリからの送信不可]で失敗したが、
+   `dumpsys battery unplug`自体が本物のシステム発火を引き起こしたため
+   検証として成立した)。
+   (c) ハードウェア検出ボタンをタップし、**実エミュレータの実際の
+   GPU情報**(`Android Emulator OpenGL ES Translator (Google
+   SwiftShader)`、ベンダー`Google (Google Inc.)`、Vulkan対応あり、
+   NNAPI利用可能・SoC`AOSP ranchu`、接続ディスプレイ1・外部ディスプレイ
+   なし)が日英併記で正しく表示され、`OPEN_WEB_SERVER_ACCEL_BACKEND`に
+   実際に反映される値もダイアログ内に表示されることを確認。
+5. **正直な制限**: (1) 実機(物理スマホ/タブレット)ではなくエミュレータ
+   のみでの検証(既存のこのプロジェクトの制約と同じ)。(2) EGL
+   pbufferでの`GL_RENDERER`取得は多くの実機で機能するはずだが、
+   ドライバによっては失敗しうる(その場合`toAccelBackendEnvValue()`は
+   Vulkan判定のみへフォールバックし`"cpu"`にはならない設計だが、
+   GPU名自体は取れないケースがあることをコード内docに明記済み)。
+   (3) 省電力/省メモリ/通常プロファイルでの起動画面・
+   `ProfileSelectActivity`の日英併記表示自体は文字列リソースの確認に
+   留まり、3プロファイルそれぞれの実タップでのスクリーンショット確認は
+   今回は常時電源接続版のみ実施(時間の都合、コード自体は同一ロジック
+   パスのため機能上のリスクは低いと判断)。
+
+
+
 ### 2026-07-24(最終+2) nasa.tokyo/icpo.tokyoをVPS本番へ追加デプロイ完了
 
 VPS(ConoHa)へ新規`nasa.tokyo`・`icpo.tokyo`リポジトリをclone・

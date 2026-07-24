@@ -5,20 +5,24 @@
     <string name="app_name_normal">open-web-server (通常)</string>
     <string name="app_name_alwayson">open-web-server (常時電源)</string>
 
-    <string name="profile_select_title">電源プロファイルを選択</string>
-    <string name="profile_select_subtitle">端末の使い方に合わせて選んでください。あとで「プロファイル変更」からいつでも選び直せます。</string>
+    <string name="profile_select_title">電源プロファイルを選択 / Select Power Profile</string>
+    <string name="profile_select_subtitle">端末の使い方に合わせて選んでください。あとで「プロファイル変更」からいつでも選び直せます。\nChoose based on how you use this device. You can change it anytime later via "Change Profile".</string>
 
+    <!--
+      2026-07-24(追加指示)、各プロファイルの説明文を日英併記へ統一
+      (改行区切りで日本語→Englishの順に併記する形式)。
+    -->
     <string name="profile_memory_saver_button">🧠 省メモリ モード</string>
-    <string name="profile_memory_saver_desc">メモリの少ない端末向け。画像/データキャッシュやログ保持量を厳しく減らし、バックグラウンドでの先読みも行いません(省電力=ポーリング間隔延長とは別軸の最適化です)。</string>
+    <string name="profile_memory_saver_desc">メモリの少ない端末向け。画像/データキャッシュやログ保持量を厳しく減らし、バックグラウンドでの先読みも行いません(省電力=ポーリング間隔延長とは別軸の最適化です)。\nFor devices with limited memory. Aggressively reduces image/data cache size and log retention, and does not perform background prefetching (a different axis of optimization from Power Save\'s polling-interval extension).</string>
 
     <string name="profile_power_save_button">🔋 省電力 モード</string>
-    <string name="profile_power_save_desc">スマホとして普段使いする端末向け。バックグラウンドでの常時稼働を避け、Android標準の省電力(Doze)機能に逆らいません。</string>
+    <string name="profile_power_save_desc">スマホとして普段使いする端末向け。バックグラウンドでの常時稼働を避け、Android標準の省電力(Doze)機能に逆らいません。\nFor devices used as regular smartphones. Avoids continuous background operation and cooperates with Android\'s standard Doze power-saving behavior instead of fighting it.</string>
 
     <string name="profile_normal_button">⚖️ 通常 モード</string>
-    <string name="profile_normal_desc">通常のスマホ利用とサーバー稼働を両立するバランス型(既定)。</string>
+    <string name="profile_normal_desc">通常のスマホ利用とサーバー稼働を両立するバランス型(既定)。\nA balanced default profile that lets normal smartphone use and server operation coexist.</string>
 
     <string name="profile_always_on_button">🔌 常時電源接続 モード</string>
-    <string name="profile_always_on_desc">充電しっぱなしのサーバー専用端末向け。WakeLockでスリープを防ぎ、常時稼働を優先します。</string>
+    <string name="profile_always_on_desc">充電しっぱなしのサーバー専用端末向け。WakeLockでスリープを防ぎ、常時稼働を優先します。\nFor a dedicated server device that stays plugged in. Holds a WakeLock to prevent sleep and prioritizes continuous uptime.</string>
 
     <string name="open_easy_web_button">🌐 open-easy-web ウィザードを開く</string>
     <string name="change_profile_button">電源プロファイルを変更</string>
@@ -31,4 +35,6 @@
     <string name="ddns_token_hint">DuckDNSトークン</string>
     <string name="ddns_register_button">登録する</string>
     <string name="ddns_registered_list_title">登録済みドメイン</string>
+
+    <string name="hardware_info_button">🔍 ハードウェア検出情報を表示</string>
 </resources>
