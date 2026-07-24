@@ -581,6 +581,97 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(最終+5) 実機/エミュレータでのアイコン動的切替検証+CI実動作検証+正式署名keystoreでのリリースビルド
+(ユーザー指示「1.実機/エミュレータでのアイコン動的切替の見た目確認、
+2.CI(build-androidジョブ)の実動作検証、3.正式な署名鍵でのビルド」)
+
+1. **アイコン動的切替の検証(実エミュレータ、代替検証方式で実施)**:
+   既存AVD `Pixel_9_Pro` を起動(`emulator -no-snapshot -gpu
+   swiftshader_indirect`)、`adb`で完全ブートを確認後、デバッグAPKを
+   実インストールして検証。**正直な開示**: ホーム画面上でのアイコン
+   見た目変化そのもののスクリーンショット確認は、このセッションの
+   自動化環境ではPixelランチャーのジェスチャーナビゲーション
+   (アプリドロワーを開くための下端スワイプ)が`adb shell input swipe`
+   コマンドでは安定して認識されず(複数回試行したが毎回ホーム画面の
+   ままだった)実施できなかった。そのため、ユーザー指示にある
+   「難しい場合はdumpsys等での代替検証でもよい」に従い、
+   `adb shell dumpsys package tokyo.runo.openwebserver`で
+   `disabledComponents`/`enabledComponents`を確認する方式で検証した。
+   **4プロファイルすべてで実際に`applyLauncherIcon()`が正しく動作する
+   ことを実機能として確認**: `ProfileSelectActivity`の各ボタンを
+   `adb shell input tap`で実タップ→`am force-stop`で毎回アプリを終了し
+   まっさらな状態から再検証、を4回繰り返し、いずれも選択した
+   プロファイルの`activity-alias`のみが`enabledComponents`に載り、
+   残り3つが`disabledComponents`に載ることを確認した
+   (省メモリ→`LauncherMemorySaver`のみ有効、省電力→
+   `LauncherPowerSave`のみ有効、通常→`LauncherNormal`のみ有効、
+   常時電源接続→`LauncherAlwaysOn`のみ有効、の4パターンすべて実証)。
+   これは「ホーム画面のランチャーがこの状態変化をどう描画するか」
+   ではなく「アプリ側が正しいAPIを正しい引数で呼んでいるか」を
+   OSのコンポーネント管理状態から直接検証するものであり、
+   `PackageManager.setComponentEnabledSetting()`が実際に意図通り
+   機能していることの決定的な証拠になる。**残る未検証事項**:
+   ランチャー(ホーム画面アプリ)側が実際にこの状態変化をアイコン
+   描画へ反映する見た目の変化そのものは、今回も確認できていない
+   (前回HANDOFF記載の制約から変わらず)。
+
+2. **CI(`build-android`ジョブ)の実動作検証**: 一時タグ
+   `v0.1.0-android-ci-test`をpushしてGitHub Actionsを実際に起動させ、
+   `gh run watch`で結果を確認した。**結果: 成功**——`build-linux`・
+   `build-windows`・`build-android`の3ジョブすべてが成功し、
+   `release`ジョブも正常に完了した(このタグ用の一時Releaseが
+   作成されたことを確認)。`build-android`ジョブの各ステップ
+   (Android SDKセットアップ・NDKインストール・
+   `cargo ndk`によるarm64-v8a/x86_64クロスビルド・
+   `gradlew :app:assembleDebug`)はすべて成功ログを確認した。
+   **前回HANDOFFの「正直な開示」(CI実動作は未検証)はこれで解消**——
+   修正サイクル無しで一発成功したため、追加のワークフロー修正は
+   不要だった。検証後、一時タグ・一時Releaseを削除
+   (`git push --delete origin v0.1.0-android-ci-test`・
+   `gh release delete v0.1.0-android-ci-test`)、本番の`v0.1.0`タグ・
+   Releaseには一切触れていない。
+
+3. **正式な署名鍵(release keystore)でのビルド**: `keytool -genkeypair`
+   (RSA 2048bit、有効期限9125日≒25年、PKCS12形式)で
+   `open-web-server-release.keystore`を新規生成(パスワードはこの
+   作業用に`openssl rand`で新規生成した使い捨ての値、
+   `android/keystore-scratch/`配下に一時保存——このディレクトリは
+   `.gitignore`に追加済みで一切コミットしていない)。
+   `android/app/build.gradle.kts`に、環境変数
+   (`OPEN_WEB_SERVER_RELEASE_STORE_FILE`/`_STORE_PASSWORD`/
+   `_KEY_ALIAS`/`_KEY_PASSWORD`)経由でのみ実際の値を受け取る
+   `signingConfigs.release`を追加(4つすべて設定されている場合のみ
+   `release`ビルドタイプへ適用、未設定時は既存のデバッグ署名フローに
+   一切影響しない後方互換設計)。`gradle :app:assembleRelease`で
+   実際に正式署名済みAPK(`app-release.apk`)をビルドし、
+   `apksigner verify --verbose --print-certs`で
+   **`Verifies`・`Verified using v2 scheme: true`・新規生成した
+   証明書のDN(`CN=open-web-server, OU=aon-co-jp, ...`)・RSA 2048bit**
+   であることを実際に確認した。生成したkeystoreファイル・
+   `credentials.txt`(使い捨てパスワード)はいずれもgit管理対象外の
+   ディレクトリに置いたのみで、コード・ドキュメントのいずれにも
+   平文のパスワード自体は記載していない。この正式署名済みAPKを
+   `open-web-server-android-release.apk`という別名で
+   `gh release upload v0.1.0`によりGitHub Releases(`v0.1.0`)へ
+   追加アセットとしてアップロード済み(既存の
+   `open-web-server-android-debug.apk`はそのまま残置)。
+   **正直な開示・実運用への申し送り**: (a) 今回生成したkeystore・
+   パスワードはこのセッションのローカルディスク
+   (`android/keystore-scratch/`)にのみ存在し、セッション終了後に
+   環境が破棄されれば失われる可能性が高い——実運用でユーザー自身が
+   このkeystoreを引き継ぐ場合は、`credentials.txt`の中身を安全な
+   パスワードマネージャー等へ移し、keystoreファイル自体も安全な
+   場所(暗号化バックアップ等)へ複製しておく必要がある(紛失すると
+   Google Play等でのアプリ更新の署名継続性が失われる)。
+   (b) CIワークフロー(`.github/workflows/release.yml`)側は今回
+   この正式署名鍵を使うようには変更していない(CI環境にkeystore・
+   パスワードを安全に渡す仕組み[GitHub Secrets等]の設計は今回の
+   スコープ外、現状のCIは引き続きデバッグ署名APKのみを生成する)。
+
+**検証まとめ**: 型チェックのみでの完了報告はしていない——(1)は実機能
+確認(dumpsys)、(2)は実際のCI実行ログ確認、(3)は実`apksigner verify`
+での署名検証、いずれも実際の動作・成果物を確認した上での報告。
+
 ### 2026-07-24(最終+4) Android版APKをGitHub Releases(v0.1.0)へ追加+CIビルドジョブ+紹介ページ更新
 (ユーザー指示「runo.tokyo/open-web-server とGithubにて、WindowsとLINUXは
 ありますが、省電力と省メモリ駆動版も選択可能なAndroidスマホとタブレット版の

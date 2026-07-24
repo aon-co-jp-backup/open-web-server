@@ -30,3 +30,8 @@ android/app/src/main/jniLibs/
 android/*.log
 
 acme-account-key.der
+
+# Android正式リリース署名keystore(2026-07-24新設、絶対にコミットしない)
+android/keystore-scratch/
+*.keystore
+*.jks

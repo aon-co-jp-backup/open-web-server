@@ -26,9 +26,43 @@ android {
         }
     }
 
+    // 正式リリース署名(2026-07-24新設)。実際の値(keystoreパス・パスワード・
+    // エイリアス)は環境変数経由でのみ受け取り、このファイル自体には平文の
+    // 秘密情報を一切書かない。環境変数が未設定の場合、releaseビルドタイプは
+    // 署名設定なしのまま(既存のデバッグ署名フローには影響しない)。
+    // 使い方: 環境変数 OPEN_WEB_SERVER_RELEASE_STORE_FILE /
+    // OPEN_WEB_SERVER_RELEASE_STORE_PASSWORD /
+    // OPEN_WEB_SERVER_RELEASE_KEY_ALIAS /
+    // OPEN_WEB_SERVER_RELEASE_KEY_PASSWORD を設定した上で
+    // `gradle :app:assembleRelease` を実行する。
+    // keystoreファイル自体は絶対にこのリポジトリへコミットしないこと
+    // (.gitignoreに追加済み)。
+    val releaseStoreFile = System.getenv("OPEN_WEB_SERVER_RELEASE_STORE_FILE")
+    val releaseStorePassword = System.getenv("OPEN_WEB_SERVER_RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = System.getenv("OPEN_WEB_SERVER_RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = System.getenv("OPEN_WEB_SERVER_RELEASE_KEY_PASSWORD")
+    val hasReleaseSigningEnv = !releaseStoreFile.isNullOrBlank() &&
+        !releaseStorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank()
+
+    signingConfigs {
+        if (hasReleaseSigningEnv) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigningEnv) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
