@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use open_web_server_ledger::{DbStateReader, Ledger, LedgerConfig};
-use open_web_server_wire::TenantCertResolver;
+use open_web_server_wire::{AccelBackend, TenantCertResolver};
 
 use crate::access_log::{AccessLogConfig, AccessLogger};
 use crate::acme::ChallengeStore;
@@ -48,6 +48,30 @@ pub struct AppState {
     /// 参照)。`OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら`None`(既定無効、
     /// 既存の`tracing`ベースのリクエストログとは独立して並存する)。
     pub access_logger: Option<Arc<AccessLogger>>,
+    /// ペイロード変換(圧縮+暗号化)のハードウェアアクセラレータ選択
+    /// (`OPEN_WEB_SERVER_ACCEL_BACKEND`環境変数、既定は`Cpu`)。Android版の
+    /// 「常時電源接続版(ハードウェアアクセラレーター対応)」プロファイルは
+    /// この環境変数に`gpu`/`npu`/`hardware_accelerator`を渡して起動し、
+    /// 「省電力版」/「通常版」は`cpu`(または未設定)で起動する
+    /// (2026-07-24、ユーザー指示)。`Cpu`以外は`open_web_server_wire::accel`
+    /// が未実装のためCpuへ安全にフォールバックする(既存方針通り、
+    /// 存在しない能力を実装済みと偽らない)。
+    pub accel_backend: AccelBackend,
+}
+
+/// `OPEN_WEB_SERVER_ACCEL_BACKEND`環境変数の文字列表現をパースする。
+/// 未知の値・未設定は`Cpu`(最も安全な既定)にフォールバックする。
+fn accel_backend_from_env() -> AccelBackend {
+    match std::env::var("OPEN_WEB_SERVER_ACCEL_BACKEND")
+        .unwrap_or_default()
+        .to_lowercase()
+        .as_str()
+    {
+        "gpu" => AccelBackend::Gpu,
+        "npu" => AccelBackend::Npu,
+        "hardware_accelerator" | "hw" | "hwaccel" => AccelBackend::HardwareAccelerator,
+        _ => AccelBackend::Cpu,
+    }
 }
 
 impl AppState {
@@ -72,6 +96,8 @@ impl AppState {
         let php_pool = Arc::new(PhpServerPool::from_env());
         let free_domains = Arc::new(DomainRegistry::new());
         let access_logger = AccessLogConfig::from_env().map(|cfg| Arc::new(AccessLogger::new(cfg)));
+        let accel_backend = accel_backend_from_env();
+        tracing::info!(?accel_backend, "payload accelerator backend resolved from OPEN_WEB_SERVER_ACCEL_BACKEND");
 
         Ok(Self {
             ledger,
@@ -84,6 +110,7 @@ impl AppState {
             php_pool,
             free_domains,
             access_logger,
+            accel_backend,
         })
     }
 
@@ -114,5 +141,43 @@ impl AppState {
         let count = self.web_vhosts.load_from_toml(&toml_str).await?;
         tracing::info!(count, path, "loaded web vhosts from file");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod accel_backend_env_tests {
+    use super::*;
+
+    /// `OPEN_WEB_SERVER_ACCEL_BACKEND`はプロセス全体のグローバル環境変数
+    /// のため、他のテストと並行実行されると競合し得る。Android側の3電源
+    /// プロファイル(常時電源接続=hw accel希望/省電力・通常=cpu)がこの
+    /// 環境変数経由でRust側へ伝わることを保証する回帰テスト。
+    static ACCEL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn unset_or_unknown_falls_back_to_cpu() {
+        let _guard = ACCEL_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("OPEN_WEB_SERVER_ACCEL_BACKEND");
+        assert_eq!(accel_backend_from_env(), AccelBackend::Cpu);
+
+        std::env::set_var("OPEN_WEB_SERVER_ACCEL_BACKEND", "quantum");
+        assert_eq!(accel_backend_from_env(), AccelBackend::Cpu);
+        std::env::remove_var("OPEN_WEB_SERVER_ACCEL_BACKEND");
+    }
+
+    #[test]
+    fn recognizes_gpu_npu_and_hardware_accelerator_case_insensitively() {
+        let _guard = ACCEL_ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("OPEN_WEB_SERVER_ACCEL_BACKEND", "GPU");
+        assert_eq!(accel_backend_from_env(), AccelBackend::Gpu);
+
+        std::env::set_var("OPEN_WEB_SERVER_ACCEL_BACKEND", "npu");
+        assert_eq!(accel_backend_from_env(), AccelBackend::Npu);
+
+        std::env::set_var("OPEN_WEB_SERVER_ACCEL_BACKEND", "hardware_accelerator");
+        assert_eq!(accel_backend_from_env(), AccelBackend::HardwareAccelerator);
+
+        std::env::remove_var("OPEN_WEB_SERVER_ACCEL_BACKEND");
     }
 }

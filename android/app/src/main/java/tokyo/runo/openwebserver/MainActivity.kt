@@ -1,13 +1,17 @@
 package tokyo.runo.openwebserver
 
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import java.io.BufferedReader
 import java.io.File
@@ -16,6 +20,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -43,6 +50,41 @@ class MainActivity : AppCompatActivity() {
     private var serverProcess: Process? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val bindPort = 18099
+
+    /**
+     * 定期ヘルスチェックのポーリング間隔(2026-07-24追加、ユーザー指示
+     * 「省電力版は実際に省電力になるようにして」の具体的施策の一つ)。
+     * 省電力版は間隔を大きく延ばし(Doze/App Standbyへの影響を最小化)、
+     * 常時電源接続版は短い間隔で即応性を優先する、という実際の挙動差を
+     * 持たせる。
+     */
+    private fun healthPollIntervalMs(profile: PowerProfile): Long = when (profile) {
+        PowerProfile.POWER_SAVE -> 5 * 60_000L // 5分
+        PowerProfile.NORMAL -> 60_000L // 1分
+        PowerProfile.ALWAYS_ON -> 5_000L // 5秒
+    }
+
+    /**
+     * ハードウェアアクセラレーター(CPU+GPU+NPU)対応の指示
+     * (`open-web-server-wire::accel::AccelBackend`、環境変数
+     * `OPEN_WEB_SERVER_ACCEL_BACKEND`、`state.rs::accel_backend_from_env()`
+     * が解釈)。常時電源接続版のみ`hardware_accelerator`を要求し、省電力/
+     * 通常は明示的に`cpu`を指定する。**正直な開示**: 本体(Rust)側は
+     * 現時点でこの値を`AppState.accel_backend`に保持・起動ログへ出力
+     * するのみで、実際の圧縮/暗号化処理へは未配線(Gpu/Npu/
+     * HardwareAcceleratorはいずれも常にCpu実装にフォールバックする、
+     * `open-web-server`側CLAUDE.md HANDOFF参照)。このAndroid側の指定は
+     * 将来配線された際に効果を持つようになる先取り実装であり、現時点で
+     * 実際の消費電力・性能へ影響するのは電源プロファイルによる
+     * WakeLock有無とポーリング間隔の差のみ。
+     */
+    private fun accelBackendEnvValue(profile: PowerProfile): String = when (profile) {
+        PowerProfile.ALWAYS_ON -> "hardware_accelerator"
+        PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> "cpu"
+    }
+
+    private var healthPollJob: Job? = null
+    private var powerConnectionReceiver: BroadcastReceiver? = null
 
     /**
      * open-easy-webのドメイン設定ウィザードを開くためのデフォルトURL。
@@ -98,6 +140,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 logText.text = log.toString()
                 startButton.isEnabled = true
+
+                if (healthOk) {
+                    startPeriodicHealthPoll(statusText)
+                }
             }
         }
 
@@ -109,6 +155,93 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, ProfileSelectActivity::class.java))
             finish()
         }
+
+        registerPowerConnectionReceiver()
+    }
+
+    /**
+     * 電源の抜き差しを監視する(2026-07-24追加、ユーザー指示「常時電源
+     * 接続版は…電源から外したら自動で、デフォルトは省電力モード、
+     * もしくは通常版に切り替えますか?と質問して切り替える」)。
+     *
+     * - 常時電源接続版の実行中に`ACTION_POWER_DISCONNECTED`を受信したら、
+     *   「省電力モードに切り替えますか?それとも通常モードのままに
+     *   しますか?」とダイアログで質問する(既定の推奨選択肢は省電力)。
+     * - 省電力/通常版の実行中に`ACTION_POWER_CONNECTED`を受信したら、
+     *   常時電源接続版に戻すかを尋ねる(電源再接続時の導線)。
+     *
+     * ダイアログは`this`(Activity)がフォアグラウンドにある前提
+     * (`registerReceiver`はActivityのライフサイクルに紐づけて
+     * `onDestroy`で解除する、バックグラウンドサービス化は今回の
+     * スコープ外)。
+     */
+    private fun registerPowerConnectionReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_POWER_DISCONNECTED -> onPowerDisconnected()
+                    Intent.ACTION_POWER_CONNECTED -> onPowerConnected()
+                }
+            }
+        }
+        powerConnectionReceiver = receiver
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_POWER_CONNECTED)
+        }
+        registerReceiver(receiver, filter)
+    }
+
+    private fun onPowerDisconnected() {
+        if (currentProfile != PowerProfile.ALWAYS_ON) return
+        if (isFinishing || isDestroyed) return
+        AlertDialog.Builder(this)
+            .setTitle("電源が外れました")
+            .setMessage(
+                "常時電源接続モードで動作中に電源が外れました。\n" +
+                    "省電力モードに切り替えますか?それとも通常モードの" +
+                    "ままにしますか?\n(推奨: 省電力モード)"
+            )
+            .setPositiveButton("省電力モードへ切替") { _, _ ->
+                switchProfileAndRestart(PowerProfile.POWER_SAVE)
+            }
+            .setNegativeButton("通常モードのままにする") { _, _ ->
+                switchProfileAndRestart(PowerProfile.NORMAL)
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun onPowerConnected() {
+        if (currentProfile == PowerProfile.ALWAYS_ON) return
+        if (isFinishing || isDestroyed) return
+        AlertDialog.Builder(this)
+            .setTitle("電源が接続されました")
+            .setMessage("常時電源接続モード(ハードウェアアクセラレーター対応)に切り替えますか?")
+            .setPositiveButton("常時電源接続へ切替") { _, _ ->
+                switchProfileAndRestart(PowerProfile.ALWAYS_ON)
+            }
+            .setNegativeButton("このままにする", null)
+            .show()
+    }
+
+    /**
+     * プロファイルを保存し、稼働中のサーバープロセスを終了・
+     * `MainActivity`を再起動して新プロファイルで再起動させる
+     * (WakeLock取得の有無・ポーリング間隔・アクセラレーター指定は
+     * プロセス起動時に確定する値のため、切替には再起動が必要)。
+     */
+    private fun switchProfileAndRestart(newProfile: PowerProfile) {
+        PowerProfile.save(this, newProfile)
+        Toast.makeText(
+            this,
+            "${newProfile.emoji} ${newProfile.label}モードへ切り替えます",
+            Toast.LENGTH_SHORT
+        ).show()
+        val intent = Intent(this, MainActivity::class.java)
+        intent.putExtra(EXTRA_PROFILE, newProfile.prefValue)
+        startActivity(intent)
+        finish()
     }
 
     /**
@@ -185,6 +318,8 @@ class MainActivity : AppCompatActivity() {
             val pb = ProcessBuilder(binaryPath.absolutePath)
             pb.directory(filesDir)
             pb.environment()["OPEN_WEB_SERVER_BIND"] = "127.0.0.1:$bindPort"
+            pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfile)
+            log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfile)}")
             pb.redirectErrorStream(true)
             val process = pb.start()
             serverProcess = process
@@ -213,6 +348,42 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 起動後の継続的な死活監視(2026-07-24追加)。プロファイルごとに
+     * 間隔を変える(`healthPollIntervalMs`)ことが「省電力版が実際に
+     * 省電力になる」施策そのもの——省電力版はこのループの頻度自体を
+     * 大きく落とし、CPU/無線を起こす回数を最小化する。常時電源接続版は
+     * 短い間隔で即応性を優先する。
+     */
+    private fun startPeriodicHealthPoll(statusText: TextView) {
+        healthPollJob?.cancel()
+        val intervalMs = healthPollIntervalMs(currentProfile)
+        healthPollJob = CoroutineScope(Dispatchers.Main).launch {
+            while (isActive) {
+                delay(intervalMs)
+                val ok = withContext(Dispatchers.IO) {
+                    try {
+                        val url = URL("http://127.0.0.1:$bindPort/healthz")
+                        val conn = url.openConnection() as HttpURLConnection
+                        conn.connectTimeout = 1000
+                        conn.readTimeout = 1000
+                        val code = conn.responseCode
+                        conn.disconnect()
+                        code == 200
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+                statusText.text = if (ok) {
+                    "[${currentProfile.emoji} ${currentProfile.label}] RUNNING " +
+                        "(poll every ${intervalMs / 1000}s)"
+                } else {
+                    "[${currentProfile.emoji} ${currentProfile.label}] health check failed"
+                }
+            }
+        }
+    }
+
     private fun pollHealthz(log: StringBuilder): Boolean {
         repeat(10) { attempt ->
             try {
@@ -235,6 +406,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        healthPollJob?.cancel()
+        powerConnectionReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (_: IllegalArgumentException) {
+                // 未登録のまま呼ばれても(onCreateの早期return等)無視する。
+            }
+        }
         serverProcess?.destroy()
         if (wakeLock?.isHeld == true) {
             wakeLock?.release()

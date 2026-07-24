@@ -6,6 +6,9 @@
          スリープを防ぐために必要。省電力/通常プロファイルでは取得しない
          (PowerProfile.kt参照)。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- ACTION_POWER_DISCONNECTED/CONNECTEDはprotected broadcastのため、
+         マニフェスト側の権限宣言は不要(コード側でreceiverを動的登録
+         するのみ、2026-07-24追加)。 -->
 
     <application
         android:allowBackup="true"

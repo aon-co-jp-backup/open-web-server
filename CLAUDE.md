@@ -581,6 +581,60 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き3) 省電力版が実際に省電力になる施策+常時電源接続版の
+  電源切断/再接続時の自動確認ダイアログを追加(ユーザー指示「スマホ版の
+  省電力版は、選ぶと本当に省電力になるようにして、常時電源接続版は…
+  電源から外したら自動で…省電力モード、もしくは、通常版に切り替えますか?
+  と質問して切り替える」、open-easy-web側から着手・実体はこちら
+  `open-web-server`の`android/`)**:
+  1. **作業対象の確認**: `open-easy-web`リポジトリにはAndroid/Kotlin
+     コードは一切存在しない(`find`で確認済み)。ユーザー指示にある
+     「他のリポジトリで既に確立されたAndroid構成があれば従う」の分岐に
+     従い、既存の3電源プロファイルAndroidアプリ(本リポジトリ`android/`、
+     2026-07-24の前回HANDOFF参照)へ機能追加する形で実装した。
+  2. **省電力版が実際に省電力になる施策**(`MainActivity.kt`):
+     起動後の継続ヘルスチェックを`startPeriodicHealthPoll()`として新設し、
+     プロファイルごとにポーリング間隔を変える
+     (`healthPollIntervalMs()`: 省電力=5分、通常=1分、常時電源接続=5秒)。
+     既存のWakeLock非取得(省電力/通常)と合わせ、「ポーリング間隔延長」
+     という指示を具体的に実装した。
+  3. **電源切断/再接続の監視とダイアログ**: `BroadcastReceiver`で
+     `ACTION_POWER_DISCONNECTED`/`ACTION_POWER_CONNECTED`を動的登録
+     (`registerPowerConnectionReceiver()`、`onCreate`/`onDestroy`で
+     登録・解除)。常時電源接続版の実行中に電源が外れると
+     `onPowerDisconnected()`が`AlertDialog`で「省電力モードに
+     切り替えますか?それとも通常モードのままにしますか?」と質問し
+     (ユーザー指示通り既定推奨は省電力、`setCancelable(false)`で
+     未回答のまま放置させない)、選択に応じて`switchProfileAndRestart()`
+     がプロファイルを保存し`MainActivity`を再起動する。省電力/通常版
+     実行中に電源が再接続されると`onPowerConnected()`が常時電源接続版
+     へ戻すかを尋ねる導線も追加(こちらは`setCancelable`既定=キャンセル可、
+     押しつけない設計)。
+  4. **ハードウェアアクセラレーター指定の先取り連携**: サーバープロセス
+     起動時の環境変数に`OPEN_WEB_SERVER_ACCEL_BACKEND`
+     (常時電源接続=`hardware_accelerator`、省電力/通常=`cpu`)を追加。
+     並行して本体(Rust)側`state.rs`にも同名環境変数のパース・
+     `AppState.accel_backend`保持・起動ログ出力が(別セッションで並行して)
+     追加されており、双方の環境変数名・値の文字列(`gpu`/`npu`/
+     `hardware_accelerator`/`cpu`)が一致していることを確認した。
+     **正直な開示**: Rust側は現状この値を保持・ログ出力するのみで、
+     実際の圧縮/暗号化処理へは未配線(`open_web_server_wire::accel`の
+     Gpu/Npu/HardwareAcceleratorはCpuへ安全にフォールバックする既存
+     方針のまま)。Android側のこの指定は「将来配線された際に効果を持つ」
+     先取り実装であり、現時点で実際に電力・性能へ影響するのはWakeLock
+     有無とポーリング間隔差のみ。
+  5. **検証**: `cargo build --workspace`成功(新規warning無し、
+     pre-existing dead_code警告のみ)。`cargo test -p open-web-server-gateway
+     accel_backend_env_tests`2件成功。Android側は`gradle :app:compileDebugKotlin`
+     および`:app:assembleDebug`(既存jniLibs同梱のまま)成功、実機/
+     エミュレータでの電源抜き差し実地検証は今回未実施(次回の課題)。
+  - 次にすべきこと: (1) 実エミュレータ/実機での電源切断シミュレート
+    (`adb shell dumpsys battery unplug`)によるダイアログ表示の実地検証、
+    (2) `open_web_server_wire::accel`へのGpu/Npu/HardwareAccelerator実装
+    (現状Cpuへのフォールバックのみ)、(3) `open-easy-web`側CLAUDE.mdへの
+    「Android未着手、実体はopen-web-server」の追記(このHANDOFFと同じ
+    セッションで実施済み、`open-easy-web/CLAUDE.md`参照)。
+
 - **2026-07-24(続き) Android版: 3電源プロファイル実装+adb unauthorized
   問題の解決+実エミュレータでの`/healthz`実応答確認(ユーザー追加指示
   「open-easy-webとSETのopen-web-serverのAndroidスマホの省電力版/普通版/
