@@ -581,6 +581,38 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(最終) VPS本番カットオーバー完了 — nginx廃止、open-web-serverが80/443を直接受ける構成へ移行
+
+**ユーザー指示「実施して」を受け、最終カットオーバーを実施し成功**:
+1. `/etc/systemd/system/open-web-server.service`を編集:
+   `OPEN_WEB_SERVER_BIND=127.0.0.1:8103`→`0.0.0.0:80`、
+   `OPEN_WEB_SERVER_TLS_BIND=0.0.0.0:8443`(テスト用)→`0.0.0.0:443`(本番)。
+2. `systemctl stop nginx` → `systemctl restart open-web-server`
+   → `ss -ltnp`で0.0.0.0:80/443ともopen-web-serverが直接listenして
+   いることを確認。
+3. プロセス再起動でメモリ内状態(TLS証明書・web_vhost・redirects)が
+   リセットされる設計のため、直後に全18ドメイン(bare+www)の
+   ACME証明書を並列で再取得(永続化済みアカウント鍵のためレート制限
+   消費なし)。`domains.toml`経由のtenant登録は自動永続化されるため
+   再登録不要だったが、**`web_vhosts`と`redirects`はファイルへの
+   自動書き込みが無い設計と判明**(tenantsとの非対称、次回の改善候補
+   として記録)——`www.runo.tokyo`/`audiocafe.tokyo`のweb_vhost、
+   `www.audiocafe.tokyo`/`www.aruaru.tokyo`のredirectを手動で再登録。
+4. **実インターネット経由での本番検証(型チェック・テストポートでの
+   検証だけで完了と報告しない、既存運用ルール徹底)**: 全18ドメインへ
+   実際に`https://<domain>/`でアクセスし、200(または301)を確認。
+   `audiocafe.tokyo`のPHP-FPM/FastCGI直接配信、
+   `aruaru.tokyo`の`/aruaru/`・`/aruaru-lady/`・`/rakuten-mobile/`
+   (Hostヘッダー書き換え転送)も実インターネット経由でHTTPS 200を確認。
+   HTTP(80番)側の応答も確認。
+5. **正直な今後の課題**: (a) `web_vhosts`/`redirects`もtenantsと同様に
+   ファイルへ自動永続化する設計に統一すべき(次回のプロセス再起動で
+   再度手動登録が必要になる)、(b) nginx自体はまだVPS上にアンインストール
+   していない(停止のみ、切り戻し用に一旦残置)、(c) TLS証明書の
+   自動更新(Let's Encryptは90日で失効)は現状手動での`POST /admin/
+   tenants/:host/tls/acme`再実行が前提——定期実行(cron/systemdタイマー)
+   の仕組みが未実装。
+
 ### 2026-07-24(続き10) nginx移行の残実装ギャップ3点を実装完了
 (前回チェックポイントの「次回セッション最初にすべきこと」対応)
 
