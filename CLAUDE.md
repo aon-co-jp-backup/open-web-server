@@ -581,6 +581,86 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-24(最終+4) Android版APKをGitHub Releases(v0.1.0)へ追加+CIビルドジョブ+紹介ページ更新
+(ユーザー指示「runo.tokyo/open-web-server とGithubにて、WindowsとLINUXは
+ありますが、省電力と省メモリ駆動版も選択可能なAndroidスマホとタブレット版の
+インストーラー付きアプリのダウンロード可能にして」、追加指示「アイコンに
+省電力と省メモリを選択したらその様な表示に変更になるようにして」)
+
+1. **アイコン動的切り替えの実装(追加指示対応、着手前は未実装と判明)**:
+   既存の4つの`activity-alias`(`AndroidManifest.xml`)はホーム画面への
+   個別インストール用の据え置きアイコンとしては機能していたが、
+   「アプリ内でプロファイルを選択した際にホーム画面上の代表アイコン自体が
+   切り替わる」実装は無かった(`setComponentEnabledSetting`呼び出しが
+   コード中に一切存在しないことを`Grep`で確認済み)。`PowerProfile.kt`の
+   `save()`内から呼ばれる新規`applyLauncherIcon()`を追加し、
+   `PackageManager.setComponentEnabledSetting()`で選択中プロファイルの
+   `activity-alias`のみ`COMPONENT_ENABLED_STATE_ENABLED`、他3つを
+   `COMPONENT_ENABLED_STATE_DISABLED`にする(`DONT_KILL_APP`指定でプロセス
+   再起動なし)。`ProfileSelectActivity`のボタン押下・`MainActivity`の
+   電源切断/再接続ダイアログでのプロファイル切替、どちらも`PowerProfile.save()`
+   を経由するため、両経路で自動的にアイコン切替が反映される。**正直な
+   限界**: ランチャー(ホーム画面アプリ)側が有効/無効変化を反映する
+   タイミングはランチャー実装依存(多くは即時、まれに再起動を要する場合が
+   ある)。実機/エミュレータでの「切替後に実際にホーム画面アイコンが
+   変わって見える」ことのスクリーンショット確認は本パスでは実施していない
+   (`gradle :app:assembleDebug`のBUILD SUCCESSFULまでの確認に留まる)。
+2. **APKビルド(デバッグ署名)**: `gradle :app:assembleDebug`で
+   BUILD SUCCESSFUL、`android/app/build/outputs/apk/debug/app-debug.apk`
+   (約20.3MB、既存jniLibs[arm64-v8a/x86_64]同梱)を確認。**正直な開示**:
+   正式な配布用署名鍵(keystore)はこの環境に用意されていないため、
+   デバッグ署名のAPKのまま。実運用では正式な署名鍵での再ビルドを推奨。
+3. **GitHub Releases(v0.1.0)へ追加**: `gh release upload v0.1.0`で
+   `open-web-server-android-debug.apk`を追加アセットとしてアップロード
+   済み(既存の`open-web-server-linux-x86_64.tar.gz`/
+   `open-web-server-windows-x86_64.zip`と並んで表示されることを
+   `gh release view v0.1.0`で確認)。リリースノートにAndroid版の説明
+   (ARM64/x86_64両ABI対応・4電源プロファイル選択可・デバッグ署名の注記)
+   を追記。
+4. **`.github/workflows/release.yml`にAndroidビルドジョブ`build-android`を
+   追加**(将来のタグpush時の自動ビルド用): `android-actions/setup-android`
+   でSDKをセットアップ後、NDK 27.1.12297006を`sdkmanager`で導入、
+   `cargo ndk`でarm64-v8a/x86_64向けにRustバイナリをクロスビルドし
+   `jniLibs`へ配置、`./gradlew :app:assembleDebug`でAPK生成、
+   `softprops/action-gh-release`でReleaseへ添付する既存Linux/Windows
+   ジョブと同じパターン。**Gradle Wrapper(`gradlew`/`gradlew.bat`/
+   `gradle-wrapper.jar`)が本リポジトリに存在しなかった**ため、ローカルの
+   キャッシュ済みGradle 8.11.1で`gradle wrapper --gradle-version 8.11.1`
+   を実行し生成・コミット対象に追加(これが無いとCI環境でGradleを
+   呼び出す手段が無かった)。**正直な制約(ユーザー指示に沿って明記、
+   1回のCI実行で確認できる範囲に留めた)**: このジョブが実際にCI環境
+   (ubuntu-latestランナー)で動作するかどうかは、本コミットの直後に
+   タグpushで発火する1回のCI実行でしか確認できていない可能性が高い。
+   Android SDK/NDKのセットアップ・cargo ndkのクロスコンパイル・Gradle
+   ビルドという複数の外部要因が絡むため、失敗時に無理に追加修正を
+   重ねて時間を消費しすぎないよう、`build-android`ジョブに
+   `continue-on-error: true`を設定し、失敗してもLinux/Windows向け
+   リリース自体はブロックされない設計にした(`release`ジョブの`if`条件は
+   `build-linux`/`build-windows`の成功のみを必須とし、Android成果物は
+   `fail_on_unmatched_files: false`で「無ければ無いまま」公開される)。
+5. **紹介ページ(`site/index.html`)にAndroidダウンロードリンクを追加**:
+   「ダウンロード・インストール」節にAndroid版カードを新設し、
+   GitHub Releasesの当該APKアセットへの直接リンク・ARM64/x86_64両ABI
+   対応・4電源プロファイル選択可能である旨・デバッグ署名である旨の注記を
+   日本語で追加。`runo.tokyo`側は別の小規模ルータープロジェクトであり
+   open-web-server自身の紹介ページは持たないため(`F:\runo\runo.tokyo`は
+   `CLAUDE.md`/`README.md`/`src`のみで`site/`無し)、`open-web-server`側の
+   `site/index.html`のみを更新した。
+6. **検証(型チェックのみで完了と報告しない、既存運用ルール徹底)**:
+   `cargo build --release --bin open-web-server`成功(既存のdead_code
+   警告のみ、新規warning無し)。`cargo test --workspace`全21テスト
+   (gateway/ledger/wire合算、doc-tests含む)green。実際に
+   `open-web-server.exe`を`web_vhosts.toml`(`docroot=site`)経由で起動し、
+   `curl -H "Host: 127.0.0.1" http://127.0.0.1:18078/`で**status 200**、
+   本文に`open-web-server-android-debug.apk`および
+   「省メモリ版・省電力版・通常版・常時電源接続版」の文字列が実際に
+   含まれることを確認済み。`gh release view v0.1.0`でアセット一覧に
+   `open-web-server-android-debug.apk`が含まれることも確認済み。
+- **次にすべきこと**: (1) タグpush(次回`v0.1.1`等)でのCI上の
+  `build-android`ジョブの実動作確認、失敗時のログ調査・修正。
+  (2) アイコン動的切り替えの実機/エミュレータでのスクリーンショット
+  確認。(3) 正式な配布用署名鍵の準備、リリース版署名でのAPK再発行。
+
 ### 2026-07-24(最終+3) Android版: 実ハードウェア検出ロジックの実装+実エミュレータ検証
 (ユーザー指示「外付けGPU検出は実装しない、という前回判断を撤回し、実際に検出ロジックを
 実装してほしい」、追加指示「検出結果・4プロファイル説明文を日英併記」)

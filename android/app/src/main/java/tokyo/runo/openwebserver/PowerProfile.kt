@@ -1,6 +1,8 @@
 package tokyo.runo.openwebserver
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 
 /**
  * 4電源プロファイル(2026-07-24、ユーザー指示で「省電力」と「省メモリ」を
@@ -54,6 +56,50 @@ enum class PowerProfile(val prefValue: String, val label: String, val emoji: Str
         fun save(context: Context, profile: PowerProfile) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit().putString(KEY_PROFILE, profile.prefValue).apply()
+            applyLauncherIcon(context, profile)
+        }
+
+        /**
+         * ホーム画面上のランチャーアイコンを、選択されたプロファイルに
+         * 対応する`activity-alias`(`AndroidManifest.xml`参照)だけ
+         * `COMPONENT_ENABLED_STATE_ENABLED`にし、他3つを
+         * `COMPONENT_ENABLED_STATE_DISABLED`にする(2026-07-24追加、
+         * ユーザー指示「アイコンに省電力と省メモリを選択したらその様な
+         * 表示に変更になるようにして」対応)。
+         *
+         * **正直な開示**: 4つの`activity-alias`自体は元々すべて
+         * `exported=true`のLAUNCHERとして常設されており(ホーム画面へ
+         * 個別に追加できる据え置きアイコンとしての用途)、この関数は
+         * それとは別に「アプリ内でプロファイルを選ぶと、ホーム画面上の
+         * "代表アイコン"がそのプロファイルの見た目(色+絵文字+ラベル)に
+         * 切り替わる」という動的表示を実現するもの。Android標準の
+         * `PackageManager.setComponentEnabledSetting()`によるエイリアス
+         * 有効/無効切り替えパターンを使用(`DONT_KILL_APP`指定で
+         * プロセスを再起動させない)。ランチャー(ホーム画面アプリ)側が
+         * 有効/無効の変化を反映するタイミングはランチャー実装依存
+         * (多くは即時、まれに再起動やキャッシュ更新を要する場合がある)。
+         */
+        fun applyLauncherIcon(context: Context, profile: PowerProfile) {
+            val pm = context.packageManager
+            val pkg = context.packageName
+            val aliasByProfile = mapOf(
+                MEMORY_SAVER to "$pkg.LauncherMemorySaver",
+                POWER_SAVE to "$pkg.LauncherPowerSave",
+                NORMAL to "$pkg.LauncherNormal",
+                ALWAYS_ON to "$pkg.LauncherAlwaysOn",
+            )
+            for ((p, aliasClass) in aliasByProfile) {
+                val state = if (p == profile) {
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                } else {
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                }
+                pm.setComponentEnabledSetting(
+                    ComponentName(pkg, aliasClass),
+                    state,
+                    PackageManager.DONT_KILL_APP,
+                )
+            }
         }
     }
 }

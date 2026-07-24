@@ -68,15 +68,77 @@ jobs:
           name: open-web-server-windows-x86_64
           path: open-web-server-windows-x86_64.zip
 
+  build-android:
+    name: Android (APK, デバッグビルド, ARM64/x86_64)
+    runs-on: ubuntu-latest
+    # 正直な開示(2026-07-24追加): このジョブが実際にCI上のubuntu-latest
+    # ランナーで動作するかは、本コミット時点のCI実行1回のみでしか確認
+    # できていない可能性が高い。Android SDK/NDKはubuntu-latestランナーに
+    # 標準搭載されていないため、android-actions/setup-android等のセット
+    # アップが必要になり、cargo ndkによるRustのクロスビルド+Gradleの
+    # assembleDebugという2段構成はローカル(このリポジトリの開発機)では
+    # 実績があるが、CI環境固有の問題(NDKバージョン不一致・ネットワーク
+    # 制限等)が起きても本パスでは深追いしない方針とする。失敗した場合は
+    # このジョブのログを見て次回セッションで修正すること(Linux/Windows
+    # ジョブの成功には影響しない、`continue-on-error: true`で全体の
+    # リリース失敗を防ぐ)。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout RS-SmartTCP (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android NDK
+        run: sdkmanager --install "ndk;27.1.12297006"
+      - name: Install Rust Android targets + cargo-ndk
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk
+      - name: Build Rust binary for Android (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.1.12297006
+        run: |
+          cargo ndk -t aarch64-linux-android build --release --bin open-web-server
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/open-web-server android/app/src/main/jniLibs/arm64-v8a/libopenwebserver.so
+      - name: Build Rust binary for Android (x86_64)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.1.12297006
+        run: |
+          cargo ndk -t x86_64-linux-android build --release --bin open-web-server
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cp target/x86_64-linux-android/release/open-web-server android/app/src/main/jniLibs/x86_64/libopenwebserver.so
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk open-web-server-android-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-web-server-android-debug
+          path: open-web-server-android-debug.apk
+
   release:
     name: GitHub Releaseへ添付
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-android]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' }}
     steps:
       - uses: actions/download-artifact@v4
+      - name: List downloaded artifacts (Android job may have failed, see build-android logs)
+        run: find . -maxdepth 2
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             open-web-server-linux-x86_64/open-web-server-linux-x86_64.tar.gz
             open-web-server-windows-x86_64/open-web-server-windows-x86_64.zip
+            open-web-server-android-debug/open-web-server-android-debug.apk
+          fail_on_unmatched_files: false
