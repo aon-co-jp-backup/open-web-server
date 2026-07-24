@@ -29,3 +29,4 @@ android/local.properties
 android/app/src/main/jniLibs/
 android/*.log
 
+acme-account-key.der
