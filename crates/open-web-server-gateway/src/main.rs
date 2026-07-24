@@ -12,9 +12,12 @@ mod access_log;
 mod acme;
 mod app_proxy;
 mod compression;
+mod custom_dns;
 #[cfg(feature = "ddns")]
 mod ddns;
+mod dual_write;
 mod free_domain;
+mod oauth_provider;
 mod handlers;
 mod keyring;
 mod middleware;

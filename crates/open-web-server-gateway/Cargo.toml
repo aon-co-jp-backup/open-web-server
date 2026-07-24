@@ -52,6 +52,10 @@ russh-sftp = { version = "2", optional = true }
 # UPnP IGD自動ポート開放(upnp feature)向け。`igd`の後継で活発にメンテ
 # されている`igd-next`を採用(2026-07時点でcrates.io確認済み)。
 igd-next = { version = "0.15", optional = true, features = ["aio_tokio"] }
+# 自社ドメイン(aon.co.jp/runo.tokyo)配下の無料サブドメイン発行機能
+# (custom_domain feature)向け。DnsProvider実装(Value-Domain/ConoHa DNS)の
+# 実HTTP呼び出し、およびGitHub OAuthのトークン交換に使う。
+sqlx = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -64,6 +68,14 @@ sftp = ["dep:russh", "dep:russh-sftp"]
 # UPnP IGDによるポート自動開放の補助機能(`upnp.rs`)。既定オフ、
 # `OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true`で有効化。
 upnp = ["dep:igd-next"]
+# 自社ドメイン(aon.co.jp/runo.tokyo)配下の無料サブドメイン発行+自動更新
+# (`custom_dns.rs`)、GitHub等OAuthログイン(`oauth_provider.rs`)、
+# PostgreSQL/aruaru-dbデュアルライト(`dual_write.rs`)。
+custom_domain = ["dep:reqwest"]
+# 上記のうちPostgreSQL側の実書き込み経路のみを追加で有効化する(`sqlx`は
+# 比較的重量な依存のため、DnsProvider/AuthProviderのロジック単体は
+# `custom_domain` featureのみで検証できるよう分離した)。
+custom_domain_db = ["custom_domain", "dep:sqlx"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

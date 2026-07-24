@@ -581,6 +581,57 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き8) 自社ドメイン(aon.co.jp/runo.tokyo、将来nasa.tokyo/
+  icpo.tokyo)配下への無料サブドメイン発行機能の第一実装(ユーザー指示
+  「DuckDNSのような無料サブドメイン取得+自動更新を、ユーザー自身の所有
+  ドメインを土台として提供」)**:
+  1. **`DnsProvider`トレイト新設**(`crates/open-web-server-gateway/src/
+     custom_dns.rs`): `register_subdomain`/`update_ip`/`remove`の3操作。
+     `ValueDomainProvider`(aon.co.jp、Value-Domain管理)・
+     `ConohaDnsProvider`(runo.tokyo/nasa.tokyo/icpo.tokyo、ConoHa DNS管理、
+     `SUPPORTED_BASE_DOMAINS`でベースドメインをパラメータ化)の2実装を
+     追加。APIキー/シークレットは`OPEN_EASY_WEB_VALUE_DOMAIN_API_KEY`/
+     `OPEN_EASY_WEB_CONOHA_API_USER_ID`等の環境変数経由でのみ受け取り、
+     未設定時は`MissingCredential`を正直に返す(実キーはハードコードも
+     代行取得もしていない)。
+  2. **`AuthProvider`トレイト新設**(`oauth_provider.rs`): GitHub OAuthに
+     よるログイン、`AccountRegistry`が`"<provider>:<provider_user_id>"`を
+     一意キーとして、どのサイト経由でログインしても同一アカウントへ
+     正規化する。`client_id`/`client_secret`は環境変数
+     (`OPEN_EASY_WEB_GITHUB_CLIENT_ID`/`_SECRET`)経由のみ、実OAuth Appの
+     発行はユーザー自身がGitHub側で行う前提(代行取得しない)。
+  3. **PostgreSQL+aruaru-dbデュアルライト**(`dual_write.rs`):
+     `PostgresBackend`/`AruaruDbBackend`の2トレイト+
+     `DualWriteCoordinator`。PostgreSQLを権威パスとし、aruaru-db側の
+     失敗は握りつぶさず`DualWriteOutcome.aruaru_db_error`で正直に報告する
+     設計(既存の`multi_region::MultiRegionReplicator`の考え方を踏襲)。
+     PostgreSQL実装(`SqlxPostgresBackend`)は`custom_domain_db` feature
+     配下、aruaru-db実装(`HttpAruaruDbBackend`)は`custom_domain` feature
+     配下。
+  4. **検証**: `cargo build --tests --workspace`(デフォルトfeature)
+     ・`cargo test --workspace`とも既存21件全green(リグレッション無し)。
+     `cargo test -p open-web-server-gateway --features
+     ddns,sftp,upnp,custom_domain`で新規10件
+     (`custom_dns::`4件・`oauth_provider::`3件・`dual_write::`3件)を
+     確認、モックによるDnsProvider登録/更新/削除・AuthProviderログイン
+     フロー(同一アカウントへの正規化含む)・デュアルライトの成功/
+     部分失敗ロジックをそれぞれ検証済み。
+  5. **正直な未検証事項**: (a) 実Value-Domain/ConoHa DNS APIへの実接続
+     (実APIキー・実ConoHa認証情報が無いため未実施)、(b) 実GitHub OAuth
+     フロー(実OAuth Appが無いため未実施)、(c) 実PostgreSQL/aruaru-db
+     インスタンスへの実書き込み(この開発環境に到達可能なインスタンスが
+     無いため未実施、`postgres_wal.rs`が既に記録している既知の制約と
+     同じ)。いずれもモック/単体テストでのロジック検証に留まる。
+     (d) 管理APIエンドポイント(`POST /admin/custom-domain/*`等)への
+     配線・`main.rs`からの呼び出しは今回は行っていない(トレイト・
+     ロジック本体の実装が今回のスコープ、HTTPハンドラ配線は次回課題)。
+  - 次にすべきこと: (1) 上記トレイトを実際のHTTPハンドラへ配線
+    (`handlers/custom_domain.rs`相当の新設)、(2) Value-Domainのゾーン
+    全体送信方式に対応した既存レコードとのマージロジック、(3) ConoHa DNS
+    のレコードID解決(現状`update_ip`/`remove`は簡略化した実装のまま)、
+    (4) 実資格情報が用意でき次第の実接続E2E検証。
+
+
 - **2026-07-24(続き6) 実DuckDNSアカウント・実トークンによるDDNS機能の
   エンドツーエンド検証、完全成功(ユーザー指示「実アカウントでの
   本番エンドツーエンド検証をしっかり行って下さい」)**:
