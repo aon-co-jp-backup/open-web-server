@@ -617,9 +617,11 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 2. **CI(`build-android`ジョブ)の実動作検証**: 一時タグ
    `v0.1.0-android-ci-test`をpushしてGitHub Actionsを実際に起動させ、
-   `gh run watch`で結果を確認した。**結果: 成功**——`build-linux`・
-   `build-windows`・`build-android`の3ジョブすべてが成功し、
-   `release`ジョブも正常に完了した(このタグ用の一時Releaseが
+   `gh run view`/`gh run list`で結果を確認した。**結果: 成功**
+   (run ID `30080128419`、所要9分24秒、`gh run list`で
+   `status=completed conclusion=success`を実際に確認)——
+   `build-linux`・`build-windows`・`build-android`の3ジョブすべてが
+   成功し、`release`ジョブも正常に完了した(このタグ用の一時Releaseが
    作成されたことを確認)。`build-android`ジョブの各ステップ
    (Android SDKセットアップ・NDKインストール・
    `cargo ndk`によるarm64-v8a/x86_64クロスビルド・
@@ -627,9 +629,12 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
    **前回HANDOFFの「正直な開示」(CI実動作は未検証)はこれで解消**——
    修正サイクル無しで一発成功したため、追加のワークフロー修正は
    不要だった。検証後、一時タグ・一時Releaseを削除
-   (`git push --delete origin v0.1.0-android-ci-test`・
-   `gh release delete v0.1.0-android-ci-test`)、本番の`v0.1.0`タグ・
-   Releaseには一切触れていない。
+   (`gh release delete v0.1.0-android-ci-test --yes`・
+   `git push origin :refs/tags/v0.1.0-android-ci-test`)、本番の
+   `v0.1.0`タグ・Releaseには一切触れていない(削除後に
+   `gh release view v0.1.0`で既存4アセット
+   [Linux/Windows/Android debug/Android release]が変わらず
+   揃っていることを確認済み)。
 
 3. **正式な署名鍵(release keystore)でのビルド**: `keytool -genkeypair`
    (RSA 2048bit、有効期限9125日≒25年、PKCS12形式)で
