@@ -14,6 +14,35 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+/// Apache互換モード/Nginx互換モードの切り替え(open-easy-webの「初回
+/// セットアップガイド」画面のボタン選択に対応、2026-07-24追加)。
+///
+/// **正直な開示・スコープ**: Apache/Nginxの設定言語(`.htaccess`/
+/// `nginx.conf`)そのものを解釈するわけではない——`php_enabled=false`の
+/// 純粋な静的サイトに限定して、リクエストされたファイルがdocroot配下に
+/// 実在しない場合の挙動を、2製品でよくある既定動作の差に合わせて
+/// 切り替える最小限の実装:
+/// - **Apache互換**: `.htaccess`の`FallbackResource`パターンでよく使われる
+///   「見つからなければ`index.html`にフォールバック」(SPA的な挙動)。
+/// - **Nginx互換**: `try_files $uri $uri/ =404;`相当の「見つからなければ
+///   素直に404」(フォールバックしない厳格な挙動)。
+/// PHP有効なvhostの挙動(静的アセット優先→PHPへ委譲)はモードに関わらず
+/// 従来通り(過剰な機能追加を避けるため)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatMode {
+    Apache,
+    Nginx,
+}
+
+impl Default for CompatMode {
+    fn default() -> Self {
+        // 既存の`static_files::serve`の挙動(見つからなければ単純404)と
+        // 完全に後方互換にするため、既定はNginx互換(フォールバック無し)とする。
+        CompatMode::Nginx
+    }
+}
+
 /// 1つの静的/PHPサイトvhost設定。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebVhostConfig {
@@ -25,6 +54,10 @@ pub struct WebVhostConfig {
     /// (静的アセット以外のパスは404)。
     #[serde(default = "default_php_enabled")]
     pub php_enabled: bool,
+    /// Apache互換/Nginx互換モード(2026-07-24追加、既定はNginx互換=
+    /// 既存動作と同じ「フォールバック無しの404」)。
+    #[serde(default)]
+    pub compat_mode: CompatMode,
 }
 
 fn default_php_enabled() -> bool {
@@ -112,7 +145,52 @@ mod tests {
             host: host.to_string(),
             docroot: PathBuf::from("/var/www/example"),
             php_enabled: true,
+            compat_mode: CompatMode::default(),
         }
+    }
+
+    #[test]
+    fn compat_mode_defaults_to_nginx_for_backward_compat() {
+        assert_eq!(CompatMode::default(), CompatMode::Nginx);
+    }
+
+    #[tokio::test]
+    async fn load_from_toml_with_explicit_compat_mode() {
+        let registry = WebVhostRegistry::new();
+        let toml_str = r#"
+            [[webvhost]]
+            host = "apache-style.example.com"
+            docroot = "/var/www/apache-style"
+            php_enabled = false
+            compat_mode = "apache"
+
+            [[webvhost]]
+            host = "nginx-style.example.com"
+            docroot = "/var/www/nginx-style"
+            php_enabled = false
+            compat_mode = "nginx"
+        "#;
+
+        registry.load_from_toml(toml_str).await.unwrap();
+        let apache_style = registry.resolve("apache-style.example.com").await.unwrap();
+        assert_eq!(apache_style.compat_mode, CompatMode::Apache);
+        let nginx_style = registry.resolve("nginx-style.example.com").await.unwrap();
+        assert_eq!(nginx_style.compat_mode, CompatMode::Nginx);
+    }
+
+    #[tokio::test]
+    async fn load_from_toml_without_compat_mode_defaults_to_nginx() {
+        let registry = WebVhostRegistry::new();
+        let toml_str = r#"
+            [[webvhost]]
+            host = "legacy.example.com"
+            docroot = "/var/www/legacy"
+        "#;
+
+        registry.load_from_toml(toml_str).await.unwrap();
+        let legacy = registry.resolve("legacy.example.com").await.unwrap();
+        assert_eq!(legacy.compat_mode, CompatMode::Nginx);
+        assert!(legacy.php_enabled);
     }
 
     #[tokio::test]

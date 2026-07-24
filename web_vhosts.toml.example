@@ -11,6 +11,15 @@
 #     -d '{"host":"audiocafe.tokyo","docroot":"F:/open-runo/audiocafe.tokyo","php_enabled":true}'
 #   curl -X DELETE http://localhost:8080/admin/web-vhosts/audiocafe.tokyo
 #   curl http://localhost:8080/admin/web-vhosts
+#
+# compat_mode (2026-07-24追加、open-easy-webの「初回セットアップガイド」
+# 画面の「Apache互換モードで起動」/「Nginx互換モードで起動」ボタンに対応):
+# php_enabled = false の静的サイトに限り、リクエストされたファイルが
+# 見つからない場合の挙動を選べる。
+#   "apache" -> .htaccessのFallbackResource相当、見つからなければ
+#               index.htmlへフォールバック(SPA的挙動)。
+#   "nginx"  -> try_files $uri $uri/ =404; 相当、フォールバックせず404
+#               (既定値、省略時はこちら=既存動作と完全互換)。
 
 [[webvhost]]
 host = "audiocafe.tokyo"

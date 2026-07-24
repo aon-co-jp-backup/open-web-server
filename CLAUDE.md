@@ -581,6 +581,62 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+- **2026-07-24(続き4) `web_vhost::CompatMode`(Apache互換/Nginx互換)を新設
+  (ユーザー指示、open-easy-web側「初回セットアップガイド」画面の
+  「Apache互換モードで起動」「Nginx互換モードで起動」ボタンと対応)**:
+  1. **`crates/open-web-server-gateway/src/web_vhost.rs`**: `WebVhostConfig`に
+     `compat_mode: CompatMode`(`Apache`|`Nginx`、既定`Nginx`)を追加。
+     **正直なスコープの明記**: `.htaccess`/`nginx.conf`の設定言語そのものを
+     解釈するわけではなく、`php_enabled=false`の純粋な静的サイトに限定した
+     「リクエストされたファイルが見つからない場合の挙動」という1点のみの
+     差分実装(過剰実装回避)——Apache互換は`.htaccess`の`FallbackResource`
+     パターン相当で`index.html`へフォールバック、Nginx互換は
+     `try_files $uri $uri/ =404;`相当でフォールバックせず404。既定値を
+     Nginx互換にしたのは、既存の`static_files::serve`の挙動(フォールバック
+     無し)と完全な後方互換にするため。
+  2. **`handlers/web_vhost.rs`**: `dispatch()`のPHP無効分岐から
+     `serve_static_vhost(docroot, path, compat_mode)`という純粋関数を
+     切り出し(`AppState`を必要としないテスト容易な形にするための
+     リファクタリング)、Apache互換時のみ404後に`index.html`を再取得する
+     処理を実装。
+  3. **`web_vhosts.toml.example`**: `compat_mode`フィールドの説明・
+     使用例を追記。
+  4. **open-easy-web側の対応する変更**: 新規「初回セットアップガイド」
+     画面(`setup_wizard_ui.rs`)で、VPSのIPアドレス確認・SFTPアップロード
+     手順の案内・Apache/Nginx互換モードの選択・`install.sh`ワンライナー
+     コマンド表示を実装。詳細は`open-easy-web/CLAUDE.md`の同日HANDOFF
+     参照。
+  5. **コーディネーターからの追加設計制約(重要、正直に反映)**:
+     open-web-serverは「1台のVPSにつき1回だけインストールする常駐
+     サーバー」であり、`tenant_router`が1プロセス内で複数ドメイン・
+     複数アプリを振り分ける設計である——open-easy-web側の案内文言に
+     この前提を明記し、「open-web-serverのインストール」導線は
+     未インストール時のみを想定した文言とし、既にインストール済みの
+     場合は「この画面から既存インスタンスへ追加登録するだけでよい」
+     という案内に切り替わるようにした(稼働判定の自動検知機能は
+     過剰実装として追加していない、文言での案内のみ)。
+  6. **安全上の制約(ユーザー指示、絶対遵守)**: サーバーサイドコードから
+     任意のシェルコマンドを実行する機能(リモートインストールの自動実行等)
+     は本パスでも一切実装していない——`install.sh`を呼ぶコマンド文字列は
+     あくまでopen-easy-web側の画面に表示するだけで、open-web-server自身が
+     それを実行する経路は存在しない。
+  - **検証**: `cargo build --tests`(ワークスペース全体)警告0件で成功
+    (既存のpre-existing `accel_backend`/`is_empty` dead_code警告のみ、
+    今回の変更由来の新規警告は無し)。`cargo test -p open-web-server-gateway
+    web_vhost`で新規11件を含むテストが全green(`compat_mode`のデフォルト値・
+    TOMLからの明示指定/省略時デフォルトの読み込み・
+    `serve_static_vhost`のApache/Nginx両モードでのフォールバック挙動差・
+    既存ファイルは両モードで同一に配信されることを検証)。
+    `cargo test --workspace`も全件green(既存テストへの影響無し)。
+  - **正直な制限事項**: (1) 実際にVPS上へ`web_vhosts.toml`で
+    `compat_mode="apache"`を指定したvhostをデプロイし、実HTTPリクエストで
+    フォールバックを確認するE2Eはこのパスでは未実施(ユニットテストでの
+    検証のみ)。(2) PHP有効なvhostの挙動(静的アセット優先→PHP委譲)は
+    モードに関わらず従来通りで変更していない(スコープを絞った判断)。
+  - 次にすべきこと: (1) 実VPSでの`compat_mode`切り替えのE2E検証、
+    (2) open-easy-web側で選択した`compat_mode`を「共有バックエンドへ登録」
+    APIリクエストへ自動反映する配線(open-easy-web側の次回課題と対応)。
+
 - **2026-07-24(続き3) 省電力版が実際に省電力になる施策+常時電源接続版の
   電源切断/再接続時の自動確認ダイアログを追加(ユーザー指示「スマホ版の
   省電力版は、選ぶと本当に省電力になるようにして、常時電源接続版は…
