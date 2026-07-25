@@ -43,10 +43,14 @@ use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpSender};
 use tracing::{info, warn};
 
 pub mod audit_log;
+#[cfg(feature = "disaster_email_backup")]
+pub mod disaster_email_backup;
 pub mod multi_region;
 pub mod postgres_wal;
 pub mod state_reader;
 pub use audit_log::{AuditRecord, FileAuditLog, ReconciliationReport};
+#[cfg(feature = "disaster_email_backup")]
+pub use disaster_email_backup::{DisasterEmailBackup, DisasterEmailBackupConfig};
 pub use multi_region::{MultiRegionError, MultiRegionReplicator, Region as ReplicationRegion};
 pub use postgres_wal::PostgresWal;
 pub use state_reader::DbStateReader;
@@ -83,6 +87,14 @@ pub struct Ledger {
     /// `commit()` は全リージョン(既定ポリシー)への同期書き込みが
     /// `min_acks` を満たすまで待ち、満たさなければコミット全体を失敗させる。
     multi_region: Option<Arc<multi_region::MultiRegionReplicator>>,
+    /// スタンドアロンのメール・ディザスタバックアップ(`disaster_email_backup`
+    /// feature、任意)。VPS同期先・マルチリージョンレプリケータの設定有無に
+    /// 関わらず、メールアドレスひとつだけで有効化できる最後の砦。未設定なら
+    /// 従来通り(バックアップ無し)動作する。`Ledger`は通常`Arc<Ledger>`として
+    /// 共有されるため(`AppState::ledger`)、`RwLock`による実行時後付け設定
+    /// (管理APIから`POST /admin/disaster-email-backup`で呼ぶ想定)を可能にする。
+    #[cfg(feature = "disaster_email_backup")]
+    disaster_email_backup: std::sync::RwLock<Option<Arc<disaster_email_backup::DisasterEmailBackup>>>,
 }
 
 struct UdpRedundantPath {
@@ -99,7 +111,31 @@ impl Ledger {
             udp_redundant_path: None,
             audit_log: None,
             multi_region: None,
+            #[cfg(feature = "disaster_email_backup")]
+            disaster_email_backup: std::sync::RwLock::new(None),
         }
+    }
+
+    /// スタンドアロンのメール・ディザスタバックアップを有効化する
+    /// (ビルダースタイル、起動時にまとめて構築する場合向け)。VPS同期先の
+    /// 登録・マルチリージョンレプリケータの構築は一切不要(要件どおり
+    /// 「メールアドレスひとつだけ」で有効化できる)。
+    #[cfg(feature = "disaster_email_backup")]
+    pub fn enable_disaster_email_backup(self, backup: disaster_email_backup::DisasterEmailBackup) -> Self {
+        self.set_disaster_email_backup(backup);
+        self
+    }
+
+    /// `Arc<Ledger>`として共有された後でも呼べる、実行時の後付け設定
+    /// (管理APIハンドラから呼ぶ想定)。
+    #[cfg(feature = "disaster_email_backup")]
+    pub fn set_disaster_email_backup(&self, backup: disaster_email_backup::DisasterEmailBackup) {
+        *self.disaster_email_backup.write().unwrap() = Some(Arc::new(backup));
+    }
+
+    #[cfg(feature = "disaster_email_backup")]
+    pub fn disaster_email_backup(&self) -> Option<Arc<disaster_email_backup::DisasterEmailBackup>> {
+        self.disaster_email_backup.read().unwrap().clone()
     }
 
     /// マルチリージョン同期レプリケーション (拡張要件(4)-③) を有効化する。
@@ -197,14 +233,26 @@ impl Ledger {
         // 失敗させる (WALには既に先行書き込み済みなので、再送されれば冪等に
         // 再試行できる)。
         if let Some(replicator) = &self.multi_region {
-            replicator.replicate(&req).await.map_err(|e| {
+            if let Err(e) = replicator.replicate(&req).await {
                 warn!(key = %req.idempotency_key.0, error = %e, "multi-region synchronous replication failed policy, commit aborted");
-                CoreError::MultiRegionReplicationFailed(e.to_string())
-            })?;
+                self.fire_disaster_email_backup(&req, &format!("multi-region replication failed: {e}"));
+                return Err(CoreError::MultiRegionReplicationFailed(e.to_string()));
+            }
         }
 
         // ② open-runo 経由で aruaru-db にコミット要求を送る (3層防御通信を利用)
-        let commit_id = self.forward_with_retry(&req).await?;
+        let commit_id = match self.forward_with_retry(&req).await {
+            Ok(id) => id,
+            Err(e) => {
+                // 権威パス(TCP経由の3ホップコミット)がリトライを尽くしても
+                // 失敗した=断線・障害相当のシグナルとして扱い、スタンドアロンの
+                // メール・ディザスタバックアップ(設定されていれば)へ
+                // ベストエフォートで退避する。バックアップ自体の成否は
+                // この`commit`呼び出しの失敗結果には影響しない。
+                self.fire_disaster_email_backup(&req, "upstream commit failed after exhausting retries");
+                return Err(e);
+            }
+        };
 
         self.wal
             .mark_committed(&req.idempotency_key.0, &commit_id)
@@ -237,6 +285,31 @@ impl Ledger {
             }
         });
     }
+
+    /// 権威パス・マルチリージョンレプリケーションのいずれかが実際に失敗した
+    /// 際、設定済みならスタンドアロンのメール・ディザスタバックアップへ
+    /// ベストエフォートで退避する(UDP冗長経路と同じ「補助系は権威パスの
+    /// 失敗結果を上書きしない」設計方針——ここでは同期的に1回試行するが、
+    /// 結果はログに残すのみで呼び出し元へは伝播させない)。
+    #[cfg(feature = "disaster_email_backup")]
+    fn fire_disaster_email_backup(&self, req: &MutationRequest, reason: &str) {
+        let Some(backup) = self.disaster_email_backup.read().unwrap().clone() else {
+            return;
+        };
+        let req = req.clone();
+        let reason = reason.to_string();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || backup.backup_failed_mutation(&req, &reason)).await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!(error = %e, "disaster email backup attempt failed (best-effort, does not affect commit result)"),
+                Err(e) => warn!(error = %e, "disaster email backup task panicked (best-effort, does not affect commit result)"),
+            }
+        });
+    }
+
+    #[cfg(not(feature = "disaster_email_backup"))]
+    fn fire_disaster_email_backup(&self, _req: &MutationRequest, _reason: &str) {}
 
     async fn forward_with_retry(&self, req: &MutationRequest) -> CoreResult<String> {
         let mut attempt = 0;

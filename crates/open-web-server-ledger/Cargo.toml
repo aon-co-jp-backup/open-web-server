@@ -19,6 +19,16 @@ reqwest.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+# スタンドアロンのメール・ディザスタバックアップ(disaster_email_backup
+# feature有効時のみ)。姉妹リポジトリ`open-raid-z`が実装・テスト済みの
+# `open_raid_z_core::offsite_backup::EmailBackupTarget`をpath依存で再利用し、
+# メール送信ロジック自体は再実装しない(`aruaru-db/crates/aruaru-dist/
+# Cargo.toml`の`open_raid_z_core`path依存パターンと同じ、
+# `default-features = false`でWinFsp/dxc等の重い依存を避ける)。
+open_raid_z_core = { path = "../../../open-raid-z/open_runo_zfs_source/open_raid_z_core", default-features = false, optional = true, features = ["offsite_backup"] }
+
+[features]
+disaster_email_backup = ["dep:open_raid_z_core"]
 
 [dev-dependencies]
 hyper.workspace = true

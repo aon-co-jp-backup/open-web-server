@@ -78,6 +78,11 @@ custom_domain = ["dep:reqwest"]
 # `custom_domain` featureのみで検証できるよう分離した)。
 custom_domain_db = ["custom_domain", "dep:sqlx"]
 fastcgi-client = ["dep:fastcgi-client"]
+# スタンドアロンのメール・ディザスタバックアップ(`handlers::disaster_email_backup`)。
+# `open-web-server-ledger`側の同名featureをそのまま伝播させるだけ
+# (この既存の「サブクレートのfeatureをゲートウェイ側へ透過させる」パターンは
+# 新設ではなく、`custom_domain`/`custom_domain_db`と同じ形)。
+disaster_email_backup = ["open-web-server-ledger/disaster_email_backup"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

@@ -119,6 +119,18 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
         (Method::GET, "/admin/keys") => handlers::keys::key_status(state, &req).await,
         (Method::POST, "/admin/keys/revoke") => handlers::keys::revoke_owner(state, req).await,
+        // スタンドアロンのメール・ディザスタバックアップ(disaster_email_backup
+        // feature)。VPS同期先・マルチリージョンレプリケータの設定有無に関わらず、
+        // メールアドレスひとつだけで有効化できる(`open-easy-web`のdist_sync.rsと
+        // 同じ設計方針)。
+        #[cfg(feature = "disaster_email_backup")]
+        (Method::POST, "/admin/disaster-email-backup") => {
+            handlers::disaster_email_backup::set_disaster_email_backup(state, req).await
+        }
+        #[cfg(feature = "disaster_email_backup")]
+        (Method::POST, "/admin/disaster-email-backup/verify") => {
+            handlers::disaster_email_backup::verify_disaster_email_backup(state, req).await
+        }
         // 固定IPを持たない環境でも「今すぐ何を入力すればSFTP接続できるか」
         // を1回のAPI呼び出しで確認できるヘルパー(sftp featureの有無に
         // 関わらず常時応答し、`sftp_enabled: false`で状態を正直に返す)。

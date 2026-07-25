@@ -1,3 +1,5 @@
+#[cfg(feature = "disaster_email_backup")]
+pub mod disaster_email_backup;
 pub mod free_domain;
 pub mod items;
 pub mod keys;

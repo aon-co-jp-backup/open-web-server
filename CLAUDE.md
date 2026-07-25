@@ -579,6 +579,34 @@ AI機能が必要になった場合は、`open-cuda` + `aruaru-llm` のSET構成
      バグ」とは別物であり、混同しない(`localhost`確認で代替可)。
 
 
+
+## セッション末尾チェックポイント(2026-07-25、リミット接近のため記録・未検証)
+
+open-easy-web/open-raid-z/aruaru-dbとのSET構成として、標準単独メール
+ディザスタバックアップ機能(`open_raid_z_core::offsite_backup`の
+`EmailBackupTarget`を再利用、VPS分散同期の設定なしでも単体で動作する
+設計)をバックグラウンドエージェントが実装中に、コンテキストリミット
+接近のため中断。
+
+**新規ファイル(未コミットだった作業をこのチェックポイントでコミット)**:
+- `crates/open-web-server-gateway/src/handlers/disaster_email_backup.rs`
+- `crates/open-web-server-ledger/src/disaster_email_backup.rs`
+- 上記2ファイルを使うための`Cargo.toml`(gateway/ledger両方)・
+  `handlers/mod.rs`・`main.rs`の配線変更。
+
+**正直な開示**: このチェックポイント時点で`cargo build --workspace`の
+実行結果を最後まで確認できていない(ビルドがバックグラウンドで実行中に
+中断)。次回セッション開始時に必ず最初に`cargo build --workspace`/
+`cargo test --workspace`を実行し、グリーンであることを確認してから
+先へ進むこと(型チェックすら未完了の可能性がある状態でのコミットである
+ことを明記)。
+
+- 次にすべきこと: (1) `cargo build --workspace`/`cargo test --workspace`
+  を実行し実際に通ることを確認、(2) 問題があれば修正、(3) aruaru-db側の
+  同種の実装(未着手)、(4) home PC/スマホ/タブレットを汎用バックアップ
+  ターゲットとして扱えるという設計メモをopen-easy-web/open-raid-z側へ
+  追記(未着手)。
+
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
 ### 2026-07-24(最終+5) 実機/エミュレータでのアイコン動的切替検証+CI実動作検証+正式署名keystoreでのリリースビルド
