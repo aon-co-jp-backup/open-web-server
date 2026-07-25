@@ -594,12 +594,14 @@ open-easy-web/open-raid-z/aruaru-dbとのSET構成として、標準単独メー
 - 上記2ファイルを使うための`Cargo.toml`(gateway/ledger両方)・
   `handlers/mod.rs`・`main.rs`の配線変更。
 
-**正直な開示**: このチェックポイント時点で`cargo build --workspace`の
-実行結果を最後まで確認できていない(ビルドがバックグラウンドで実行中に
-中断)。次回セッション開始時に必ず最初に`cargo build --workspace`/
-`cargo test --workspace`を実行し、グリーンであることを確認してから
-先へ進むこと(型チェックすら未完了の可能性がある状態でのコミットである
-ことを明記)。
+**検証結果(2026-07-25、次回セッション開始時に実施)**: `cargo build
+--workspace`警告のみ(既存のdead-code警告、今回の変更とは無関係)、
+エラー無し。`cargo test --workspace --features
+open-web-server-gateway/disaster_email_backup,open-web-server-ledger/
+disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
+[新規`disaster_email_backup`テスト2件含む]+wire 21件、postgres_wal
+の1件はDATABASE_URL未設定によりignore、既存の想定通り)。上記の
+「未検証」懸念は解消——実際にビルド・テストが通ることを確認済み。
 
 - 次にすべきこと: (1) `cargo build --workspace`/`cargo test --workspace`
   を実行し実際に通ることを確認、(2) 問題があれば修正、(3) aruaru-db側の
