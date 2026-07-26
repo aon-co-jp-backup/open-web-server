@@ -24,6 +24,7 @@ mod middleware;
 #[cfg(feature = "fastcgi-client")]
 mod php_fastcgi;
 mod php_server;
+mod power_profile;
 mod proxy;
 mod redirects;
 mod response;
@@ -99,6 +100,15 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::DELETE, p) if p.starts_with("/admin/redirects/") => {
             let host = p.trim_start_matches("/admin/redirects/").to_string();
             handlers::redirects::remove_redirect(state, &req, &host).await
+        }
+        // 実行時の省メモリ/省電力プロファイル切替(2026-07-26、再起動不要。
+        // Android版`PowerProfile.kt`と同じ4プロファイル・同じラベル、
+        // `power_profile.rs`参照)。
+        (Method::GET, "/admin/power-profile") => {
+            handlers::power_profile::get_power_profile(state, &req).await
+        }
+        (Method::POST, "/admin/power-profile") => {
+            handlers::power_profile::set_power_profile(state, req).await
         }
         (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
         (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
@@ -405,7 +415,7 @@ async fn main() -> anyhow::Result<()> {
     // 固定IPを持たない自宅サーバー等向け(`ddns` feature時のみ、
     // `OPEN_WEB_SERVER_DDNS_UPDATE_URL`未設定なら何もしない)。
     #[cfg(feature = "ddns")]
-    ddns::spawn_if_configured();
+    ddns::spawn_if_configured(state.power_profile.clone());
 
     // 無料DDNSドメイン(DuckDNS、最大`free_domain::MAX_DUCKDNS_DOMAINS`件
     // まで動的登録・自動更新)。従来の単一ドメイン用環境変数
@@ -415,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
     // 独立して併存できる。
     state.free_domains.seed_from_env().await;
     #[cfg(feature = "ddns")]
-    free_domain::spawn_if_configured(state.free_domains.clone());
+    free_domain::spawn_if_configured(state.free_domains.clone(), state.power_profile.clone());
 
     // 組み込みSFTPサーバー(`sftp` feature時のみ、`OPEN_WEB_SERVER_SFTP_BIND`
     // 未設定なら何もしない)。
@@ -685,6 +695,104 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "a revoked key must fall back to (and fail) the static-secret check, not silently keep working"
         );
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// エンドツーエンド検証(2026-07-26追加): `POST /admin/power-profile`で
+    /// 実行時にプロファイルを切り替え、`GET /admin/power-profile`で変更が
+    /// 即座に反映されることを実HTTP経由で確認する。**再起動が必要ないこと
+    /// 自体を示す証拠**: 同一の`AppState`/同一のリスナー(＝同一プロセス、
+    /// 何も再起動していない)に対して複数回リクエストを送るだけで、応答が
+    /// 都度新しい値に切り替わることを検証する(`dist_sync.rs`等と同じ
+    /// `x-admin-token`管理API認証パターンを踏襲)。
+    #[tokio::test]
+    async fn power_profile_switches_live_and_is_reflected_immediately_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-power-profile-secret");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // (1) 認証無しでは拒否される。
+        let mut sender = connect(addr).await;
+        let unauth_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/power-profile")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let unauth_resp = sender.send_request(unauth_req).await.unwrap();
+        assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+
+        // (2) 既定値は`normal`。
+        let mut sender = connect(addr).await;
+        let get_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/power-profile")
+            .header("x-admin-token", "test-power-profile-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let get_resp = sender.send_request(get_req).await.unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let get_bytes = http_body_util::BodyExt::collect(get_resp.into_body()).await.unwrap().to_bytes();
+        let get_body: serde_json::Value = serde_json::from_slice(&get_bytes).unwrap();
+        assert_eq!(get_body["profile"], serde_json::json!("normal"));
+
+        // (3) `power_save`へ切替(再起動なし、同一プロセス・同一AppState)。
+        let mut sender = connect(addr).await;
+        let set_body = serde_json::json!({ "profile": "power_save" }).to_string();
+        let set_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/power-profile")
+            .header("x-admin-token", "test-power-profile-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(set_body)))
+            .unwrap();
+        let set_resp = sender.send_request(set_req).await.unwrap();
+        assert_eq!(set_resp.status(), StatusCode::OK);
+        let set_bytes = http_body_util::BodyExt::collect(set_resp.into_body()).await.unwrap().to_bytes();
+        let set_body_json: serde_json::Value = serde_json::from_slice(&set_bytes).unwrap();
+        assert_eq!(set_body_json["profile"], serde_json::json!("power_save"));
+        assert_eq!(set_body_json["label"], serde_json::json!("省電力"));
+
+        // (4) 直後の`GET`が、プロセス再起動無しに新しい値を返すことを確認する
+        //     (これが「途中からでも選択出来る」の実証そのもの)。
+        let mut sender = connect(addr).await;
+        let get_req2 = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/power-profile")
+            .header("x-admin-token", "test-power-profile-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let get_resp2 = sender.send_request(get_req2).await.unwrap();
+        let get_bytes2 = http_body_util::BodyExt::collect(get_resp2.into_body()).await.unwrap().to_bytes();
+        let get_body2: serde_json::Value = serde_json::from_slice(&get_bytes2).unwrap();
+        assert_eq!(get_body2["profile"], serde_json::json!("power_save"));
+
+        // (5) 不明な値は400で拒否される(既存動作を壊さない防御的チェック)。
+        let mut sender = connect(addr).await;
+        let bad_body = serde_json::json!({ "profile": "quantum_saver" }).to_string();
+        let bad_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/power-profile")
+            .header("x-admin-token", "test-power-profile-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(bad_body)))
+            .unwrap();
+        let bad_resp = sender.send_request(bad_req).await.unwrap();
+        assert_eq!(bad_resp.status(), StatusCode::BAD_REQUEST);
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
     }

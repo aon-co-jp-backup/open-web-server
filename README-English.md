@@ -441,6 +441,30 @@ open-web-server/
   distribution, and verification on a physical device remain out of
   scope — see `CLAUDE.md`'s HANDOFF entry for the full verification
   log and honest limitations.
+- [x] **Live (mid-session) power-profile switching on every platform**
+  (2026-07-26) — previously, changing profiles on Android required
+  `switchProfileAndRestart()` to kill and relaunch `MainActivity`. Added
+  a live-switch dialog (`showLiveProfileSwitchDialog()` /
+  `switchProfileLive()`) that changes the running app's `WakeLock`
+  state, health-poll interval (the poll loop now re-reads the current
+  profile every iteration instead of capturing it once at loop start),
+  and log-buffer sizing **without killing the server process or the
+  Activity**. Only the `OPEN_WEB_SERVER_ACCEL_BACKEND` env var (passed
+  at `ProcessBuilder` launch time) still requires a native-process
+  restart, which the live-switch flow honestly reports via a toast. On
+  desktop (Windows/Linux), added a new `power_profile.rs` module in
+  `open-web-server-gateway` sharing the exact same profile names/labels
+  as Android's `PowerProfile.kt` (`memory_saver`/`power_save`/`normal`/
+  `always_on`), switchable at runtime via `GET`/`POST
+  /admin/power-profile` (same `x-admin-token` admin-API auth pattern
+  used elsewhere). The one real, honestly-scoped behavioral knob wired
+  up so far: the `ddns`/`free_domain` background polling loops now
+  re-read the live profile every iteration instead of using a fixed
+  5-minute interval. A real-HTTP integration test proves the value
+  changes immediately on the same running process (no restart). Desktop
+  has no distinct "actually reduce memory" mechanism yet for
+  `memory_saver` — honestly scoped as naming/consistency only for now.
+  See `CLAUDE.md`'s 2026-07-26 HANDOFF for full detail.
 - [x] **Structured access log with size-based rotation** (2026-07-24,
   `access_log`, opt-in) — modeled on Nginx/Apache operational best
   practices found via bilingual (JA/EN) web search: JSON Lines access

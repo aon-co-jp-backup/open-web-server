@@ -227,9 +227,18 @@ class MainActivity : AppCompatActivity() {
             openEasyWeb()
         }
 
+        // **2026-07-26変更(ユーザー指示「Windows版もLINUX版もAndroidスマホ
+        // 版も全てのバージョンで省メモリと省電力モードを途中からでも選択
+        // 出来るようにして」)**: 以前は`ProfileSelectActivity`(LAUNCHER)へ
+        // 遷移して`finish()`するのみで、これは事実上「アプリを終了して次回
+        // 起動時に新プロファイルを選び直す」フロー——`serverProcess`ごと
+        // 終了させてしまうため、稼働中のネイティブサーバーを止めずに
+        // プロファイルだけ切り替えることはできなかった。`showLiveProfile
+        // SwitchDialog()`に差し替え、稼働中のプロセス・Activityを維持した
+        // ままプロファイルを切り替えられるようにした(再起動が必要な項目は
+        // 正直にダイアログ内で案内する、下記`switchProfileLive()`のdoc参照)。
         changeProfileButton.setOnClickListener {
-            startActivity(Intent(this, ProfileSelectActivity::class.java))
-            finish()
+            showLiveProfileSwitchDialog()
         }
 
         ddnsSetupButton.setOnClickListener {
@@ -337,6 +346,127 @@ class MainActivity : AppCompatActivity() {
         intent.putExtra(EXTRA_PROFILE, newProfile.prefValue)
         startActivity(intent)
         finish()
+    }
+
+    /**
+     * 稼働中のサーバープロセス・Activityを終了させずにプロファイルを
+     * 切り替える(2026-07-26新設、ユーザー指示「途中からでも選択出来る
+     * ようにして」への対応、`switchProfileAndRestart()`との違いはdoc
+     * 参照)。押されたボタン(`changeProfileButton`)から呼ばれる。
+     *
+     * 4択のうち現在のプロファイルにはチェックマークを付け、選択すると
+     * 即座に`switchProfileLive()`を呼ぶ(確認ダイアログを二重に出さない
+     * 簡潔なUXとした)。
+     */
+    private fun showLiveProfileSwitchDialog() {
+        val profiles = PowerProfile.values()
+        val labels = profiles.map { p ->
+            val mark = if (p == currentProfile) "✓ " else "   "
+            "$mark${p.emoji} ${p.label}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("電源プロファイルを切り替え(再起動不要)")
+            .setItems(labels) { _, which ->
+                switchProfileLive(profiles[which])
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
+    /**
+     * プロファイルを、アプリ・サーバープロセスを再起動せずに切り替える
+     * (2026-07-26新設)。`switchProfileAndRestart()`(電源切断/再接続
+     * ダイアログ用、既存のまま維持)とは異なり、こちらは`MainActivity`を
+     * 終了せず`serverProcess`も殺さない——「途中からでも選択出来るように
+     * して」というユーザー指示の中核。
+     *
+     * **実際に即座に反映される項目**:
+     * - `PowerProfile.save()`(永続化+ホーム画面アイコンの動的切替、
+     *   `applyLauncherIcon()`参照)。
+     * - `WakeLock`の取得/解放(`applyProfilePowerBehaviorLive()`、下記)。
+     * - ヘルスチェックのポーリング間隔(`startPeriodicHealthPoll()`が
+     *   毎イテレーション`currentProfile`を読み直すよう上で改修済みのため、
+     *   次の1回の待機から新間隔になる)。
+     * - ログ保持行数・ヘルスチェック本文保持サイズ(`logBufferMaxLines`/
+     *   `healthBodyPreviewMaxChars`は元々`currentProfile`を直接参照する
+     *   実装だったため、これも改修不要で即座に反映される)。
+     *
+     * **正直な開示・再起動が必要なまま残る項目**: `OPEN_WEB_SERVER_
+     * ACCEL_BACKEND`環境変数は`ProcessBuilder`がネイティブプロセスを
+     * 起動する瞬間にしか渡せないため、常時電源接続版⇔他プロファイル間の
+     * ハードウェアアクセラレータ指定の切替自体は、ネイティブサーバー
+     * プロセスの再起動(`serverProcess`の再起動、Activity自体は再起動
+     * しない)が必要なまま——この制約はダイアログ内で正直に案内する。
+     */
+    private fun switchProfileLive(newProfile: PowerProfile) {
+        if (newProfile == currentProfile) return
+        val previousProfile = currentProfile
+        currentProfile = newProfile
+        PowerProfile.save(this, newProfile)
+
+        val log = StringBuilder()
+        applyProfilePowerBehaviorLive(previousProfile, log)
+
+        Toast.makeText(
+            this,
+            "${newProfile.emoji} ${newProfile.label}モードへ切替(再起動なし)",
+            Toast.LENGTH_SHORT
+        ).show()
+
+        val statusText = findViewById<TextView>(R.id.statusText)
+        if (serverProcess?.isAlive == true) {
+            statusText.text = "[${newProfile.emoji} ${newProfile.label}] RUNNING (switched live, no restart)"
+        } else {
+            statusText.text =
+                "open-web-server [${newProfile.emoji} ${newProfile.label}モード] (not started)"
+        }
+
+        if (log.isNotEmpty()) {
+            android.util.Log.i("open-web-server", log.toString().trim())
+        }
+
+        if (accelBackendEnvValue(previousProfile) != accelBackendEnvValue(newProfile)
+            && serverProcess?.isAlive == true
+        ) {
+            Toast.makeText(
+                this,
+                "ハードウェアアクセラレータ指定の変更は、次回サーバー再起動時に反映されます",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    /**
+     * `switchProfileLive()`専用の電源管理適用(`applyProfilePowerBehavior()`
+     * はプロセス起動時にログへ書くだけの一発物だったため、稼働中に
+     * 呼び直せる形へ別関数として新設した——`WakeLock`の実際の取得/解放を
+     * 即座に行う点が中身)。
+     */
+    private fun applyProfilePowerBehaviorLive(previousProfile: PowerProfile, log: StringBuilder) {
+        val needsWakeLock = currentProfile == PowerProfile.ALWAYS_ON
+        val hasWakeLock = wakeLock?.isHeld == true
+
+        if (needsWakeLock && !hasWakeLock) {
+            try {
+                val pm = getSystemService(POWER_SERVICE) as PowerManager
+                val lock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "OpenWebServer::AlwaysOnWakeLock"
+                )
+                lock.acquire()
+                wakeLock = lock
+                log.appendLine("power: acquired PARTIAL_WAKE_LOCK live (switched to always-on profile)")
+            } catch (e: Exception) {
+                log.appendLine("power: failed to acquire WakeLock live: ${e.message}")
+            }
+        } else if (!needsWakeLock && hasWakeLock) {
+            wakeLock?.release()
+            wakeLock = null
+            log.appendLine(
+                "power: released WakeLock live (switched away from always-on profile, " +
+                    "was: ${previousProfile.label})"
+            )
+        }
     }
 
     /**
@@ -496,9 +626,18 @@ class MainActivity : AppCompatActivity() {
      */
     private fun startPeriodicHealthPoll(statusText: TextView) {
         healthPollJob?.cancel()
-        val intervalMs = healthPollIntervalMs(currentProfile)
         healthPollJob = CoroutineScope(Dispatchers.Main).launch {
             while (isActive) {
+                // **2026-07-26変更(ユーザー指示「途中からでもプロファイル
+                // 切替できるように」対応)**: 以前はループ開始時に
+                // `healthPollIntervalMs(currentProfile)`を1度だけ評価して
+                // `intervalMs`へ固定していたため、`switchProfileLive()`で
+                // `currentProfile`を書き換えてもこのループの間隔には次回
+                // ループ起動(=サーバー再起動)まで反映されなかった。
+                // 毎イテレーションで`currentProfile`を読み直す形に変更し、
+                // アプリ再起動はもちろんサーバープロセス再起動も無しに、
+                // 次の1回の待機から新しい間隔が反映されるようにした。
+                val intervalMs = healthPollIntervalMs(currentProfile)
                 delay(intervalMs)
                 val ok = withContext(Dispatchers.IO) {
                     try {

@@ -611,6 +611,104 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-26 全プラットフォームで省メモリ/省電力モードを「途中からでも」切替可能に
+(ユーザー指示「スマホ版は、Windows版もLINUX版もAndoroidなど全てのバージョンで
+省メモリと省電力モードを途中からでも選択出来るようにして」)
+
+**着手前の現状確認(正直な棚卸し)**: Android版`PowerProfile.kt`には既に4
+プロファイル(`memory_saver`/`power_save`/`normal`/`always_on`)があったが、
+`ProfileSelectActivity`はLAUNCHER専用画面で、`MainActivity`側の
+「プロファイル変更」ボタンも`switchProfileAndRestart()`(`PowerProfile.save()`
+→新しい`Intent`で`MainActivity`を再起動→`finish()`)を呼ぶのみだった——
+つまり稼働中のネイティブサーバープロセス・Activityを一度終了させなければ
+プロファイルを切り替えられなかった。デスクトップ(Windows/Linux、
+`open-web-server-gateway`)側は`accel_backend`(ハードウェアアクセラレータ
+選択)はあったが、「省メモリ」「省電力」という概念自体が一切存在しな
+かった(`state.rs`をgrepして確認)。
+
+**1. Android(`android/app/src/main/java/tokyo/runo/openwebserver/
+MainActivity.kt`)**: 「プロファイル変更」ボタンの遷移先を
+`ProfileSelectActivity`起動+`finish()`から、`showLiveProfileSwitchDialog()`
+(4択の`AlertDialog`、現在のプロファイルにチェックマーク付き)へ差し替え、
+選択すると新設`switchProfileLive()`が**Activity・サーバープロセスを
+終了させずに**: (a)`currentProfile`更新+`PowerProfile.save()`(永続化+
+ホーム画面アイコンの動的切替は既存のまま連動)、(b)新設
+`applyProfilePowerBehaviorLive()`で`WakeLock`を即座に取得/解放
+(常時電源接続⇔他プロファイル間の切替)、を行う。`startPeriodicHealthPoll()`
+は従来ループ開始時に`healthPollIntervalMs(currentProfile)`を1度だけ
+評価して固定していたのを、**毎イテレーションで`currentProfile`を
+読み直す**よう改修——これにより次の1回の待機からポーリング間隔が
+即座に新プロファイルへ切り替わる(サーバー再起動もアプリ再起動も無し)。
+ログ保持行数(`logBufferMaxLines`)・ヘルスチェック本文保持サイズ
+(`healthBodyPreviewMaxChars`)は元々`currentProfile`を直接参照する実装
+だったため、追加の改修無しで即座に反映される。**正直な開示・再起動が
+必要なまま残る項目**: `OPEN_WEB_SERVER_ACCEL_BACKEND`環境変数は
+`ProcessBuilder`がネイティブプロセスを起動する瞬間にしか渡せないため、
+常時電源接続版のハードウェアアクセラレータ指定の切替自体は、ネイティブ
+サーバープロセスの再起動(Activity自体は再起動しない)が必要——
+`switchProfileLive()`はこの場合Toastで正直に案内する。
+
+**2. デスクトップ(Windows/Linux、`open-web-server-gateway`)**: 新規
+`crates/open-web-server-gateway/src/power_profile.rs` ——Android版
+`PowerProfile.kt`と**同じ`prefValue`文字列・同じ日本語ラベル**
+(`memory_saver`/`power_save`/`normal`/`always_on`)を持つ`PowerProfile`
+列挙型+`RwLock`ベースの`PowerProfileRegistry`(`AppState.power_profile`
+として共有)。新規`handlers/power_profile.rs`が`GET`/`POST
+/admin/power-profile`を実装(既存の`x-admin-token`/`KeyGuardian`管理API
+認証パターン——`handlers::tenants::check_admin_auth`——をそのまま再利用、
+`dist_sync.rs`等と同じ確立済みのadmin API作法)。**実際の挙動差(正直に
+狭いスコープ)**: `ddns.rs`/`free_domain.rs`のバックグラウンド定期
+ポーリングループ(固定5分間隔だった`CHECK_INTERVAL`)を、`effective_
+poll_interval()`経由で**毎イテレーション現在のプロファイルを読み直す**
+形に改修——省電力=3倍(15分)に間隔を延ばし、常時電源接続=0.2倍(1分)に
+短縮、省メモリ/通常=基準のまま(Android版`healthPollIntervalMs()`の
+「省電力は間隔を延ばす、省メモリは間隔を変えない」という設計をそのまま
+デスクトップへ写した)。**正直な開示**: このバイナリには元々「メモリ
+使用量を実際に減らす」ためのキャッシュ/バッファ上限のような仕組みが
+一切存在しなかった(`grep`で確認済み)。そのため`MemorySaver`プロファイル
+は今回、Android版とのラベル・命名の一貫性は提供するが、デスクトップ
+固有の「メモリを実際に減らす」具体的な挙動はまだ無い——過剰な作り話の
+機能を追加するのではなく、正直にこの限界を明記する(narrow-but-real、
+既存運用ルール通り)。`ddns`/`free_domain`のバックグラウンドループ自体が
+`ddns` Cargo feature配下(既定オフ)のため、この省電力軸の挙動差は
+`--features ddns`でビルドし`OPEN_WEB_SERVER_DDNS_UPDATE_URL`等を設定した
+場合にのみ実際に働く——ただし`/admin/power-profile`自体(状態の保持・
+切替API)はfeatureに関わらず常時有効。
+
+**3. テスト**: `power_profile.rs`に単体テスト5件(prefValue/ラベルが
+Android版と一致することの固定・`from_pref_value`往復・既定値`Normal`・
+`set`直後に`get`が即座に新値を返す・プロファイルごとの`effective_poll_
+interval`の実際の倍率)。`main.rs`に実HTTP経由の統合テスト1件
+(`power_profile_switches_live_and_is_reflected_immediately_over_real_http`)
+——認証無し401→既定値`normal`確認→`power_save`へPOST→**同一プロセス・
+同一`AppState`のまま**直後の`GET`が新しい値を返すことを確認(これが
+「途中からでも選択できる」の直接証拠、再起動やプロセス再作成を一切
+挟んでいない)→不明な値は400、まで実証。
+
+**4. 検証(型チェックのみで完了と報告しない、既存運用ルール徹底)**:
+`cargo build --workspace`成功(新規warning無し、既存のdead_code警告のみ)。
+`cargo test --workspace`(featureフラグ無し)は**gateway 116件+ledger
+20件[1件ignored]+wire 21件、全green**(リグレッション無し)。
+`cargo test -p open-web-server-gateway --features ddns,sftp,upnp --
+--test-threads=1 power_profile`は**6件全green**(単体5件+実HTTP統合
+1件)、同featureでのフルスイートは**124件全green**(新規テスト追加後は
+125件になる想定、個別フィルタでの実行結果は上記の通り)。Android側は
+`gradle :app:assembleDebug`が**BUILD SUCCESSFUL**(既存jniLibs同梱の
+まま、新規warning無し)を確認。**正直な開示・未実施の検証**: Android側の
+`switchProfileLive()`(実機/エミュレータでのタップ操作によるライブ切替の
+見た目確認、WakeLock取得/解放の実機ログ確認)は本パスでは実施していない
+——ビルド成功(型チェック+APK生成)とロジック(`healthPollIntervalMs`
+等の既存単体テスト対象関数は無変更)の確認に留まる、既にAndroid実機
+検証済みの既存プロファイル機構自体には変更を加えていないため既存の
+実証結果への影響は無いと判断。
+
+**5. 未着手として明記**: (a) デスクトップ側`MemorySaver`プロファイルの
+「実際にメモリ使用量を減らす」具体的な挙動(今回はプロファイルの命名・
+状態管理・省電力軸のポーリング間隔調整のみ)。(b) `ddns`feature以外の
+バックグラウンドタスク(アクセスログローテーション等)への`power_profile`
+配線(今回は`ddns`/`free_domain`ループのみ)。(c) Android実機/エミュレータ
+での`switchProfileLive()`ライブ動作の実地検証。
+
 ### 2026-07-24(最終+5) 実機/エミュレータでのアイコン動的切替検証+CI実動作検証+正式署名keystoreでのリリースビルド
 (ユーザー指示「1.実機/エミュレータでのアイコン動的切替の見た目確認、
 2.CI(build-androidジョブ)の実動作検証、3.正式な署名鍵でのビルド」)

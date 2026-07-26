@@ -8,6 +8,7 @@ use crate::acme::ChallengeStore;
 use crate::free_domain::DomainRegistry;
 use crate::keyring::{GuardianConfig, KeyGuardian};
 use crate::php_server::PhpServerPool;
+use crate::power_profile::PowerProfileRegistry;
 use crate::redirects::RedirectRegistry;
 use crate::tenant_router::TenantRegistry;
 use crate::web_vhost::WebVhostRegistry;
@@ -62,6 +63,12 @@ pub struct AppState {
     /// が未実装のためCpuへ安全にフォールバックする(既存方針通り、
     /// 存在しない能力を実装済みと偽らない)。
     pub accel_backend: AccelBackend,
+    /// 実行時に切り替え可能な省メモリ/省電力プロファイル(`power_profile`
+    /// 参照、2026-07-26追加)。Android版`PowerProfile.kt`と同じ4プロファイル・
+    /// 同じラベルを共有し、`POST /admin/power-profile`で**再起動無しに**
+    /// 切り替えられる。バックグラウンドポーリングループ(`ddns`/
+    /// `free_domain`、`ddns` feature配下)がこの値を毎回読み直す。
+    pub power_profile: Arc<PowerProfileRegistry>,
 }
 
 /// `OPEN_WEB_SERVER_ACCEL_BACKEND`環境変数の文字列表現をパースする。
@@ -104,6 +111,7 @@ impl AppState {
         let access_logger = AccessLogConfig::from_env().map(|cfg| Arc::new(AccessLogger::new(cfg)));
         let accel_backend = accel_backend_from_env();
         tracing::info!(?accel_backend, "payload accelerator backend resolved from OPEN_WEB_SERVER_ACCEL_BACKEND");
+        let power_profile = Arc::new(PowerProfileRegistry::new());
 
         Ok(Self {
             ledger,
@@ -118,6 +126,7 @@ impl AppState {
             free_domains,
             access_logger,
             accel_backend,
+            power_profile,
         })
     }
 

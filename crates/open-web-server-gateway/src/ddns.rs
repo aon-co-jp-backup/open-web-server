@@ -12,7 +12,10 @@
 //! 埋め込みたい箇所を`{ip}`と書いたURLを設定する。例(DuckDNS):
 //! `https://www.duckdns.org/update?domains=myhost&token=xxxx&ip={ip}`
 
+use std::sync::Arc;
 use std::time::Duration;
+
+use crate::power_profile::{effective_poll_interval, PowerProfileRegistry};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// グローバルIPを取得するための、認証不要な公開エコーサービス。
@@ -23,7 +26,11 @@ const IP_ECHO_URL: &str = "https://api.ipify.org";
 /// バックグラウンドタスクとして定期的(既定5分ごと)にグローバルIPを
 /// 確認し、前回から変化していれば更新URLを叩く。設定が無ければ何もしない
 /// (固定IP環境では不要な機能のため、既定で無効)。
-pub fn spawn_if_configured() {
+/// `power_profile`は省メモリ/省電力プロファイル(2026-07-26追加、
+/// `crate::power_profile`参照)——現在のプロファイルに応じて、下記
+/// `run_loop`の待機間隔を**毎イテレーション読み直す**ことで、プロセスを
+/// 再起動せずにポーリング頻度を変えられるようにする。
+pub fn spawn_if_configured(power_profile: Arc<PowerProfileRegistry>) {
     let Ok(template) = std::env::var("OPEN_WEB_SERVER_DDNS_UPDATE_URL") else {
         return;
     };
@@ -31,10 +38,10 @@ pub fn spawn_if_configured() {
         tracing::warn!("OPEN_WEB_SERVER_DDNS_UPDATE_URL is set but doesn't contain '{{ip}}' placeholder; DDNS updates disabled");
         return;
     }
-    tokio::spawn(run_loop(template));
+    tokio::spawn(run_loop(template, power_profile));
 }
 
-async fn run_loop(template: String) {
+async fn run_loop(template: String, power_profile: Arc<PowerProfileRegistry>) {
     let client = reqwest::Client::new();
     let mut last_ip: Option<String> = None;
     loop {
@@ -54,7 +61,10 @@ async fn run_loop(template: String) {
             }
             Err(e) => tracing::warn!("DDNS: failed to fetch current IP: {e}"),
         }
-        tokio::time::sleep(CHECK_INTERVAL).await;
+        // 起動時に一度だけ間隔を固定するのではなく、毎回`power_profile`の
+        // 現在値を読み直す(省電力/常時電源接続プロファイルへの途中切替を
+        // 次のイテレーションから即座に反映するため)。
+        tokio::time::sleep(effective_poll_interval(&power_profile, CHECK_INTERVAL)).await;
     }
 }
 
@@ -86,6 +96,6 @@ mod tests {
         // パニックしない・何も起動しないことだけを確認(バックグラウンド
         // タスクの起動有無を直接観測する手段が無いため、呼び出しが
         // 安全に完了することのみを検証する)。
-        spawn_if_configured();
+        spawn_if_configured(Arc::new(PowerProfileRegistry::new()));
     }
 }

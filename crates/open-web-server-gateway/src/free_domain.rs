@@ -254,11 +254,21 @@ mod net {
     /// バックグラウンドで5分間隔・自動更新するループを起動する。レジストリが
     /// 空でも(後から`/admin/ddns/setup-free-domain`で追加登録される可能性が
     /// あるため)常にループ自体は起動しておく。
-    pub fn spawn_if_configured(registry: Arc<DomainRegistry>) {
-        tokio::spawn(run_loop(registry));
+    /// `power_profile`(2026-07-26追加、`crate::power_profile`参照)——
+    /// 現在の省メモリ/省電力プロファイルに応じて、下記`run_loop`の待機
+    /// 間隔を毎イテレーション読み直す(再起動不要でのプロファイル切替、
+    /// `ddns.rs::run_loop`と同じ設計)。
+    pub fn spawn_if_configured(
+        registry: Arc<DomainRegistry>,
+        power_profile: Arc<crate::power_profile::PowerProfileRegistry>,
+    ) {
+        tokio::spawn(run_loop(registry, power_profile));
     }
 
-    async fn run_loop(registry: Arc<DomainRegistry>) {
+    async fn run_loop(
+        registry: Arc<DomainRegistry>,
+        power_profile: Arc<crate::power_profile::PowerProfileRegistry>,
+    ) {
         let client = reqwest::Client::new();
         let mut last_ip: Option<String> = None;
         loop {
@@ -305,7 +315,11 @@ mod net {
                     Err(e) => tracing::warn!("DuckDNS: failed to fetch current IP: {e}"),
                 }
             }
-            tokio::time::sleep(CHECK_INTERVAL).await;
+            tokio::time::sleep(crate::power_profile::effective_poll_interval(
+                &power_profile,
+                CHECK_INTERVAL,
+            ))
+            .await;
         }
     }
 }

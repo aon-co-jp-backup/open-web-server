@@ -3,6 +3,7 @@ pub mod disaster_email_backup;
 pub mod free_domain;
 pub mod items;
 pub mod keys;
+pub mod power_profile;
 pub mod redirects;
 pub mod sftp_info;
 pub mod state_query;

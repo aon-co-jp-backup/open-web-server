@@ -512,14 +512,30 @@ gradle assembleDebug --no-daemon
    一切展開されない。`ProcessBuilder`に実ファイルパスを渡す必要がある
    本アプリの構成では必須の設定。
 
-**3電源プロファイル**(`PowerProfile.kt`/`ProfileSelectActivity.kt`):
+**4電源プロファイル**(`PowerProfile.kt`/`ProfileSelectActivity.kt`):
 🔋省電力/⚖️通常はどちらも`WakeLock`を取得しない(Android標準の
 Doze/App Standbyに逆らわない、というのがそのまま「省電力対応」の実体)。
 🔌常時電源接続のみ`PARTIAL_WAKE_LOCK`を保持する(`WAKE_LOCK`権限が
-必要)。ホーム画面には3つの専用アイコン(`activity-alias`、色分け+
-ラベル文字列でプロファイル名を明示)も用意しており、`ProfileSelect
-Activity`(起動時選択画面)を経由せずアイコンから直接そのプロファイルで
-起動できる。
+必要)。🧠省メモリはログ保持行数・ヘルスチェック本文保持サイズを絞る
+(`logBufferMaxLines`/`healthBodyPreviewMaxChars`)。ホーム画面には4つの
+専用アイコン(`activity-alias`、色分け+ラベル文字列でプロファイル名を
+明示)も用意しており、`ProfileSelectActivity`(起動時選択画面)を経由
+せずアイコンから直接そのプロファイルで起動できる。
+
+**途中からの切替(2026-07-26追加)**: 稼働中の`MainActivity`の
+「プロファイル変更」ボタンから`switchProfileLive()`(4択ダイアログ)を
+呼ぶと、**アプリ・サーバープロセスを再起動せずに**プロファイルを切り替え
+られる——`WakeLock`の取得/解放・ヘルスチェックポーリング間隔(次回待機
+から反映)・ログ保持サイズは即座に反映される。`OPEN_WEB_SERVER_
+ACCEL_BACKEND`環境変数(ハードウェアアクセラレータ指定)のみ、
+`ProcessBuilder`起動時にしか渡せないためネイティブサーバープロセスの
+再起動が必要(Activity自体は再起動しない)。デスクトップ(Windows/
+Linux)版にも同名・同ラベルの`PowerProfile`概念を`open-web-server-gateway
+::power_profile`として追加し、`POST /admin/power-profile`で再起動無しに
+切替できる(実際の挙動差は`ddns`/`free_domain`のバックグラウンド
+ポーリング間隔調整のみ、詳細はCLAUDE.mdの2026-07-26 HANDOFF参照)。
+他プロジェクトへ移植する場合、`power_profile.rs`はAppState以外への
+依存が無い独立モジュールなのでそのまま持ち出せる。
 
 **adbの`unauthorized`問題を踏んだ場合の対処**: ヘッドレス
 (`-no-window`)でエミュレータを起動すると`adb devices`が
