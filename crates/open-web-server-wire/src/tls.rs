@@ -1,6 +1,13 @@
 //! 第1層: 伝送路暗号化 (TLS 1.3 / rustls)
 
-use std::{collections::HashMap, fs::File, io::BufReader, path::Path, sync::Arc, sync::RwLock};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::BufReader,
+    path::{Path, PathBuf},
+    sync::Arc,
+    sync::RwLock,
+};
 
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
@@ -53,6 +60,62 @@ fn parse_private_key(pem: &[u8]) -> anyhow::Result<PrivateKeyDer<'static>> {
     rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| anyhow::anyhow!("no private key found in PEM input"))
 }
 
+fn cert_file_path(dir: &Path, host: &str) -> PathBuf {
+    dir.join(format!("{host}.pem"))
+}
+
+fn key_file_path(dir: &Path, host: &str) -> PathBuf {
+    dir.join(format!("{host}.key"))
+}
+
+/// `bytes`を`path`へアトミックに書き込む(同一ディレクトリ内へ一時ファイル
+/// を書いてから`rename`する、`KeyGuardian::write_records_atomically`
+/// (`crates/open-web-server-gateway/src/keyring.rs`)と同じパターン)。
+/// プロセスが書き込みの途中で強制終了しても、`rename`はPOSIX/Windowsの
+/// いずれでも単一のファイルシステム操作として不可分に行われるため、
+/// 既存の完全なファイルが半端な内容で上書きされることはない
+/// (一時ファイル自体が不完全な場合はrename前でtemp側に留まり、既存の
+/// 本ファイルには一切影響しない)。
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp-{}",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("tmp"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, bytes)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// `host`向けの証明書チェーン+秘密鍵PEMを`<dir>/<host>.pem`+
+/// `<dir>/<host>.key`へそれぞれアトミックに書き込む。
+fn persist_cert_to_disk(dir: &Path, host: &str, cert_chain_pem: &[u8], key_pem: &[u8]) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write_atomically(&cert_file_path(dir, host), cert_chain_pem)?;
+    write_atomically(&key_file_path(dir, host), key_pem)?;
+    Ok(())
+}
+
+/// ディスク上の`cert_path`/`key_path`のPEMファイルペアを読み込み、
+/// `CertifiedKey`へ変換する(`load_from_disk`の起動時ロード用)。
+/// 破損/不完全なファイル(書き込み中断等)は`Err`を返し、呼び出し側が
+/// その1ホストだけをスキップできるようにする(サーバー全体をパニック
+/// させない)。
+fn load_certified_key_from_files(cert_path: &Path, key_path: &Path) -> anyhow::Result<Arc<CertifiedKey>> {
+    let cert_chain_pem = std::fs::read(cert_path)?;
+    let key_pem = std::fs::read(key_path)?;
+    let chain = parse_cert_chain(&cert_chain_pem)?;
+    let key = parse_private_key(&key_pem)?;
+    let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
+        .map_err(|e| anyhow::anyhow!("unsupported private key: {e}"))?;
+    Ok(Arc::new(CertifiedKey::new(chain, signing_key)))
+}
+
 /// rustlsのCryptoProvider(ring)をプロセス内で一度だけインストールする
 /// (`quic_channel.rs`の同名ヘルパーと同じ理由・同じ実装 — rustls 0.23は
 /// 複数のcrypto backendがfeatureとして有効な場合に備え、プロセス全体で
@@ -80,11 +143,78 @@ fn ensure_crypto_provider_installed() {
 #[derive(Debug, Default)]
 pub struct TenantCertResolver {
     certs: RwLock<HashMap<String, Arc<CertifiedKey>>>,
+    /// 取得済みACME証明書をプロセス再起動を跨いで生存させるためのディスク
+    /// 保存先(`OPEN_WEB_SERVER_TLS_CERT_DIR`、2026-07-26追記)。`None`なら
+    /// 従来通りプロセス内メモリのみ(既存動作を一切変えない後方互換)。
+    ///
+    /// **背景(実際に発生した本番障害)**: このフィールドが無かった旧実装は
+    /// 証明書をメモリにしか保持せず、ルーティング設定変更などの理由で
+    /// `open-web-server`サービスを再起動しただけで、稼働中の約20ドメイン
+    /// 全てのTLS証明書が消え、HTTPS経由の全アクセスが一斉に落ちた。
+    /// うち1ドメイン(`karu.tokyo`)は短期間に何度も再起動して証明書を
+    /// 再取得したため、Let's Encryptの実レート制限
+    /// ("too many certificates (5) already issued for this exact set of
+    /// identifiers in the last 168h0m0s")に到達し、約24時間有効な証明書を
+    /// 取得できないまま停止する事態になった。本フィールド以降の永続化・
+    /// 起動時ロードは、この障害の直接の再発防止策(regression fix)である。
+    cert_dir: Option<PathBuf>,
 }
 
 impl TenantCertResolver {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// `cert_dir`(`OPEN_WEB_SERVER_TLS_CERT_DIR`)配下に既に存在する
+    /// `<host>.pem`(証明書チェーン)+`<host>.key`(秘密鍵)ペアを起動時に
+    /// すべて読み込み、以後の`upsert_pem`呼び出しはこのディレクトリへも
+    /// アトミックに書き込むようにする。これにより、プロセス再起動後も
+    /// ACMEで取得済みだった証明書がゼロ回のACME呼び出しで即座に有効になる
+    /// (本モジュールdocの「実際に発生した本番障害」の再発防止策)。
+    ///
+    /// **部分的/破損したファイルへの耐性**: 個々のホストの`.pem`/`.key`が
+    /// 読めない・パースできない(書き込み中断による不完全なファイル等)
+    /// 場合でも、その1ホストをスキップして警告ログを出すのみで、サーバー
+    /// 全体の起動をパニックさせたり他のホストの読み込みをブロックしたり
+    /// しない(既存の`KeyGuardian::load_from_disk`/ACMEアカウント鍵永続化と
+    /// 同じ「補助的な永続化の失敗は権威パスを止めない」設計方針)。
+    pub fn load_from_disk(cert_dir: PathBuf) -> Arc<Self> {
+        let mut certs = HashMap::new();
+        match std::fs::read_dir(&cert_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("pem") {
+                        continue;
+                    }
+                    let Some(host) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    let key_path = path.with_extension("key");
+                    match load_certified_key_from_files(&path, &key_path) {
+                        Ok(certified_key) => {
+                            tracing::info!(host, "TenantCertResolver: loaded persisted TLS certificate from disk");
+                            certs.insert(host.to_ascii_lowercase(), certified_key);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                host,
+                                error = %e,
+                                cert_path = %path.display(),
+                                "TenantCertResolver: skipping unreadable/corrupt persisted certificate for host"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::info!(cert_dir = %cert_dir.display(), "TenantCertResolver: cert dir does not exist yet, starting empty");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, cert_dir = %cert_dir.display(), "TenantCertResolver: failed to read cert dir, starting empty");
+            }
+        }
+        Arc::new(Self { certs: RwLock::new(certs), cert_dir: Some(cert_dir) })
     }
 
     /// `host`(SNI名、大文字小文字は無視)にPEM形式の証明書チェーン+秘密鍵を
@@ -96,10 +226,28 @@ impl TenantCertResolver {
         let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
             .map_err(|e| anyhow::anyhow!("unsupported private key for {host}: {e}"))?;
         let certified_key = Arc::new(CertifiedKey::new(chain, signing_key));
+        let host_key = host.to_ascii_lowercase();
         self.certs
             .write()
             .map_err(|_| anyhow::anyhow!("TenantCertResolver lock poisoned"))?
-            .insert(host.to_ascii_lowercase(), certified_key);
+            .insert(host_key.clone(), certified_key);
+
+        // ディスク永続化(`cert_dir`が設定されている場合のみ)。書き込み失敗は
+        // 警告ログのみでこの呼び出し自体は成功として扱う——メモリ内には既に
+        // 反映済みであり、TLS終端は直ちに機能する。永続化はあくまで「次回
+        // 再起動でもゼロ回のACME呼び出しで復元できる」という耐障害性の
+        // 上乗せであり、これの失敗で証明書登録全体を失敗させるのは
+        // 過剰反応(補助系の失敗は権威パスをブロックしない、既存方針通り)。
+        if let Some(dir) = &self.cert_dir {
+            if let Err(e) = persist_cert_to_disk(dir, &host_key, cert_chain_pem, key_pem) {
+                tracing::warn!(
+                    host = %host_key,
+                    error = %e,
+                    cert_dir = %dir.display(),
+                    "TenantCertResolver: failed to persist TLS certificate to disk (in-memory registration still succeeded)"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -114,10 +262,15 @@ impl TenantCertResolver {
     /// `host`の証明書登録を削除する(テナント削除時、Apacheの`a2dissite`
     /// 相当)。登録が無かった場合も静かに成功する(冪等)。
     pub fn remove(&self, host: &str) -> anyhow::Result<()> {
+        let host_key = host.to_ascii_lowercase();
         self.certs
             .write()
             .map_err(|_| anyhow::anyhow!("TenantCertResolver lock poisoned"))?
-            .remove(&host.to_ascii_lowercase());
+            .remove(&host_key);
+        if let Some(dir) = &self.cert_dir {
+            let _ = std::fs::remove_file(cert_file_path(dir, &host_key));
+            let _ = std::fs::remove_file(key_file_path(dir, &host_key));
+        }
         Ok(())
     }
 
@@ -186,6 +339,122 @@ mod tests {
     fn upsert_rejects_malformed_pem() {
         let resolver = TenantCertResolver::new();
         assert!(resolver.upsert_pem("bad.example.test", b"not a certificate", b"not a key").is_err());
+    }
+
+    /// テスト専用: 一意な一時ディレクトリパスを作る(`tempfile`クレートは
+    /// このワークスペースの依存に存在しないため、`keyring.rs`のテストと
+    /// 同じ手動実装パターンを踏襲、新規依存追加を避ける)。
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let unique = format!(
+            "open-web-server-tls-cert-dir-test-{label}-{}-{}",
+            std::process::id(),
+            uuid_like_suffix()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    /// `uuid`クレートは本ワークスペースの依存に無いため、時刻+アドレスを
+    /// 元にした簡易な一意サフィックスを生成する(テスト専用、暗号学的な
+    /// 一意性は不要——同一プロセス内でのパス衝突回避が目的)。
+    fn uuid_like_suffix() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let addr = &nanos as *const _ as usize;
+        format!("{nanos:x}-{addr:x}")
+    }
+
+    /// **本番障害の直接の回帰テスト(regression test)**: `upsert_pem`で
+    /// ホストの証明書を登録したあと、同じディスクディレクトリを指す
+    /// **新規の**`TenantCertResolver`インスタンス(=プロセス再起動を模す)
+    /// を構築し、`resolve()`が一切のACME呼び出し無しに即座にその証明書を
+    /// 見つけられることを確認する。これが無かった旧実装では、プロセス
+    /// 再起動のたびに全ドメインのTLS証明書がメモリから消え、実際に
+    /// ~20ドメインが一斉にHTTPS応答不能になった(詳細は`cert_dir`
+    /// フィールドのdoc comment参照)。
+    #[test]
+    fn cert_persisted_via_upsert_pem_survives_simulated_process_restart() {
+        let dir = unique_temp_dir("restart-sim");
+
+        // --- "旧プロセス": 証明書を取得してディスクへ永続化する ---
+        let resolver_before_restart = TenantCertResolver::load_from_disk(dir.clone());
+        let (cert_pem, key_pem) = self_signed_pem("restart-sim.example.test");
+        resolver_before_restart
+            .upsert_pem("restart-sim.example.test", &cert_pem, &key_pem)
+            .unwrap();
+        assert!(resolver_before_restart.contains("restart-sim.example.test"));
+
+        // --- プロセス再起動を模す: 元のインスタンスを破棄し、同じ
+        //     ディスクディレクトリを指す全く新しいインスタンスを作る ---
+        drop(resolver_before_restart);
+        let resolver_after_restart = TenantCertResolver::load_from_disk(dir.clone());
+
+        // ACMEを一切呼ばずに、再起動直後から証明書が即座に使える。
+        assert!(
+            resolver_after_restart.contains("restart-sim.example.test"),
+            "certificate must survive a simulated process restart without any ACME call"
+        );
+
+        // `resolve()`(rustlsが実際に呼ぶ経路)自体も、生き残った証明書を
+        // 正しいバイト列で返すことを確認する(`contains`だけでは
+        // 辞書に「何らかの値」があることしか分からないため)。
+        let expected_leaf = first_cert_der(&cert_pem);
+        let resolved = resolver_after_restart
+            .certs
+            .read()
+            .unwrap()
+            .get("restart-sim.example.test")
+            .cloned()
+            .expect("resolver must have the restored certified key");
+        assert_eq!(resolved.cert[0].as_ref(), expected_leaf.as_slice());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 壊れた/不完全なファイル(書き込み中断を模す)が1ホスト分あっても、
+    /// そのホストだけがスキップされ、他の正常なホストは引き続き読み込まれ、
+    /// サーバー全体がパニックしないことを確認する。
+    #[test]
+    fn load_from_disk_skips_corrupt_host_and_still_loads_valid_host() {
+        let dir = unique_temp_dir("corrupt-skip");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 正常なホスト。
+        let (good_cert_pem, good_key_pem) = self_signed_pem("good-host.example.test");
+        std::fs::write(dir.join("good-host.example.test.pem"), &good_cert_pem).unwrap();
+        std::fs::write(dir.join("good-host.example.test.key"), &good_key_pem).unwrap();
+
+        // 壊れたホスト: 証明書ファイルの中身がでたらめ(書き込み中断や
+        // ディスク破損を模す)。鍵ファイルは意図的に用意しない場合もある。
+        std::fs::write(dir.join("corrupt-host.example.test.pem"), b"not actually a pem certificate").unwrap();
+        std::fs::write(dir.join("corrupt-host.example.test.key"), b"not actually a pem key either").unwrap();
+
+        let resolver = TenantCertResolver::load_from_disk(dir.clone());
+
+        assert!(resolver.contains("good-host.example.test"), "valid host must still load");
+        assert!(!resolver.contains("corrupt-host.example.test"), "corrupt host must be skipped, not crash the loader");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 証明書を`remove()`すると、ディスク上のファイルも実際に削除され、
+    /// 次回の再起動(=新規インスタンスでの`load_from_disk`)で復活しない
+    /// ことを確認する。
+    #[test]
+    fn remove_deletes_persisted_files_so_they_do_not_resurrect_on_restart() {
+        let dir = unique_temp_dir("remove-then-restart");
+        let resolver = TenantCertResolver::load_from_disk(dir.clone());
+        let (cert_pem, key_pem) = self_signed_pem("removed-host.example.test");
+        resolver.upsert_pem("removed-host.example.test", &cert_pem, &key_pem).unwrap();
+        assert!(dir.join("removed-host.example.test.pem").exists());
+
+        resolver.remove("removed-host.example.test").unwrap();
+        assert!(!dir.join("removed-host.example.test.pem").exists());
+        assert!(!dir.join("removed-host.example.test.key").exists());
+
+        let resolver_after_restart = TenantCertResolver::load_from_disk(dir.clone());
+        assert!(!resolver_after_restart.contains("removed-host.example.test"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// これが本テストモジュールの核心: 同一プロセス/同一`ServerConfig`が、

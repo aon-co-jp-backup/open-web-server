@@ -448,6 +448,55 @@ async fn main() -> anyhow::Result<()> {
         upnp::spawn_if_configured(ports);
     }
 
+    // SET横断(open-easy-web/open-web-server/open-raid-z/aruaru-db)自動同期
+    // ディザスタバックアップ(`crossrepo_backup` feature時のみ、
+    // `CROSSREPO_BACKUP_DIR`未設定なら何もしない)。実際にこのプロセスが
+    // 書き込む/読み込むサイト関連ファイル(vhost・ドメイン・リダイレクト
+    // 設定、TLS証明書ディレクトリ配下の実ファイル)を対象にする——単なる
+    // 型定義のみで終わらせず、実運用中の書き込み経路と同じファイルが
+    // 実際にバックアップされるようにする。
+    #[cfg(feature = "crossrepo_backup")]
+    {
+        use open_web_server_ledger::crossrepo_backup::RepoSource;
+
+        let mut files = Vec::new();
+        if let Ok(p) = std::env::var("OPEN_WEB_SERVER_WEB_VHOSTS_FILE") {
+            files.push(std::path::PathBuf::from(p));
+        }
+        if let Ok(p) = std::env::var("OPEN_WEB_SERVER_DOMAINS_FILE") {
+            files.push(std::path::PathBuf::from(p));
+        }
+        if let Ok(p) = std::env::var("OPEN_WEB_SERVER_REDIRECTS_FILE") {
+            files.push(std::path::PathBuf::from(p));
+        }
+        // TLS証明書ディレクトリ(`OPEN_WEB_SERVER_TLS_CERT_DIR`、既定
+        // `./tls-certs/`)配下の実`.pem`/`.key`ファイルも対象にする——
+        // 2026-07-26の本番障害(プロセス再起動でTLS証明書全消失)の
+        // 再発防止策としてディスク永続化を追加したばかりのファイル群を、
+        // ディスク自体の故障からも守るのが目的。起動時点で存在する
+        // ファイルのみを対象にする(動的な追加ファイルへの追従は次回
+        // 課題、`RepoSource.files`が固定リストのため)。
+        let cert_dir = std::env::var("OPEN_WEB_SERVER_TLS_CERT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("./tls-certs/"));
+        if let Ok(entries) = std::fs::read_dir(&cert_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+
+        if !files.is_empty() {
+            let sources = vec![RepoSource {
+                repo_name: "open-web-server".to_string(),
+                files,
+            }];
+            open_web_server_ledger::crossrepo_backup::spawn_if_configured(sources);
+        }
+    }
+
     let bind_addr: SocketAddr = std::env::var("OPEN_WEB_SERVER_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".into())
         .parse()?;
@@ -748,11 +797,15 @@ mod tests {
         assert_eq!(get_resp.status(), StatusCode::OK);
         let get_bytes = http_body_util::BodyExt::collect(get_resp.into_body()).await.unwrap().to_bytes();
         let get_body: serde_json::Value = serde_json::from_slice(&get_bytes).unwrap();
-        assert_eq!(get_body["profile"], serde_json::json!("normal"));
+        assert_eq!(get_body["profiles"], serde_json::json!([]));
+        assert_eq!(get_body["labels"], serde_json::json!(["通常"]));
 
-        // (3) `power_save`へ切替(再起動なし、同一プロセス・同一AppState)。
+        // (3) `power_save`+`memory_saver`の**組み合わせ**へ切替(再起動なし、
+        //     同一プロセス・同一AppState)。旧単一選択API(`{"profile": ...}`)
+        //     から新ペイロード形状(`{"profiles": [...]}`、配列=組み合わせ
+        //     選択)へ変更されたことの実証も兼ねる。
         let mut sender = connect(addr).await;
-        let set_body = serde_json::json!({ "profile": "power_save" }).to_string();
+        let set_body = serde_json::json!({ "profiles": ["power_save", "memory_saver"] }).to_string();
         let set_req = Request::builder()
             .method(Method::POST)
             .uri("/admin/power-profile")
@@ -764,8 +817,12 @@ mod tests {
         assert_eq!(set_resp.status(), StatusCode::OK);
         let set_bytes = http_body_util::BodyExt::collect(set_resp.into_body()).await.unwrap().to_bytes();
         let set_body_json: serde_json::Value = serde_json::from_slice(&set_bytes).unwrap();
-        assert_eq!(set_body_json["profile"], serde_json::json!("power_save"));
-        assert_eq!(set_body_json["label"], serde_json::json!("省電力"));
+        assert_eq!(set_body_json["profiles"], serde_json::json!(["memory_saver", "power_save"]));
+        assert_eq!(set_body_json["labels"], serde_json::json!(["省メモリ", "省電力"]));
+        // 組み合わせの合成効果も確認(省電力のポーリング倍率3.0と省メモリの
+        // メモリ係数0.25が両方同時に反映される、上書きされない)。
+        assert_eq!(set_body_json["poll_interval_multiplier"], serde_json::json!(3.0));
+        assert_eq!(set_body_json["memory_cache_limit_factor"], serde_json::json!(0.25));
 
         // (4) 直後の`GET`が、プロセス再起動無しに新しい値を返すことを確認する
         //     (これが「途中からでも選択出来る」の実証そのもの)。
@@ -779,11 +836,11 @@ mod tests {
         let get_resp2 = sender.send_request(get_req2).await.unwrap();
         let get_bytes2 = http_body_util::BodyExt::collect(get_resp2.into_body()).await.unwrap().to_bytes();
         let get_body2: serde_json::Value = serde_json::from_slice(&get_bytes2).unwrap();
-        assert_eq!(get_body2["profile"], serde_json::json!("power_save"));
+        assert_eq!(get_body2["profiles"], serde_json::json!(["memory_saver", "power_save"]));
 
         // (5) 不明な値は400で拒否される(既存動作を壊さない防御的チェック)。
         let mut sender = connect(addr).await;
-        let bad_body = serde_json::json!({ "profile": "quantum_saver" }).to_string();
+        let bad_body = serde_json::json!({ "profiles": ["quantum_saver"] }).to_string();
         let bad_req = Request::builder()
             .method(Method::POST)
             .uri("/admin/power-profile")
