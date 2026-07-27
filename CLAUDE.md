@@ -1222,6 +1222,51 @@ open-web-server自身のTLS終端(ACME自動取得)+`web_vhost`/`tenant_router`
    `0.0.0.0:443`に書き換え、`.bak-premigrate`ファイル群は正常稼働を
    確認できてから削除する(まだ削除しないこと)。
 
+- **2026-07-27 深夜バックグラウンド自動アップデート機能——実装は見送り、
+  設計方針のみ記録(ユーザー指示: 「open-easy-web-serverとopen-web-server
+  は、AUTO-UPDATEで真夜中にバックグラウンドで自動UPDATEして」「一瞬で
+  VERSIONUPで切り替わって」「デフォルトOFF、ONに出来るように」
+  「環境変数のコマンドとGUIでも設定変更出来るように」)**:
+  1. **正直な開示・見送った理由**: このパスの着手時点で、
+     `crates/open-web-server-gateway/src/main.rs`・`Cargo.toml`・
+     `crates/open-web-server-ledger/*`等、この機能の配線先となる
+     はずのファイル群が**別セッションによって活発に編集中(未コミット)**
+     だった(TLS証明書永続化の恒久修正、`tls.rs`参照)。同じファイルへ
+     `mod auto_update;`や依存クレート追加を行うと、(a) 別セッションの
+     作業とのマージ衝突リスク、(b) 配線が中途半端になり`cargo build`/
+     `cargo test`で実際に検証できないコードを追加することになる
+     ——いずれも今回は避けるべきと判断し、**このリポジトリでは実装を
+     行わなかった**。
+  2. **姉妹リポジトリ`open-easy-web`側は完全実装・検証済み**
+     (`open-easy-web`側CLAUDE.md 2026-07-27エントリ参照):
+     `server/src/auto_update.rs`(GitHub Releases最新タグ確認→
+     ダウンロード→`--version`検証→Linuxは`SO_REUSEPORT`によるほぼ
+     ゼロダウンタイム切り替え・Windowsは逐次切り替え)、
+     `POST/GET /admin/auto-update`(既定OFF、環境変数またはGUIから
+     切り替え可能、設定は永続化)、ブラウザGUIのトグルスイッチ
+     (`api_auto_update.rs`)まで実装し、`cargo test`66件(新規6件)
+     全green・実バイナリでの`--version`/admin API動作を確認済み。
+  3. **`open-web-server`側への移植手順(次回、TLS永続化修正が
+     コミットされ次第)**: `open-easy-web/server/src/auto_update.rs`を
+     ほぼそのまま移植し、以下を`open-web-server`固有の値に置き換える
+     だけでよい設計にしてある: (a) リポジトリ名
+     (`aon-co-jp/open-easy-web`→`aon-co-jp/open-web-server`)、
+     (b) バイナリ名・アセット名(`open-easy-web-server`→
+     `open-web-server`、`.github/workflows/release.yml`で命名規則を
+     確認済み: `open-web-server-linux-x86_64.tar.gz`/
+     `-windows-x86_64.zip`)、(c) 管理API認証(`x-admin-token`、
+     既存の`OPEN_WEB_SERVER_ADMIN_TOKEN`を再利用)、(d) `accept_loop`
+     相当の箇所への`stop_accepting`フラグ配線・`SO_REUSEPORT`での
+     listener bind(`main.rs`の実装次第、TLS永続化修正のマージ後に
+     構造を確認してから配線すること)。
+  - 次にすべきこと: (1) TLS証明書永続化の恒久修正(別セッション)の
+    完了・コミットを待つ、(2) 完了後、上記手順で`auto_update.rs`を
+    移植し`main.rs`/`Cargo.toml`へ配線、(3) 特にこのリポジトリは
+    TLS(HTTPS `:443`)・複数テナントを1プロセスで扱うため、
+    ゼロダウンタイム切り替え時にTLS証明書(`TenantCertResolver`)も
+    新プロセスへ確実に引き継がれること(既にディスク永続化されて
+    いれば起動時に自動ロードされる設計のはず)を実地検証すること。
+
 - **2026-07-24(続き9) ACMEクライアントの重複アカウント作成バグを修正
   (実VPSでの複数ドメイン移行作業中に発見、ユーザー指示「ACMEクライアント
   の重複アカウント作成バグを先に修正してから再開」)**:
