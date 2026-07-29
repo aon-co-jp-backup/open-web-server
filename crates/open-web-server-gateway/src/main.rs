@@ -15,6 +15,7 @@ mod compression;
 mod custom_dns;
 #[cfg(feature = "ddns")]
 mod ddns;
+mod domain_watchdog;
 mod dual_write;
 mod free_domain;
 mod oauth_provider;
@@ -109,6 +110,18 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         }
         (Method::POST, "/admin/power-profile") => {
             handlers::power_profile::set_power_profile(state, req).await
+        }
+        // ドメイン/URL死活監視+自動復旧の直近状態(2026-07-29追加、
+        // `domain_watchdog`参照)。
+        (Method::GET, "/admin/watchdog/status") => {
+            handlers::watchdog::get_watchdog_status(state, &req).await
+        }
+        (Method::GET, "/admin/watchdog/expectations") => {
+            handlers::watchdog::list_watchdog_expectations(state, &req).await
+        }
+        (Method::POST, p) if p.starts_with("/admin/watchdog/expectations/") => {
+            let host = p.trim_start_matches("/admin/watchdog/expectations/").to_string();
+            handlers::watchdog::set_watchdog_expectations(state, req, &host).await
         }
         (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
         (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
@@ -525,9 +538,11 @@ async fn main() -> anyhow::Result<()> {
     // `POST /admin/tenants/:host/tls`で登録する(起動時点では未登録でも
     // 起動自体は失敗しない——証明書0件のリゾルバでリッスンだけ開始し、
     // ハンドシェイクは登録され次第成功するようになる)。
+    let mut tls_bind_addr: Option<SocketAddr> = None;
     let tls_task = match std::env::var("OPEN_WEB_SERVER_TLS_BIND").ok() {
         Some(tls_bind) => {
             let tls_addr: SocketAddr = tls_bind.parse()?;
+            tls_bind_addr = Some(tls_addr);
             let tls_listener = TcpListener::bind(tls_addr).await?;
             tracing::info!(%tls_addr, "open-web-server TLS listening (per-tenant SNI cert resolution)");
             let server_config = open_web_server_wire::build_tenant_server_config(state.tls_resolver.clone());
@@ -536,6 +551,93 @@ async fn main() -> anyhow::Result<()> {
         }
         None => None,
     };
+
+    // ドメイン/URL死活監視+自動復旧(2026-07-29追加、`OPEN_WEB_SERVER_
+    // WATCHDOG_ENABLED=true`でopt-in、既定オフ)。TLSポートが有効な場合
+    // のみ意味を持つ(この機能は「登録済みホストへ自分自身がTLS越しに
+    // 正しく応答できているか」を見るため)。
+    if std::env::var("OPEN_WEB_SERVER_WATCHDOG_ENABLED").as_deref() == Ok("true") {
+        if let Some(tls_addr) = tls_bind_addr {
+            let interval_secs: u64 = std::env::var("OPEN_WEB_SERVER_WATCHDOG_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300);
+            let failure_threshold: u32 = std::env::var("OPEN_WEB_SERVER_WATCHDOG_FAILURE_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2);
+
+            #[cfg(feature = "domain-watchdog")]
+            let ai_advisor: Option<Arc<dyn domain_watchdog::AiAdvisor>> =
+                std::env::var("ARUARU_LLM_ENDPOINT")
+                    .ok()
+                    .map(|endpoint| Arc::new(domain_watchdog::AruaruLlmAdvisor::new(endpoint)) as Arc<dyn domain_watchdog::AiAdvisor>);
+            #[cfg(not(feature = "domain-watchdog"))]
+            let ai_advisor: Option<Arc<dyn domain_watchdog::AiAdvisor>> = None;
+
+            #[cfg(feature = "acme")]
+            let cert_reissuer: Option<Arc<dyn domain_watchdog::CertReissuer>> = {
+                struct DefaultAcmeReissuer {
+                    directory_url: String,
+                    contact_email: String,
+                    challenges: Arc<acme::ChallengeStore>,
+                    tls_resolver: Arc<open_web_server_wire::TenantCertResolver>,
+                }
+                #[async_trait::async_trait]
+                impl domain_watchdog::CertReissuer for DefaultAcmeReissuer {
+                    async fn reissue(&self, host: &str) -> anyhow::Result<()> {
+                        let (cert_pem, key_pem) = acme::obtain_certificate_http01(
+                            &self.directory_url,
+                            host,
+                            &self.contact_email,
+                            &self.challenges,
+                        )
+                        .await?;
+                        self.tls_resolver.upsert_pem(host, cert_pem.as_bytes(), key_pem.as_bytes())?;
+                        Ok(())
+                    }
+                }
+                let directory_url = std::env::var("OPEN_WEB_SERVER_WATCHDOG_ACME_DIRECTORY_URL")
+                    .unwrap_or_else(|_| "https://acme-v02.api.letsencrypt.org/directory".to_string());
+                let contact_email = std::env::var("OPEN_WEB_SERVER_WATCHDOG_ACME_CONTACT_EMAIL")
+                    .unwrap_or_else(|_| "admin@example.com".to_string());
+                Some(Arc::new(DefaultAcmeReissuer {
+                    directory_url,
+                    contact_email,
+                    challenges: state.acme_challenges.clone(),
+                    tls_resolver: state.tls_resolver.clone(),
+                }))
+            };
+            #[cfg(not(feature = "acme"))]
+            let cert_reissuer: Option<Arc<dyn domain_watchdog::CertReissuer>> = None;
+
+            let watchdog = Arc::new(domain_watchdog::DomainWatchdog {
+                state: state.watchdog.clone(),
+                tls_bind: tls_addr,
+                failure_threshold,
+                cert_reissuer,
+                ai_advisor,
+            });
+            let hosts_provider_state = state.clone();
+            tokio::spawn(watchdog.run_loop(std::time::Duration::from_secs(interval_secs), move || {
+                let state = hosts_provider_state.clone();
+                async move {
+                    let mut hosts: std::collections::HashSet<String> = state
+                        .tenants
+                        .list()
+                        .await
+                        .into_iter()
+                        .map(|t| t.host)
+                        .collect();
+                    hosts.extend(state.web_vhosts.list().await.into_iter().map(|v| v.host));
+                    hosts.into_iter().collect()
+                }
+            }));
+            tracing::info!(interval_secs, failure_threshold, "domain watchdog enabled");
+        } else {
+            tracing::warn!("OPEN_WEB_SERVER_WATCHDOG_ENABLED=true but OPEN_WEB_SERVER_TLS_BIND is unset; watchdog not started");
+        }
+    }
 
     let result = tokio::select! {
         res = accept_loop(listener, state) => res,
@@ -1425,5 +1527,122 @@ mod tests {
             resp.headers().get("access-control-allow-origin").is_none(),
             "CORS headers must never appear when OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS is unset"
         );
+    }
+
+    /// `domain_watchdog`の管理API(コンテンツ確認の登録・一覧・死活状態
+    /// 取得)を実HTTP経由で検証する。audiocafe.tokyoで実際に起きた
+    /// 「pushはしたがVPSへ再デプロイしておらず、期待するリンクが本文に
+    /// 無かった」障害を、この監視機能が実際に検知できることの直接証拠。
+    #[tokio::test]
+    async fn watchdog_expectations_and_status_work_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-watchdog-secret");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // (1) 認証無しでは拒否される。
+        let mut sender = connect(addr).await;
+        let unauth_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/watchdog/status")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(unauth_req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+
+        // (2) 最初は何も登録されていない。
+        let mut sender = connect(addr).await;
+        let list_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/watchdog/expectations")
+            .header("x-admin-token", "test-watchdog-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let list_resp = sender.send_request(list_req).await.unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_bytes = http_body_util::BodyExt::collect(list_resp.into_body()).await.unwrap().to_bytes();
+        let list_body: serde_json::Value = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_body, serde_json::json!([]));
+
+        // (3) audiocafe.tokyoのSPEC/PASS LABSリンクを期待文字列として登録する。
+        let mut sender = connect(addr).await;
+        let set_body = serde_json::json!({ "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"] }).to_string();
+        let set_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/watchdog/expectations/audiocafe.tokyo")
+            .header("x-admin-token", "test-watchdog-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(set_body)))
+            .unwrap();
+        let set_resp = sender.send_request(set_req).await.unwrap();
+        assert_eq!(set_resp.status(), StatusCode::OK);
+
+        // (4) 一覧に反映されている。
+        let mut sender = connect(addr).await;
+        let list_req2 = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/watchdog/expectations")
+            .header("x-admin-token", "test-watchdog-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let list_resp2 = sender.send_request(list_req2).await.unwrap();
+        let list_bytes2 = http_body_util::BodyExt::collect(list_resp2.into_body()).await.unwrap().to_bytes();
+        let list_body2: serde_json::Value = serde_json::from_slice(&list_bytes2).unwrap();
+        assert_eq!(
+            list_body2,
+            serde_json::json!([{"host": "audiocafe.tokyo", "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"]}])
+        );
+
+        // (5) 死活状態は監視ループを回していないため空のまま(登録だけでは
+        //     チェックは走らない、既存の`state.watchdog`は常時存在するが
+        //     ループはopt-inであることの確認)。
+        let mut sender = connect(addr).await;
+        let status_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/watchdog/status")
+            .header("x-admin-token", "test-watchdog-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let status_resp = sender.send_request(status_req).await.unwrap();
+        assert_eq!(status_resp.status(), StatusCode::OK);
+        let status_bytes = http_body_util::BodyExt::collect(status_resp.into_body()).await.unwrap().to_bytes();
+        let status_body: serde_json::Value = serde_json::from_slice(&status_bytes).unwrap();
+        assert_eq!(status_body, serde_json::json!([]));
+
+        // (6) 空配列を送れば解除される。
+        let mut sender = connect(addr).await;
+        let clear_body = serde_json::json!({ "expected_substrings": [] }).to_string();
+        let clear_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/watchdog/expectations/audiocafe.tokyo")
+            .header("x-admin-token", "test-watchdog-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(clear_body)))
+            .unwrap();
+        assert_eq!(sender.send_request(clear_req).await.unwrap().status(), StatusCode::OK);
+
+        let mut sender = connect(addr).await;
+        let list_req3 = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/watchdog/expectations")
+            .header("x-admin-token", "test-watchdog-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let list_resp3 = sender.send_request(list_req3).await.unwrap();
+        let list_bytes3 = http_body_util::BodyExt::collect(list_resp3.into_body()).await.unwrap().to_bytes();
+        let list_body3: serde_json::Value = serde_json::from_slice(&list_bytes3).unwrap();
+        assert_eq!(list_body3, serde_json::json!([]));
     }
 }

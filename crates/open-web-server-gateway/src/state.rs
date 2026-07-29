@@ -5,6 +5,7 @@ use open_web_server_wire::{AccelBackend, TenantCertResolver};
 
 use crate::access_log::{AccessLogConfig, AccessLogger};
 use crate::acme::ChallengeStore;
+use crate::domain_watchdog::WatchdogState;
 use crate::free_domain::DomainRegistry;
 use crate::keyring::{GuardianConfig, KeyGuardian};
 use crate::php_server::PhpServerPool;
@@ -69,6 +70,12 @@ pub struct AppState {
     /// 切り替えられる。バックグラウンドポーリングループ(`ddns`/
     /// `free_domain`、`ddns` feature配下)がこの値を毎回読み直す。
     pub power_profile: Arc<PowerProfileRegistry>,
+    /// ドメイン/URL死活監視+自動復旧の状態(`domain_watchdog`参照、
+    /// 2026-07-29追加)。監視ループ自体は`OPEN_WEB_SERVER_WATCHDOG_ENABLED`
+    /// 環境変数でopt-in(既定オフ)だが、この状態自体は常時存在し、
+    /// `GET /admin/watchdog/status`で(ループが動いていなくても空の状態を)
+    /// 参照できる。
+    pub watchdog: Arc<WatchdogState>,
 }
 
 /// `OPEN_WEB_SERVER_TLS_CERT_DIR`環境変数で指定されたディレクトリ
@@ -129,6 +136,7 @@ impl AppState {
         let accel_backend = accel_backend_from_env();
         tracing::info!(?accel_backend, "payload accelerator backend resolved from OPEN_WEB_SERVER_ACCEL_BACKEND");
         let power_profile = Arc::new(PowerProfileRegistry::new());
+        let watchdog = Arc::new(WatchdogState::new());
 
         Ok(Self {
             ledger,
@@ -144,6 +152,7 @@ impl AppState {
             access_logger,
             accel_backend,
             power_profile,
+            watchdog,
         })
     }
 

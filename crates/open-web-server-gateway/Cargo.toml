@@ -83,6 +83,12 @@ fastcgi-client = ["dep:fastcgi-client"]
 # (この既存の「サブクレートのfeatureをゲートウェイ側へ透過させる」パターンは
 # 新設ではなく、`custom_domain`/`custom_domain_db`と同じ形)。
 disaster_email_backup = ["open-web-server-ledger/disaster_email_backup"]
+# ドメイン/URL死活監視+自動復旧(`domain_watchdog.rs`)。既定オフ、
+# `OPEN_WEB_SERVER_WATCHDOG_ENABLED=true`で有効化。`aruaru-llm`への
+# 問い合わせ(AI診断、助言目的のみ)には`dep:reqwest`を使う。ACMEによる
+# 自動証明書再取得は`acme` featureと併用した場合のみ実際に働く
+# (未併用でも死活監視自体・AI診断は機能する)。
+domain-watchdog = ["dep:reqwest"]
 # SET横断(open-easy-web/open-web-server/open-raid-z/aruaru-db)自動同期
 # ディザスタバックアップ(`open-web-server-ledger::crossrepo_backup`)。
 # `open-web-server-ledger`側の同名featureをそのまま伝播させるだけ(既存の
