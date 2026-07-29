@@ -13,6 +13,7 @@
 //! ハンドラより先にチェックされる(`tenant_router`/`web_vhost`より優先)。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use http_body_util::Full;
@@ -46,6 +47,10 @@ struct RedirectsFile {
 #[derive(Debug, Default)]
 pub struct RedirectRegistry {
     rules: RwLock<HashMap<String, Arc<RedirectRule>>>,
+    /// 設定済みの場合、`upsert`/`remove`のたびに現在の全ルールをこのパスへ
+    /// TOMLとして書き戻す(`tenant_router::TenantRegistry`と同じ
+    /// persist_path方式、2026-07-29追加)。
+    persist_path: RwLock<Option<PathBuf>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,21 +63,61 @@ impl RedirectRegistry {
     pub fn new() -> Self {
         Self {
             rules: RwLock::new(HashMap::new()),
+            persist_path: RwLock::new(None),
+        }
+    }
+
+    /// 以後の`upsert`/`remove`を、指定パスのTOMLファイルへ自動的に
+    /// 書き戻すようにする(`OPEN_WEB_SERVER_REDIRECTS_FILE`起動時ロードと
+    /// 対にして使う想定)。
+    pub async fn set_persist_path(&self, path: PathBuf) {
+        *self.persist_path.write().await = Some(path);
+    }
+
+    /// 現在のルール一覧を、設定済みの永続化パスへ原子的に(一時ファイル→
+    /// rename)書き戻す。パス未設定なら何もしない。書き込み失敗は呼び出し
+    /// 元のupsert/remove自体を失敗させない(可用性優先、警告ログのみ)。
+    async fn persist(&self, rules: &HashMap<String, Arc<RedirectRule>>) {
+        let Some(path) = self.persist_path.read().await.clone() else {
+            return;
+        };
+
+        let file = RedirectsFile {
+            redirects: rules.values().map(|v| (**v).clone()).collect(),
+        };
+
+        let toml_str = match toml::to_string_pretty(&file) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize redirects.toml for persistence");
+                return;
+            }
+        };
+
+        let tmp_path = path.with_extension("toml.tmp");
+        if let Err(e) = tokio::fs::write(&tmp_path, toml_str).await {
+            tracing::warn!(error = %e, path = %tmp_path.display(), "failed to write redirects.toml tmp file");
+            return;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
+            tracing::warn!(error = %e, path = %path.display(), "failed to persist redirects.toml (rename)");
         }
     }
 
     /// ルールを追加(または既存ホストを置き換え)る。
     pub async fn upsert(&self, rule: RedirectRule) {
-        self.rules
-            .write()
-            .await
-            .insert(rule.host.clone(), Arc::new(rule));
+        let mut guard = self.rules.write().await;
+        guard.insert(rule.host.clone(), Arc::new(rule));
+        self.persist(&guard).await;
     }
 
     pub async fn remove(&self, host: &str) -> Result<(), RedirectError> {
         let mut guard = self.rules.write().await;
-        guard
-            .remove(host)
+        let removed = guard.remove(host);
+        if removed.is_some() {
+            self.persist(&guard).await;
+        }
+        removed
             .map(|_| ())
             .ok_or_else(|| RedirectError::NotFound(host.to_string()))
     }
@@ -138,6 +183,7 @@ pub async fn load_redirects_from_env(registry: &RedirectRegistry) -> anyhow::Res
     let toml_str = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("failed to read redirects file '{path}': {e}"))?;
     let count = registry.load_from_toml(&toml_str).await?;
+    registry.set_persist_path(std::path::PathBuf::from(&path)).await;
     tracing::info!(count, path, "loaded host redirect rules from file");
     Ok(())
 }

@@ -611,6 +611,80 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-29 `web_vhosts`/`redirects`にディスク永続化を追加(audiocafe.tokyo障害の根本再発防止)
+(ユーザー指示「根本的な再発防止…この『再起動でルーティング/証明書が消える』
+設計自体を直すの新規設計と(ディスクへの永続化を追加も同時進行もお願い)」)
+
+**着手前の現状確認(正直な棚卸し、audiocafe.tokyo障害の直後に調査)**:
+3つの独立したレジストリを個別に確認した結果、既に2つは永続化済みで
+1つだけが未実装と判明——「全部消える」ではなく「非対称」だったことが
+分かった。
+- **`TenantCertResolver`(TLS証明書)**: `persist_cert_to_disk`/
+  `load_from_disk`が既に実装済み(`open-web-server-wire/src/tls.rs`)。
+  これは前回HANDOFF(2026-07-27エントリの「TLS証明書永続化の恒久修正」
+  言及)の通り、既に別セッションで対応済みだった。
+- **`TenantRegistry`(ドメインルーティング)**: `persist_path`/`persist()`
+  機構自体は存在するが、`state.rs`の`load_domains_from_env()`が
+  `OPEN_WEB_SERVER_DOMAINS_FILE`環境変数**が設定されている場合のみ**
+  `set_persist_path()`を呼ぶ設計だった。つまり`domains.toml`を使わず
+  管理API(`POST /admin/tenants`)だけで運用していると永続化パスが
+  一切設定されず、追加したテナントは再起動で消える——audiocafe.tokyoの
+  障害はまさにこのパターン(手動でtenant登録し、`domains.toml`に
+  書き戻されていなかった)。
+- **`WebVhostRegistry`/`RedirectRegistry`**: `persist_path`関連のコードが
+  **一切存在しない**ことをgrepで確認(0件)。VPSの`web_vhosts.toml`が
+  空になっていた過去のHANDOFF記載([2026-07-24(最終)]参照)と一致する、
+  設計上の欠落そのものだった。
+
+**実装**: `tenant_router::TenantRegistry`が既に持つ
+`persist_path: RwLock<Option<PathBuf>>` + `persist()`(TOML直列化→
+一時ファイル書き込み→rename、失敗しても呼び出し元の`add`/`remove`は
+成功扱いのまま警告ログのみ)というパターンを、`web_vhost::
+WebVhostRegistry`と`redirects::RedirectRegistry`にそのまま複製した:
+- `WebVhostRegistry`: `set_persist_path()`追加、`upsert`/`remove`から
+  `persist()`を呼ぶよう変更。`state.rs::load_web_vhosts_from_env()`が
+  `OPEN_WEB_SERVER_WEB_VHOSTS_FILE`ロード後に`set_persist_path()`を
+  呼ぶよう配線(`TenantRegistry`の`load_domains_from_env()`と対称)。
+- `RedirectRegistry`: 同様に`set_persist_path()`追加、
+  `redirects::load_redirects_from_env()`(`OPEN_WEB_SERVER_REDIRECTS_FILE`
+  ロード関数)が読み込み後に`set_persist_path()`を呼ぶよう配線。
+- **`TenantRegistry`自体は今回変更していない**——`set_persist_path`の
+  呼び出し条件(`OPEN_WEB_SERVER_DOMAINS_FILE`設定時のみ)は
+  `web_vhost`/`redirects`と全く同じ設計のため、この3レジストリは
+  これで対称になった。運用上の教訓として明記: **`domains.toml`/
+  `web_vhosts.toml`/`redirects.toml`のいずれも、起動時に該当する
+  環境変数(`OPEN_WEB_SERVER_DOMAINS_FILE`等)を指定して読み込ませて
+  おかないと、管理APIでの追加登録はプロセス内メモリのみに留まり
+  再起動で消える**——空ファイルでもよいので必ず対応する環境変数付きで
+  起動することを推奨(次回VPS運用手順ドキュメントへの反映は未着手、
+  下記「未着手」参照)。
+
+**検証(型チェックのみで完了と報告しない、既存運用ルール徹底)**:
+新規単体テスト2件を`web_vhost.rs`に追加
+(`upsert_after_set_persist_path_writes_toml_that_reloads_into_a_fresh_
+instance`——実ファイルI/Oで、`upsert`→独立した第二のレジストリ
+インスタンスが同じTOMLファイルから状態を復元できることを確認、
+続けて`remove`後も同様に反映されることを確認。
+`without_persist_path_no_file_is_written`——`persist_path`未設定時は
+ファイルが一切作られない後方互換の確認)。`cargo build -p
+open-web-server-gateway`は新規warning無しで成功(既存のdead_code
+警告のみ残置)。`cargo test -p open-web-server-gateway`は**130件
+全green**(既存128件+新規2件、リグレッション無し)。
+`cargo test --workspace`(gateway/ledger/wire合算)も全green。
+
+**未着手として明記**: (1) VPS上での実地検証(実際にtenant/web_vhost/
+redirectを追加登録→`systemctl restart open-web-server`→登録が
+残っていることを実機で確認)は今回未実施——この開発環境にはVPSへの
+到達手段が無いため、ロジックレベルの実ファイルI/O検証に留まる。
+次回VPSセッションでの実証が必要。(2) `OPEN_WEB_SERVER_DOMAINS_FILE`/
+`_WEB_VHOSTS_FILE`/`_REDIRECTS_FILE`のいずれも未設定のまま管理APIで
+登録した場合(=起動時ロードなし)は、今回の修正後も引き続き
+永続化されない(env var必須という設計自体は変更していない)——
+「envを設定し忘れると消える」という運用上の落とし穴自体は残るため、
+将来的には「env未設定でも既定パスへ自動永続化する」設計への転換を
+検討する余地がある(今回はより緊急度の高い「envはあるのに片方だけ
+書き込まれない」という非対称性の解消を優先した)。
+
 ### 2026-07-26 全プラットフォームで省メモリ/省電力モードを「途中からでも」切替可能に
 (ユーザー指示「スマホ版は、Windows版もLINUX版もAndoroidなど全てのバージョンで
 省メモリと省電力モードを途中からでも選択出来るようにして」)

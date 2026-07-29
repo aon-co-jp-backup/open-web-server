@@ -172,6 +172,7 @@ impl AppState {
         let toml_str = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("failed to read web vhosts file '{path}': {e}"))?;
         let count = self.web_vhosts.load_from_toml(&toml_str).await?;
+        self.web_vhosts.set_persist_path(std::path::PathBuf::from(&path)).await;
         tracing::info!(count, path, "loaded web vhosts from file");
         Ok(())
     }

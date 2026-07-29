@@ -111,6 +111,11 @@ struct WebVhostsFile {
 #[derive(Debug, Default)]
 pub struct WebVhostRegistry {
     vhosts: RwLock<HashMap<String, Arc<WebVhostConfig>>>,
+    /// 設定済みの場合、`upsert`/`remove`のたびに現在の全vhostをこのパスへ
+    /// TOMLとして書き戻す(`tenant_router::TenantRegistry`と同じ
+    /// persist_path方式、2026-07-29追加——プロセス再起動でweb_vhostsが
+    /// 消える設計ギャップの解消)。
+    persist_path: RwLock<Option<PathBuf>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,20 +128,61 @@ impl WebVhostRegistry {
     pub fn new() -> Self {
         Self {
             vhosts: RwLock::new(HashMap::new()),
+            persist_path: RwLock::new(None),
+        }
+    }
+
+    /// 以後の`upsert`/`remove`を、指定パスのTOMLファイルへ自動的に
+    /// 書き戻すようにする(`OPEN_WEB_SERVER_WEB_VHOSTS_FILE`起動時ロードと
+    /// 対にして使う想定、`tenant_router::TenantRegistry::set_persist_path`
+    /// と同じ役割)。
+    pub async fn set_persist_path(&self, path: PathBuf) {
+        *self.persist_path.write().await = Some(path);
+    }
+
+    /// 現在のvhost一覧を、設定済みの永続化パスへ原子的に(一時ファイル→
+    /// rename)書き戻す。パス未設定なら何もしない。書き込み失敗は呼び出し
+    /// 元のupsert/remove自体を失敗させない(可用性優先、警告ログのみ)。
+    async fn persist(&self, vhosts: &HashMap<String, Arc<WebVhostConfig>>) {
+        let Some(path) = self.persist_path.read().await.clone() else {
+            return;
+        };
+
+        let file = WebVhostsFile {
+            vhosts: vhosts.values().map(|v| (**v).clone()).collect(),
+        };
+
+        let toml_str = match toml::to_string_pretty(&file) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize web_vhosts.toml for persistence");
+                return;
+            }
+        };
+
+        let tmp_path = path.with_extension("toml.tmp");
+        if let Err(e) = tokio::fs::write(&tmp_path, toml_str).await {
+            tracing::warn!(error = %e, path = %tmp_path.display(), "failed to write web_vhosts.toml tmp file");
+            return;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
+            tracing::warn!(error = %e, path = %path.display(), "failed to persist web_vhosts.toml (rename)");
         }
     }
 
     pub async fn upsert(&self, config: WebVhostConfig) {
-        self.vhosts
-            .write()
-            .await
-            .insert(config.host.clone(), Arc::new(config));
+        let mut guard = self.vhosts.write().await;
+        guard.insert(config.host.clone(), Arc::new(config));
+        self.persist(&guard).await;
     }
 
     pub async fn remove(&self, host: &str) -> Result<(), WebVhostError> {
         let mut guard = self.vhosts.write().await;
-        guard
-            .remove(host)
+        let removed = guard.remove(host);
+        if removed.is_some() {
+            self.persist(&guard).await;
+        }
+        removed
             .map(|_| ())
             .ok_or_else(|| WebVhostError::NotFound(host.to_string()))
     }
@@ -174,6 +220,77 @@ impl WebVhostRegistry {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn upsert_after_set_persist_path_writes_toml_that_reloads_into_a_fresh_instance() {
+        let dir = std::env::temp_dir().join(format!(
+            "web_vhosts_persist_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("web_vhosts.toml");
+
+        let registry = WebVhostRegistry::new();
+        registry.set_persist_path(path.clone()).await;
+        registry
+            .upsert(WebVhostConfig {
+                host: "audiocafe.tokyo".to_string(),
+                docroot: PathBuf::from("/var/www/audiocafe.tokyo"),
+                php_enabled: true,
+                compat_mode: CompatMode::default(),
+                php_mode: PhpMode::default(),
+            })
+            .await;
+
+        // このプロセス再起動を模した、独立した第二のレジストリインスタンスが
+        // 永続化ファイルから同じ状態を復元できることを確認する
+        // (`tenant_router`のset_persist_path往復テストと同じ検証方針)。
+        let toml_str = std::fs::read_to_string(&path).unwrap();
+        let reloaded = WebVhostRegistry::new();
+        let count = reloaded.load_from_toml(&toml_str).await.unwrap();
+        assert_eq!(count, 1);
+        assert!(reloaded.resolve("audiocafe.tokyo").await.is_some());
+
+        registry.remove("audiocafe.tokyo").await.unwrap();
+        let toml_str_after_remove = std::fs::read_to_string(&path).unwrap();
+        let reloaded_after_remove = WebVhostRegistry::new();
+        reloaded_after_remove
+            .load_from_toml(&toml_str_after_remove)
+            .await
+            .unwrap();
+        assert!(reloaded_after_remove.resolve("audiocafe.tokyo").await.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn without_persist_path_no_file_is_written() {
+        let dir = std::env::temp_dir().join(format!(
+            "web_vhosts_no_persist_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("web_vhosts.toml");
+
+        let registry = WebVhostRegistry::new();
+        registry
+            .upsert(WebVhostConfig {
+                host: "example.com".to_string(),
+                docroot: PathBuf::from("/var/www/example"),
+                php_enabled: false,
+                compat_mode: CompatMode::default(),
+                php_mode: PhpMode::default(),
+            })
+            .await;
+
+        assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod legacy_tests {
     use super::*;
 
     fn sample(host: &str) -> WebVhostConfig {
