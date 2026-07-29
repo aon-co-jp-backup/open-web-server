@@ -611,6 +611,78 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-29(続き2) audiocafe.tokyoの旧PHPパス(`/top/`・`/cancer/`等)を`path_prefix="/"`完全一致化で解消+VPS再起動時にTLS証明書全消失を実地で発見・復旧
+
+前エントリ(`/index.php`個別対応)の続き。ユーザーから「`/top/`・
+`/cancer/`など他の旧PHPパスも404のまま」との指摘を受け、根本対応した。
+
+**コード変更**: `tenant_router::resolve_prefix_only()`が`path_prefix`を
+常に`starts_with`で前方一致させていたため、`path_prefix = "/"`を持つ
+テナントがHost配下の**全パス**を奪ってしまい(`/`はどんなパスの先頭にも
+一致する)、「トップページだけRustへ、それ以外は別バックエンドへ」という
+個別振り分けが表現できなかった。新設した`path_matches_prefix()`
+ヘルパーで、**`path_prefix == "/"`の場合だけ完全一致(`path == "/"`)**に
+限定するよう修正(nginxの`location = /`と同じ慣用パターン)。それ以外の
+`path_prefix`(`/aruaru`等)は従来通り前方一致のまま、既存の複数リポジトリの
+登録(`domains.toml`)との後方互換を維持。新規単体テスト
+`root_path_prefix_matches_only_exact_root_not_other_paths`で、
+`path_prefix="/"`が`/`にのみ一致し`/top/`・`/index.php`には一致しない
+こと、`/aruaru`のような他のprefixは従来通り前方一致のままであることを
+検証。`cargo test -p open-web-server-gateway`は**131件全green**
+(既存130件+新規1件、リグレッション無し)。
+
+**VPSデプロイと運用の組み替え**: audiocafe.tokyoの振り分けを
+「Rust側の実装済みルートだけを`path_prefix`で明示登録し、それ以外は
+host-onlyフォールバック(旧nginxのPHP-FPM相当、今回は`php -S`常駐
+プロセス127.0.0.1:4401)に任せる」という設計へ反転した——旧来は
+「host-onlyフォールバック=Rust、`/aruaru`等の一部パスだけ明示登録」
+だったのを、Rustが実装しているルート一覧
+(`/`・`/aruaru`・`/aruaru-lady`・`/rakuten-mobile`・`/summary`・
+`/discover`・`/help`・`/ranking`・`/page`・`/healthz`、
+`audiocafe-tokyo-rust/src/main.rs`のルーターを実際に確認して洗い出した)
+だけをRustへの明示`path_prefix`登録とし、host-onlyフォールバックを
+PHPへ差し替えた。これにより`/top/`・`/cancer/`が実際に200を返す
+ようになったことを実インターネット経由で確認(`/Python/`・`/video/`は
+index無しの素の静的ファイル配布ディレクトリのため404のままだが、これは
+元々index.phpが無いディレクトリの一覧アクセスであり、正しい挙動——
+リグレッションではない)。
+
+**重大な実地発見(自己申告): VPS再起動でTLS証明書ディレクトリが
+まるごと消失していた**: 上記のバイナリ再デプロイ(`fastcgi-client,
+acme,ddns,sftp,upnp` feature込みでの再ビルド、tenant_router修正を
+反映するため必須)に伴い`systemctl restart open-web-server`した直後、
+起動ログに`TenantCertResolver: cert dir does not exist yet, starting
+empty cert_dir=/root/open-web-server/tls-certs`と出力され、**全23
+ドメイン(bare+www)が軒並みTLSハンドシェイク失敗(curl `000`)で
+アクセス不能になった**。`/root/open-web-server/tls-certs/`ディレクトリ
+自体が存在しなかったことを確認——2026-07-27前後のHANDOFFで「TLS証明書
+永続化の恒久修正」が別セッションで実施されたと記載されていたが、
+実際にはこのディレクトリへの書き込みが(コードは実装されていても)
+一度も実際に起きていなかった、あるいは以前のプロセス起動時から
+このディレクトリが存在しないまま運用されていたと見られる——
+**「コードに実装されている」ことと「本番で実際に効いている」ことは
+別物であるという、このエコシステムの既存の教訓([2026-07-18運用ルール]
+参照)を再確認する形になった**。
+**復旧**: 幸い`OPEN_WEB_SERVER_ACME_ACCOUNT_KEY_PATH`
+(`acme-account-key.der`)は既に永続化済みだったため、Let's Encryptの
+新規アカウント登録レート制限を消費せずに23ドメイン全件の証明書を
+並列で再取得できた(`POST /admin/tenants/:host/tls/acme`を23件並列
+実行、全件成功)。再取得後は`ls /root/open-web-server/tls-certs/`で
+実際に46ファイル(23ドメイン×pem+key)が書き込まれていることを確認、
+全12代表ドメインで`https://<domain>/`が実際に200を返すことも実インター
+ネット経由で確認済み。**中断していた実害の時間**: 検知から復旧まで
+実測で数分以内(この session内で連続対応したため)、外部ユーザーからの
+実際のダウンタイム申告は無い。
+**次回セッションへの申し送り(最優先)**: `tls-certs`ディレクトリが
+今後も消えないか、次回のプロセス再起動(通常のデプロイ作業・VPS再起動
+いずれでも)で必ず実地確認すること——`persist_cert_to_disk`が実際に
+呼ばれているか(`upsert_pem`経由の全登録パスで)をコードレビューし直す
+か、あるいは単に今回初めてこのディレクトリへ書き込みが発生したのだと
+すれば(証明書登録は`/admin/tenants/:host/tls/acme`経由のみで、通常運用
+では滅多に再登録が起きないため何ヶ月も気づかれなかった可能性がある)、
+次回の`systemctl restart`時に本当に再ロードされることを実地確認する
+までは「恒久修正済み」と言い切らないこと。
+
 ### 2026-07-29(続き) audiocafe.tokyo `/index.php`リンク切れの実地対応で判明した設計ギャップ: `web_vhost`が`path_prefix`非対応
 
 audiocafe.tokyo側(`audiocafe-tokyo-rust`のCLAUDE.md同日エントリに詳細)で
