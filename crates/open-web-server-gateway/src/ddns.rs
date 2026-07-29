@@ -12,15 +12,47 @@
 //! 埋め込みたい箇所を`{ip}`と書いたURLを設定する。例(DuckDNS):
 //! `https://www.duckdns.org/update?domains=myhost&token=xxxx&ip={ip}`
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::power_profile::{effective_poll_interval, PowerProfileRegistry};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// 1回のHTTPリクエストに対するタイムアウト(2026-07-29追記、RS-Sync側で
+/// 見つかった実バグ——タイムアウト無しのHTTPクライアントが応答を待ち
+/// 続けてループ全体が無言のまま止まっていた——の横展開)。この処理は
+/// 元々`async`な`reqwest::Client`のため単独のタスクが詰まっても他の
+/// tokioタスクは止まらないが、それでも「DDNS更新自体が永久に止まる」
+/// リスクは残るため防御的に設定する。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// グローバルIPを取得するための、認証不要な公開エコーサービス。
 /// (プレーンテキストで自分のIPだけを返す、広く使われている定番の1つ)。
 const IP_ECHO_URL: &str = "https://api.ipify.org";
+
+/// このバックグラウンドループが最後に1周した時刻(Unixエポック秒)。
+/// 2026-07-29追記(ユーザー指示「このようなBUGが起きないか定期的に
+/// 自動チェックする機能」、RS-Sync側のスケジューラ無言停止バグの
+/// 横展開): `run_loop`が毎イテレーション更新する。5分間隔のループ
+/// なので、10分(2周分の猶予)以上更新が無ければ異常とみなせる。
+static LAST_TICK_UNIX: AtomicU64 = AtomicU64::new(0);
+
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// `(healthy, seconds_since_tick)`。ループが一度も起動していない
+/// (`OPEN_WEB_SERVER_DDNS_UPDATE_URL`未設定でループ自体がspawnされて
+/// いない)場合は`healthy=true`を返す(そもそも無効機能なので異常では
+/// ない、という判定)。
+pub fn heartbeat_status() -> (bool, u64) {
+    let last = LAST_TICK_UNIX.load(Ordering::Relaxed);
+    if last == 0 {
+        return (true, 0);
+    }
+    let elapsed = now_unix().saturating_sub(last);
+    (elapsed < 600, elapsed)
+}
 
 /// 環境変数`OPEN_WEB_SERVER_DDNS_UPDATE_URL`が設定されていれば、
 /// バックグラウンドタスクとして定期的(既定5分ごと)にグローバルIPを
@@ -42,9 +74,10 @@ pub fn spawn_if_configured(power_profile: Arc<PowerProfileRegistry>) {
 }
 
 async fn run_loop(template: String, power_profile: Arc<PowerProfileRegistry>) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap_or_else(|_| reqwest::Client::new());
     let mut last_ip: Option<String> = None;
     loop {
+        LAST_TICK_UNIX.store(now_unix(), Ordering::Relaxed);
         match fetch_current_ip(&client).await {
             Ok(ip) => {
                 if last_ip.as_deref() != Some(ip.as_str()) {

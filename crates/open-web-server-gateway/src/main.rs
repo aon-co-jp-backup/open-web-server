@@ -193,6 +193,21 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             handlers::tenants::update_tenant(state, req, &host).await
         }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
+        // 2026-07-29追記(ユーザー指示、RS-Sync側のスケジューラ無言停止
+        // バグの横展開): DDNSバックグラウンドループのハートビート。
+        // 認証不要(`/healthz`と同じ扱い、外部の死活監視ツールから
+        // 直接叩けるようにするため)。`ddns` feature無効時は`healthy:
+        // true`固定(そもそも当該ループが存在しないため異常ではない)。
+        #[cfg(feature = "ddns")]
+        (Method::GET, "/healthz/ddns") => {
+            let (healthy, seconds_since_tick) = crate::ddns::heartbeat_status();
+            let status = if healthy { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+            crate::response::json_response(status, &serde_json::json!({ "healthy": healthy, "seconds_since_tick": seconds_since_tick }))
+        }
+        #[cfg(not(feature = "ddns"))]
+        (Method::GET, "/healthz/ddns") => {
+            crate::response::json_response(StatusCode::OK, &serde_json::json!({ "healthy": true, "seconds_since_tick": 0, "note": "ddns feature disabled" }))
+        }
         (Method::GET, p) if p.starts_with("/internal/db/state/") => {
             handlers::state_query::get_state_at_commit(state, p).await
         }
@@ -1032,6 +1047,35 @@ mod tests {
         assert_eq!(sender.send_request(del_missing_req).await.unwrap().status(), StatusCode::NOT_FOUND);
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// 2026-07-29追記: `GET /healthz/ddns`が認証不要で200・
+    /// `healthy: true`を返すことの回帰確認(基本契約のみ、`ddns`
+    /// featureの有無どちらでもビルドが通ることは別途`cargo build`両方の
+    /// feature構成で確認済み)。
+    #[tokio::test]
+    async fn ddns_heartbeat_endpoint_reports_healthy_without_auth() {
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/healthz/ddns")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["healthy"], serde_json::json!(true));
     }
 
     /// `OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS`もプロセス全体のグローバル
