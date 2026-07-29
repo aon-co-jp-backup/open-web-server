@@ -611,6 +611,46 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-29(続き) audiocafe.tokyo `/index.php`リンク切れの実地対応で判明した設計ギャップ: `web_vhost`が`path_prefix`非対応
+
+audiocafe.tokyo側(`audiocafe-tokyo-rust`のCLAUDE.md同日エントリに詳細)で
+`/index.php`(旧PHP版を並行して見るナビリンク)が404になっている報告を
+受け、VPS実機で調査・対応した。**このリポジトリ側のコード変更は無し**
+だが、実運用で以下の設計ギャップが実際に問題を起こしたことをここに記録
+する。
+
+**発生した実害(自己申告)**: 診断中、`web_vhosts`は`tenant_router`と違い
+`path_prefix`を持たずhost単位でしか登録できないことを見落とし、
+`POST /admin/web-vhosts`で`audiocafe.tokyo`を(host全体として)登録して
+しまった。`main::dispatch()`の優先順位は「`tenant_router`の`path_prefix`
+一致 → `web_vhosts` → `tenant_router`のhost-only」であり、host-only
+エントリ(audiocafe.tokyo→127.0.0.1:4400、Rustサーバー、無停止稼働中
+だった`/`を含む全パス)より`web_vhosts`が優先されるため、**この登録
+1回で`/`を含むaudiocafe.tokyoの全パスが数秒間502になった**(`php -S`
+起動待ちの一時的な障害と判明、`DELETE /admin/web-vhosts/audiocafe.tokyo`
+で即座に復旧、データ損失等の実害は無し)。
+
+**根本原因の再発防止として今後検討すべき設計拡張(次回セッション向け
+提案、今回は未実装)**: `web_vhost::WebVhostConfig`に`tenant_router::
+TenantConfig`と同じ`path_prefix: Option<String>`を追加し、
+`WebVhostRegistry::resolve()`もHost一致に加えてprefix優先度を持たせる
+——これにより「特定ドメインの特定パスだけを静的/PHP配信、それ以外は
+既存のAPIバックエンドへ」という今回のような要求を、`tenant_router`側に
+逃げずに`web_vhost`単体で安全に表現できるようになる(現状は
+`tenant_router`のprefix機構を借用してPHP用の`php -S`エンドポイントを
+`backend_addr`として登録する回避策で対応した、audiocafe-tokyo-rust側
+CLAUDE.md参照)。
+
+- 次にすべきこと: (1) 上記`WebVhostConfig.path_prefix`拡張の実装・
+  テスト、(2) audiocafe.tokyoの`/top/`・`/cancer/`・`/Python/`・
+  `/video/`等、まだ404のまま残っている旧PHP専用パス群への同種対応
+  (現状`/index.php`のみ個別対応済み、audiocafe-tokyo-rust側CLAUDE.md
+  参照)、(3) VPSの現行`open-web-server`バイナリは`fastcgi-client`
+  feature無しでビルドされていることを`strings`で確認済み——次回の
+  VPS再ビルド・再デプロイ時は`--features fastcgi-client,acme,ddns,
+  sftp,upnp`等、本番で使うfeatureを揃えること(今回`php -S`常駐という
+  簡易的な回避策で凌いだ箇所を、本来のFastCGI直結へ置き換える前提)。
+
 ### 2026-07-29 `web_vhosts`/`redirects`にディスク永続化を追加(audiocafe.tokyo障害の根本再発防止)
 (ユーザー指示「根本的な再発防止…この『再起動でルーティング/証明書が消える』
 設計自体を直すの新規設計と(ディスクへの永続化を追加も同時進行もお願い)」)
