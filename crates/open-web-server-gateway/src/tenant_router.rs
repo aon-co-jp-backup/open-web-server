@@ -28,6 +28,29 @@ struct DomainsFile {
     domains: Vec<TenantConfig>,
 }
 
+/// `path_prefix`とリクエストパスの照合(2026-07-29追記)。
+///
+/// **`path_prefix == "/"` だけは特別扱いし、単純な`starts_with`ではなく
+/// 完全一致(`path == "/"`)のみを対象にする**——nginxの`location = /`
+/// (プレフィックスマッチではなく厳密一致でトップページのみを対象にする
+/// 慣用パターン)と同じ意図。`starts_with("/")`のままだと「あらゆるパスは
+/// `/`で始まる」ため、`path_prefix = "/"`を持つテナントが実質的に
+/// そのHost配下の全パスを常に奪ってしまい(`/top/`・`/cancer/`のような
+/// 他のバックエンドへ渡すべきパスまで巻き込む)、audiocafe.tokyoの
+/// トップページのみをRustへ、それ以外をPHPへ、という個別振り分けが
+/// 表現できなかった実運用上の問題を解消するための変更(詳細は
+/// `audiocafe-tokyo-rust`/`open-web-server`双方のCLAUDE.md
+/// 2026-07-29エントリ参照)。`"/"`以外の`path_prefix`(例: `/aruaru`)は
+/// 従来通り`starts_with`による前方一致のまま(既存の複数階層パス
+/// 対応との後方互換を維持)。
+fn path_matches_prefix(prefix: &str, path: &str) -> bool {
+    if prefix == "/" {
+        path == "/"
+    } else {
+        path.starts_with(prefix)
+    }
+}
+
 /// このドメインが使うバックエンドの種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -279,7 +302,7 @@ impl TenantRegistry {
                 h.config
                     .path_prefix
                     .as_ref()
-                    .filter(|p| !p.is_empty() && path.starts_with(p.as_str()))
+                    .filter(|p| !p.is_empty() && path_matches_prefix(p, path))
                     .map(|p| (p.len(), h))
             })
             .max_by_key(|(len, _)| *len)
@@ -353,6 +376,41 @@ mod tests {
             path_prefix: Some(prefix.to_string()),
             override_host: None,
         }
+    }
+
+    #[tokio::test]
+    async fn root_path_prefix_matches_only_exact_root_not_other_paths() {
+        let registry = TenantRegistry::new();
+        registry
+            .add(sample_prefixed(
+                "audiocafe.tokyo",
+                "/",
+                "127.0.0.1:4400",
+            ))
+            .await
+            .unwrap();
+        registry
+            .add(sample_prefixed(
+                "audiocafe.tokyo",
+                "/aruaru",
+                "127.0.0.1:4400",
+            ))
+            .await
+            .unwrap();
+
+        // 完全一致するトップページのみ"/"prefixのテナントへ届く。
+        let root = registry.resolve("audiocafe.tokyo", "/").await;
+        assert_eq!(root.unwrap().config.backend_addr, "127.0.0.1:4400");
+
+        // "/"はプレフィックスマッチではなく完全一致のため、他のパスは
+        // (別途"/aruaru"のような専用prefixが無い限り)"/"のテナントには
+        // 一切マッチしない——これがnginxの`location = /`相当の挙動。
+        assert!(registry.resolve_prefix_only("audiocafe.tokyo", "/top/").await.is_none());
+        assert!(registry.resolve_prefix_only("audiocafe.tokyo", "/index.php").await.is_none());
+
+        // より具体的な"/aruaru"プレフィックスは従来通り前方一致のまま。
+        let aruaru = registry.resolve("audiocafe.tokyo", "/aruaru/x").await;
+        assert_eq!(aruaru.unwrap().config.backend_addr, "127.0.0.1:4400");
     }
 
     #[tokio::test]
