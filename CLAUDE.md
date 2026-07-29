@@ -611,6 +611,79 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-29(続き3) ドメイン/URL死活監視+自動復旧(`domain_watchdog`)を新規実装・VPS本番で有効化
+
+ユーザー指示「登録したはずのドメイン・URL等が正常に表示されているか
+自動で定期的に確認する機能と、aruaru-llmによるAI判断で自動で復活する
+機能」+追加指示「ホームページやWEBサイトや貼ってあるはずのボタンや
+リンクが無かったりしないかなどの確認にも利用できるようにして」に対応
+(直前の`/index.php`リンク切れ・SPEC/PASS LABSリンク未反映の実障害を
+踏まえた第一実装、詳細は`domain_watchdog.rs`のモジュールdoc参照)。
+
+**実装**: 新規`crates/open-web-server-gateway/src/domain_watchdog.rs`。
+1. `check_host_https()`——自プロセスのTLSポートへ実TCP+TLSハンドシェイク
+   +簡易HTTP GETを行い、登録済み各ホスト(`tenants`/`web_vhosts`)が
+   実際に応答できているかを定期確認する。
+2. **コンテンツ確認(今回追加した本質部分)**: `WatchdogState::
+   set_expectations(host, ["期待する文字列", ...])`で、ページ本文に
+   含まれているべき文字列(ボタンラベル・リンク先等)を登録できる。
+   HTTPステータスは200でも期待文字列が1つでも本文に見つからなければ
+   「異常」として扱う——**まさに今回のSPEC/PASS LABSリンク未反映の
+   実障害(コードはpush済みだがVPS未デプロイ)を検知できる設計**。
+3. 連続失敗が閾値(既定2回)に達すると: (a) `aruaru-llm`
+   (`ARUARU_LLM_ENDPOINT`環境変数で到達可能な場合のみ)へ障害内容を
+   送り、応答を`last_ai_diagnosis`として記録(**助言目的のみ**、実際の
+   復旧判断には使わない——誤診断による誤操作を避けるため)。
+   (b) `CheckOutcome.tls_broken`(TLSハンドシェイク自体の失敗)の場合
+   のみ、該当ホストのACME証明書を自動再取得(`acme` feature併用時)。
+   コンテンツ欠落はこれでは直せないため自動復旧の対象にせず、検知・
+   記録のみに留める(正しい再デプロイ手順は状況依存であり、確認なしに
+   任意コマンドを自動実行すべきではないため)。
+4. 新規`domain-watchdog` feature(既定オフ)、
+   `OPEN_WEB_SERVER_WATCHDOG_ENABLED=true`でopt-in。管理API:
+   `GET /admin/watchdog/status`(全ホストの直近死活状態)、
+   `GET/POST /admin/watchdog/expectations(/:host)`(コンテンツ確認の
+   登録・一覧・解除)。
+
+**検証**: 新規単体テスト6件(`domain_watchdog`、実TLSリスナー相手の
+到達可否判定・コンテンツ確認の成功/失敗・閾値到達時の自動証明書再取得+
+AI診断記録・復旧後のリセット)+実HTTP統合テスト1件(管理API、
+認証・登録・一覧・解除の一気通貫)。`cargo test -p
+open-web-server-gateway`は**138件全green**(feature無し)、
+`--features domain-watchdog,fastcgi-client,acme,ddns,sftp,upnp`でも
+**160件全green**(1件はDATABASE_URL未設定によるignore、既存の想定通り)。
+
+**VPS本番デプロイ・実地確認(型チェックのみで完了と報告しない、既存
+運用ルール徹底)**: 上記featureを揃えて`cargo build --release`→
+`systemctl restart open-web-server`(直前にtls-certs=46ファイルである
+ことを確認、再起動後も46件のまま・全12代表ドメインHTTPS 200を再確認
+——今回は本当に無事だった)→systemdドロップイン
+(`/etc/systemd/system/open-web-server.service.d/watchdog.conf`)で
+`OPEN_WEB_SERVER_WATCHDOG_ENABLED=true`等を設定→再起動→
+`journalctl`で`domain watchdog enabled interval_secs=300
+failure_threshold=2`のログを実際に確認。`audiocafe.tokyo`に
+`["SPEC RPA-MG1000", "PASS LABS"]`をコンテンツ確認として登録し、
+`GET /admin/watchdog/status`で実際に23ドメイン全件が`last_ok: true`
+(audiocafe.tokyoも実際に反映済みのため正常判定)であることを確認済み。
+
+**正直な開示・今回のスコープ外**: (1) `aruaru-llm`への実接続検証は
+今回未実施(`ARUARU_LLM_ENDPOINT`環境変数は未設定のままデプロイ、
+到達不能時は`None`を返すだけで権威パスに影響しない設計だが、実際の
+診断文言が返ってくることの実地確認は次回、`aruaru-llm`をVPS上で
+稼働させた上で実施する必要がある)。(2) コンテンツ欠落からの自動復旧
+(例: 「php -Sプロセスを再起動する」「該当リポジトリをgit pull+
+再ビルドする」等)は意図的に実装していない——状況依存の判断を要する
+操作を確認なしに自動実行するのは危険なため、検知・記録・AI診断の
+提示までに留めている。(3) 現状`audiocafe.tokyo`にのみコンテンツ確認を
+登録済み、他の22ドメインは死活確認(HTTPステータスのみ)の対象では
+あるがコンテンツ確認は未登録のまま(必要に応じて今後追加)。
+
+- 次にすべきこと: (1) `aruaru-llm`をVPS上で稼働させ、
+  `ARUARU_LLM_ENDPOINT`を設定した上で実際にAI診断が返ってくることを
+  実地確認する。(2) 他の主要ドメインにも重要なコンテンツ確認
+  (トップページの主要文言等)を追加登録する。(3) コンテンツ欠落検知後の
+  半自動復旧(例: 管理者へのメール通知)を次回検討する。
+
 ### 2026-07-29(続き2) audiocafe.tokyoの旧PHPパス(`/top/`・`/cancer/`等)を`path_prefix="/"`完全一致化で解消+VPS再起動時にTLS証明書全消失を実地で発見・復旧
 
 前エントリ(`/index.php`個別対応)の続き。ユーザーから「`/top/`・
