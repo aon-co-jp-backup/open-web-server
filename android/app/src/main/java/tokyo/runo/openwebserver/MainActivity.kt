@@ -29,7 +29,8 @@ import kotlinx.coroutines.withContext
 /**
  * open-web-server Android版シェル(2026-07-23着手、2026-07-24に4電源
  * プロファイル[省メモリ/省電力/通常/常時電源接続]対応・open-easy-web
- * 連携導線を追加)。
+ * 連携導線を追加、2026-07-26に**排他選択→組み合わせ選択(`ActiveProfiles`)**
+ * へ再設計)。
  *
  * このActivity自体はサーバー機能を一切実装しない。クロスコンパイル済みの
  * `open-web-server`ネイティブ実行ファイル(`jniLibs/<abi>/libopenwebserver.so`
@@ -45,7 +46,8 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        const val EXTRA_PROFILE = "profile"
+        /** カンマ区切りの`pref_value`一覧(空文字列=通常)。 */
+        const val EXTRA_PROFILES = "profiles"
 
         /**
          * サーバーのbindポート(2026-07-24、`DdnsSetupActivity`からも
@@ -60,59 +62,45 @@ class MainActivity : AppCompatActivity() {
     private val bindPort = 18099
 
     /**
-     * 定期ヘルスチェックのポーリング間隔(2026-07-24追加、ユーザー指示
-     * 「省電力版は実際に省電力になるようにして」の具体的施策の一つ)。
-     * 省電力版は間隔を大きく延ばし(Doze/App Standbyへの影響を最小化)、
-     * 常時電源接続版は短い間隔で即応性を優先する、という実際の挙動差を
-     * 持たせる。
+     * 定期ヘルスチェックのポーリング間隔(2026-07-24追加、2026-07-26に
+     * 組み合わせ対応へ変更)。デスクトップ版`power_profile.rs::
+     * effective_settings()`と同じ合成ルール: 常時電源接続が有効なら
+     * (省電力の有無に関わらず)最優先で短縮、次に省電力単独なら延長、
+     * どちらも無ければ通常間隔。省メモリはこの軸に影響しない(独立軸)。
      */
-    private fun healthPollIntervalMs(profile: PowerProfile): Long = when (profile) {
-        PowerProfile.POWER_SAVE -> 5 * 60_000L // 5分
-        // 省メモリ版はポーリング頻度自体は通常版と同じにする(ポーリング
-        // 間隔の延長は「省電力」の施策軸であり、「省メモリ」の施策軸
-        // [下記memoryCacheLimitBytes/logBufferMaxLines等]とは別物として
-        // 明確に区別する、ユーザー指示2026-07-24)。
-        PowerProfile.MEMORY_SAVER -> 60_000L // 1分(通常と同じ)
-        PowerProfile.NORMAL -> 60_000L // 1分
-        PowerProfile.ALWAYS_ON -> 5_000L // 5秒
+    private fun healthPollIntervalMs(profiles: ActiveProfiles): Long = when {
+        profiles.alwaysOn -> 5_000L // 5秒(常時電源接続が省電力に優先する)
+        profiles.powerSave -> 5 * 60_000L // 5分
+        else -> 60_000L // 1分(通常・省メモリ単独)
     }
 
     /**
-     * 省メモリ版の具体的施策その1(2026-07-24追加、ユーザー指示
-     * 「省電力と省メモリは別軸として区別すること」への対応)。
-     * ログ画面(`logText`)に保持する行数の上限——省メモリ版は履歴
-     * バッファを大きく縮小し、それ以外は緩やかな上限とする。実際に
-     * `StringBuilder`の内容を`appendLine`のたびにこの行数へ切り詰める
-     * ことで、長時間稼働時のメモリ使用量差として実際に効果を持つ。
+     * 省メモリの具体的施策その1(2026-07-24追加、2026-07-26に組み合わせ
+     * 対応)。ログ画面(`logText`)に保持する行数の上限——省メモリが有効
+     * なら(他フラグの状態に関わらず)最も厳しい上限を採用する独立軸。
      */
-    private fun logBufferMaxLines(profile: PowerProfile): Int = when (profile) {
-        PowerProfile.MEMORY_SAVER -> 40
-        PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> 400
-        PowerProfile.ALWAYS_ON -> 2000
+    private fun logBufferMaxLines(profiles: ActiveProfiles): Int = when {
+        profiles.memorySaver -> 40
+        profiles.alwaysOn -> 2000
+        else -> 400
     }
 
     /**
-     * 省メモリ版の具体的施策その2。ヘルスチェックの結果本文
-     * (`pollHealthz`が記録する`body`)を保持する最大バイト数——省メモリ
-     * 版は長いレスポンスボディを大きく切り詰めて保持しないようにする
-     * (バックグラウンドでの先読み・プリフェッチは元々本アプリに存在
-     * しないため、キャッシュ/バッファサイズの縮小という形で「メモリ
-     * 使用量を実際に減らす」施策を実装する)。
+     * 省メモリの具体的施策その2。ヘルスチェックの結果本文保持サイズ。
+     * ログ行数上限と同じ合成ルール(省メモリが独立して最優先)。
      */
-    private fun healthBodyPreviewMaxChars(profile: PowerProfile): Int = when (profile) {
-        PowerProfile.MEMORY_SAVER -> 64
-        PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> 512
-        PowerProfile.ALWAYS_ON -> 4096
+    private fun healthBodyPreviewMaxChars(profiles: ActiveProfiles): Int = when {
+        profiles.memorySaver -> 64
+        profiles.alwaysOn -> 4096
+        else -> 512
     }
 
     /**
-     * ログバッファを`logBufferMaxLines(currentProfile)`件までに切り詰める
-     * (先頭[古い行]から破棄)。`StringBuilder`をまるごと作り直す単純な
-     * 実装だが、呼び出し頻度はヘルスチェックのポーリング間隔と同程度
-     * (最速でも常時電源接続版の5秒に1回)のため実用上問題にならない。
+     * ログバッファを`logBufferMaxLines(currentProfiles)`件までに切り詰める
+     * (先頭[古い行]から破棄)。
      */
     private fun trimLogBuffer(log: StringBuilder) {
-        val maxLines = logBufferMaxLines(currentProfile)
+        val maxLines = logBufferMaxLines(currentProfiles)
         val lines = log.lines()
         if (lines.size > maxLines) {
             val trimmed = lines.takeLast(maxLines)
@@ -125,25 +113,12 @@ class MainActivity : AppCompatActivity() {
     /**
      * ハードウェアアクセラレーター(CPU+GPU+NPU)対応の指示
      * (`open-web-server-wire::accel::AccelBackend`、環境変数
-     * `OPEN_WEB_SERVER_ACCEL_BACKEND`、`state.rs::accel_backend_from_env()`
-     * が解釈)。2026-07-24(続き)、ユーザー指示「実際に検出ロジックを
-     * 実装してほしい」を受け、`"hardware_accelerator"`固定値から
-     * `HardwareAccelDetector`が実際に検出したGPU/NPU/外部ディスプレイ
-     * 情報を反映した値へ変更した(常時電源接続版のみ)。省電力/省メモリ/
-     * 通常は引き続き明示的に`cpu`を指定する(ハードウェア検出自体は
-     * 常時電源接続版専用のスコープのまま)。**正直な開示**: 本体(Rust)側は
-     * 現時点でこの値を`AppState.accel_backend`に保持・起動ログへ出力
-     * するのみで、実際の圧縮/暗号化処理へは未配線(Gpu/Npu/
-     * HardwareAcceleratorはいずれも常にCpu実装にフォールバックする、
-     * `open-web-server`側CLAUDE.md HANDOFF参照)。このAndroid側の指定は
-     * 将来配線された際に効果を持つようになる先取り実装であり、現時点で
-     * 実際の消費電力・性能へ影響するのは電源プロファイルによる
-     * WakeLock有無とポーリング間隔の差のみ。
+     * `OPEN_WEB_SERVER_ACCEL_BACKEND`)。常時電源接続が有効な場合のみ
+     * 実際のハードウェア検出結果を使う(2026-07-26: 組み合わせでも
+     * この判定基準は変えない、常時電源接続以外の組み合わせでは`"cpu"`)。
      */
-    private fun accelBackendEnvValue(profile: PowerProfile): String = when (profile) {
-        PowerProfile.ALWAYS_ON -> hardwareDetection.toAccelBackendEnvValue()
-        PowerProfile.MEMORY_SAVER, PowerProfile.POWER_SAVE, PowerProfile.NORMAL -> "cpu"
-    }
+    private fun accelBackendEnvValue(profiles: ActiveProfiles): String =
+        if (profiles.alwaysOn) hardwareDetection.toAccelBackendEnvValue() else "cpu"
 
     /**
      * ハードウェア検出結果(2026-07-24(続き)新設)。`onCreate`内で1度だけ
@@ -165,14 +140,14 @@ class MainActivity : AppCompatActivity() {
      */
     private val openEasyWebUrl = "http://127.0.0.1:8080"
 
-    private lateinit var currentProfile: PowerProfile
+    private lateinit var currentProfiles: ActiveProfiles
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        currentProfile = resolveProfile()
-        PowerProfile.save(this, currentProfile)
+        currentProfiles = resolveProfiles()
+        PowerProfileStore.save(this, currentProfiles)
         hardwareDetection = HardwareAccelDetector.detect(this)
 
         val statusText = findViewById<TextView>(R.id.statusText)
@@ -188,17 +163,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         statusText.text =
-            "open-web-server [${currentProfile.emoji} ${currentProfile.label}モード] (not started)"
+            "open-web-server [${profileDisplayTag(currentProfiles)}] (not started)"
 
         startButton.setOnClickListener {
             startButton.isEnabled = false
             CoroutineScope(Dispatchers.Main).launch {
                 val log = StringBuilder()
-                log.appendLine("profile: ${currentProfile.label} (${currentProfile.prefValue})")
-                statusText.text = "[${currentProfile.emoji} ${currentProfile.label}] starting..."
+                log.appendLine("profiles: ${currentProfiles.displayLabels().joinToString("+")} (${currentProfiles.toPrefValues().joinToString(",")})")
+                statusText.text = "[${profileDisplayTag(currentProfiles)}] starting..."
                 val startResult = withContext(Dispatchers.IO) { startServerProcess(log) }
                 if (!startResult) {
-                    statusText.text = "[${currentProfile.emoji} ${currentProfile.label}] failed to start (see log)"
+                    statusText.text = "[${profileDisplayTag(currentProfiles)}] failed to start (see log)"
                     logText.text = log.toString()
                     startButton.isEnabled = true
                     return@launch
@@ -210,9 +185,9 @@ class MainActivity : AppCompatActivity() {
                 // チェックする(即座に叩くとACCEPT前でconnection refusedになり得る)。
                 val healthOk = withContext(Dispatchers.IO) { pollHealthz(log) }
                 statusText.text = if (healthOk) {
-                    "[${currentProfile.emoji} ${currentProfile.label}] RUNNING: GET /healthz responded 200"
+                    "[${profileDisplayTag(currentProfiles)}] RUNNING: GET /healthz responded 200"
                 } else {
-                    "[${currentProfile.emoji} ${currentProfile.label}] started, but /healthz did not respond (see log)"
+                    "[${profileDisplayTag(currentProfiles)}] started, but /healthz did not respond (see log)"
                 }
                 logText.text = log.toString()
                 startButton.isEnabled = true
@@ -229,14 +204,12 @@ class MainActivity : AppCompatActivity() {
 
         // **2026-07-26変更(ユーザー指示「Windows版もLINUX版もAndroidスマホ
         // 版も全てのバージョンで省メモリと省電力モードを途中からでも選択
-        // 出来るようにして」)**: 以前は`ProfileSelectActivity`(LAUNCHER)へ
-        // 遷移して`finish()`するのみで、これは事実上「アプリを終了して次回
-        // 起動時に新プロファイルを選び直す」フロー——`serverProcess`ごと
-        // 終了させてしまうため、稼働中のネイティブサーバーを止めずに
-        // プロファイルだけ切り替えることはできなかった。`showLiveProfile
-        // SwitchDialog()`に差し替え、稼働中のプロセス・Activityを維持した
-        // ままプロファイルを切り替えられるようにした(再起動が必要な項目は
-        // 正直にダイアログ内で案内する、下記`switchProfileLive()`のdoc参照)。
+        // 出来るようにして」、かつ「4つのモードを組み合わせで選択出来る
+        // ようにして」)**: `showLiveProfileSwitchDialog()`をチェックボックス
+        // による**複数選択**ダイアログへ差し替え、稼働中のプロセス・
+        // Activityを維持したまま組み合わせを切り替えられるようにした
+        // (再起動が必要な項目は正直にダイアログ内で案内する、下記
+        // `switchProfileLive()`のdoc参照)。
         changeProfileButton.setOnClickListener {
             showLiveProfileSwitchDialog()
         }
@@ -248,16 +221,26 @@ class MainActivity : AppCompatActivity() {
         registerPowerConnectionReceiver()
     }
 
+    /** ステータス表示用の短いタグ(例: `🧠✕ 省メモリ+🔋⚡️✕ 省電力`)。 */
+    private fun profileDisplayTag(profiles: ActiveProfiles): String {
+        val flags = profiles.activeFlags()
+        return if (flags.isEmpty()) {
+            "${PowerProfile.NORMAL.emoji} ${PowerProfile.NORMAL.label}"
+        } else {
+            flags.joinToString("+") { "${it.emoji} ${it.label}" }
+        }
+    }
+
     /**
      * 電源の抜き差しを監視する(2026-07-24追加、ユーザー指示「常時電源
      * 接続版は…電源から外したら自動で、デフォルトは省電力モード、
      * もしくは通常版に切り替えますか?と質問して切り替える」)。
      *
-     * - 常時電源接続版の実行中に`ACTION_POWER_DISCONNECTED`を受信したら、
-     *   「省電力モードに切り替えますか?それとも通常モードのままに
-     *   しますか?」とダイアログで質問する(既定の推奨選択肢は省電力)。
-     * - 省電力/通常版の実行中に`ACTION_POWER_CONNECTED`を受信したら、
-     *   常時電源接続版に戻すかを尋ねる(電源再接続時の導線)。
+     * - 常時電源接続が有効な状態で`ACTION_POWER_DISCONNECTED`を受信したら、
+     *   「省電力に切り替えますか?それとも通常のままにしますか?」と
+     *   ダイアログで質問する(既定の推奨選択肢は省電力)。
+     * - 常時電源接続が無効な状態で`ACTION_POWER_CONNECTED`を受信したら、
+     *   常時電源接続を有効にするかを尋ねる導線も追加。
      *
      * ダイアログは`this`(Activity)がフォアグラウンドにある前提
      * (`registerReceiver`はActivityのライフサイクルに紐づけて
@@ -282,150 +265,160 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 電源切断時の確認ダイアログ(2026-07-24、2択→3択へ変更、ユーザー
-     * 指示「省電力版に切り替えますか?省メモリ版に切り替えますか?もしくは
-     * 普通版に切り替えますか?」)。`AlertDialog`のボタンは実用上3つまでが
-     * 適切なため、`setPositiveButton`/`setNegativeButton`/
-     * `setNeutralButton`の3ボタン構成を採用(3択リストダイアログではなく
-     * こちらを選んだ理由: 既存の2択ボタン実装からの変更が最小で済み、
-     * 各選択肢の推奨度をボタンの目立たせ方[Positiveを既定推奨として先頭
-     * 表示]で表現しやすいため)。既定推奨(強調表示)は既存方針を踏襲し
-     * 「省電力」を第一候補のまま維持する。
+     * 電源切断時の確認ダイアログ(2026-07-24、2択→3択へ変更、2026-07-26に
+     * 組み合わせ選択の下でも維持——ここでの提案自体は依然として単一の
+     * 具体的な組み合わせを提示する簡潔なUXとし、細かい組み合わせ調整は
+     * `changeProfileButton`のチェックボックスダイアログに委ねる)。
      */
     private fun onPowerDisconnected() {
-        if (currentProfile != PowerProfile.ALWAYS_ON) return
+        if (!currentProfiles.alwaysOn) return
         if (isFinishing || isDestroyed) return
         AlertDialog.Builder(this)
             .setTitle("電源が外れました")
             .setMessage(
                 "常時電源接続モードで動作中に電源が外れました。\n" +
-                    "省電力版に切り替えますか?省メモリ版に切り替えますか?\n" +
-                    "もしくは普通版(通常版)に切り替えますか?\n" +
-                    "(推奨: 省電力版)"
+                    "省電力に切り替えますか?省メモリに切り替えますか?\n" +
+                    "もしくは通常のままにしますか?\n" +
+                    "(推奨: 省電力)"
             )
-            .setPositiveButton("省電力版へ切替") { _, _ ->
-                switchProfileAndRestart(PowerProfile.POWER_SAVE)
+            .setPositiveButton("省電力へ切替") { _, _ ->
+                switchProfileAndRestart(ActiveProfiles(powerSave = true))
             }
-            .setNeutralButton("省メモリ版へ切替") { _, _ ->
-                switchProfileAndRestart(PowerProfile.MEMORY_SAVER)
+            .setNeutralButton("省メモリへ切替") { _, _ ->
+                switchProfileAndRestart(ActiveProfiles(memorySaver = true))
             }
-            .setNegativeButton("普通版(通常版)のままにする") { _, _ ->
-                switchProfileAndRestart(PowerProfile.NORMAL)
+            .setNegativeButton("通常のままにする") { _, _ ->
+                switchProfileAndRestart(ActiveProfiles())
             }
             .setCancelable(false)
             .show()
     }
 
     private fun onPowerConnected() {
-        if (currentProfile == PowerProfile.ALWAYS_ON) return
+        if (currentProfiles.alwaysOn) return
         if (isFinishing || isDestroyed) return
         AlertDialog.Builder(this)
             .setTitle("電源が接続されました")
-            .setMessage("常時電源接続モード(ハードウェアアクセラレーター対応)に切り替えますか?")
+            .setMessage("常時電源接続(ハードウェアアクセラレーター対応)に切り替えますか?")
             .setPositiveButton("常時電源接続へ切替") { _, _ ->
-                switchProfileAndRestart(PowerProfile.ALWAYS_ON)
+                switchProfileAndRestart(ActiveProfiles(alwaysOn = true))
             }
             .setNegativeButton("このままにする", null)
             .show()
     }
 
     /**
-     * プロファイルを保存し、稼働中のサーバープロセスを終了・
-     * `MainActivity`を再起動して新プロファイルで再起動させる
-     * (WakeLock取得の有無・ポーリング間隔・アクセラレーター指定は
+     * プロファイル組み合わせを保存し、稼働中のサーバープロセスを終了・
+     * `MainActivity`を再起動して新しい組み合わせで再起動させる
+     * (WakeLock取得の有無・ポーリング間隔・アクセラレータ指定は
      * プロセス起動時に確定する値のため、切替には再起動が必要)。
      */
-    private fun switchProfileAndRestart(newProfile: PowerProfile) {
-        PowerProfile.save(this, newProfile)
+    private fun switchProfileAndRestart(newProfiles: ActiveProfiles) {
+        PowerProfileStore.save(this, newProfiles)
         Toast.makeText(
             this,
-            "${newProfile.emoji} ${newProfile.label}モードへ切り替えます",
+            "${profileDisplayTag(newProfiles)} へ切り替えます",
             Toast.LENGTH_SHORT
         ).show()
         val intent = Intent(this, MainActivity::class.java)
-        intent.putExtra(EXTRA_PROFILE, newProfile.prefValue)
+        intent.putExtra(EXTRA_PROFILES, newProfiles.toPrefValues().joinToString(","))
         startActivity(intent)
         finish()
     }
 
     /**
-     * 稼働中のサーバープロセス・Activityを終了させずにプロファイルを
-     * 切り替える(2026-07-26新設、ユーザー指示「途中からでも選択出来る
-     * ようにして」への対応、`switchProfileAndRestart()`との違いはdoc
-     * 参照)。押されたボタン(`changeProfileButton`)から呼ばれる。
+     * 稼働中のサーバープロセス・Activityを終了させずにプロファイルの
+     * **組み合わせ**を切り替える(2026-07-26新設・複数選択対応、
+     * ユーザー指示「途中からでも選択出来るようにして」への対応、
+     * `switchProfileAndRestart()`との違いはdoc参照)。押されたボタン
+     * (`changeProfileButton`)から呼ばれる。
      *
-     * 4択のうち現在のプロファイルにはチェックマークを付け、選択すると
-     * 即座に`switchProfileLive()`を呼ぶ(確認ダイアログを二重に出さない
-     * 簡潔なUXとした)。
+     * 3つのチェックボックス(現在の状態を初期値として反映)+「適用」
+     * ボタンのダイアログを表示し、決定した組み合わせを即座に
+     * `switchProfileLive()`へ渡す。
      */
     private fun showLiveProfileSwitchDialog() {
-        val profiles = PowerProfile.values()
-        val labels = profiles.map { p ->
-            val mark = if (p == currentProfile) "✓ " else "   "
-            "$mark${p.emoji} ${p.label}"
-        }.toTypedArray()
+        val items = arrayOf(
+            "${PowerProfile.MEMORY_SAVER.emoji} ${PowerProfile.MEMORY_SAVER.label}",
+            "${PowerProfile.POWER_SAVE.emoji} ${PowerProfile.POWER_SAVE.label}",
+            "${PowerProfile.ALWAYS_ON.emoji} ${PowerProfile.ALWAYS_ON.label}",
+        )
+        val checked = booleanArrayOf(
+            currentProfiles.memorySaver,
+            currentProfiles.powerSave,
+            currentProfiles.alwaysOn,
+        )
         AlertDialog.Builder(this)
-            .setTitle("電源プロファイルを切り替え(再起動不要)")
-            .setItems(labels) { _, which ->
-                switchProfileLive(profiles[which])
+            .setTitle("電源プロファイルを切り替え(組み合わせ選択、再起動不要)")
+            .setMultiChoiceItems(items, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("適用") { _, _ ->
+                switchProfileLive(
+                    ActiveProfiles(
+                        memorySaver = checked[0],
+                        powerSave = checked[1],
+                        alwaysOn = checked[2],
+                    )
+                )
             }
             .setNegativeButton("キャンセル", null)
             .show()
     }
 
     /**
-     * プロファイルを、アプリ・サーバープロセスを再起動せずに切り替える
-     * (2026-07-26新設)。`switchProfileAndRestart()`(電源切断/再接続
-     * ダイアログ用、既存のまま維持)とは異なり、こちらは`MainActivity`を
-     * 終了せず`serverProcess`も殺さない——「途中からでも選択出来るように
-     * して」というユーザー指示の中核。
+     * プロファイルの組み合わせを、アプリ・サーバープロセスを再起動せずに
+     * 切り替える(2026-07-26新設)。`switchProfileAndRestart()`(電源
+     * 切断/再接続ダイアログ用、既存のまま維持)とは異なり、こちらは
+     * `MainActivity`を終了せず`serverProcess`も殺さない——「途中からでも
+     * 選択出来るようにして」というユーザー指示の中核。
      *
      * **実際に即座に反映される項目**:
-     * - `PowerProfile.save()`(永続化+ホーム画面アイコンの動的切替、
-     *   `applyLauncherIcon()`参照)。
+     * - `PowerProfileStore.save()`(永続化+ホーム画面アイコンの動的切替、
+     *   `representativeForIcon()`参照)。
      * - `WakeLock`の取得/解放(`applyProfilePowerBehaviorLive()`、下記)。
      * - ヘルスチェックのポーリング間隔(`startPeriodicHealthPoll()`が
-     *   毎イテレーション`currentProfile`を読み直すよう上で改修済みのため、
+     *   毎イテレーション`currentProfiles`を読み直すよう改修済みのため、
      *   次の1回の待機から新間隔になる)。
      * - ログ保持行数・ヘルスチェック本文保持サイズ(`logBufferMaxLines`/
-     *   `healthBodyPreviewMaxChars`は元々`currentProfile`を直接参照する
-     *   実装だったため、これも改修不要で即座に反映される)。
+     *   `healthBodyPreviewMaxChars`は元々`currentProfiles`を直接参照する
+     *   実装のため、これも改修不要で即座に反映される)。
      *
      * **正直な開示・再起動が必要なまま残る項目**: `OPEN_WEB_SERVER_
      * ACCEL_BACKEND`環境変数は`ProcessBuilder`がネイティブプロセスを
-     * 起動する瞬間にしか渡せないため、常時電源接続版⇔他プロファイル間の
+     * 起動する瞬間にしか渡せないため、常時電源接続の有無切替に伴う
      * ハードウェアアクセラレータ指定の切替自体は、ネイティブサーバー
      * プロセスの再起動(`serverProcess`の再起動、Activity自体は再起動
-     * しない)が必要なまま——この制約はダイアログ内で正直に案内する。
+     * しない)が必要なまま——この制約はToastで正直に案内する。
      */
-    private fun switchProfileLive(newProfile: PowerProfile) {
-        if (newProfile == currentProfile) return
-        val previousProfile = currentProfile
-        currentProfile = newProfile
-        PowerProfile.save(this, newProfile)
+    private fun switchProfileLive(newProfiles: ActiveProfiles) {
+        if (newProfiles == currentProfiles) return
+        val previousProfiles = currentProfiles
+        currentProfiles = newProfiles
+        PowerProfileStore.save(this, newProfiles)
 
         val log = StringBuilder()
-        applyProfilePowerBehaviorLive(previousProfile, log)
+        applyProfilePowerBehaviorLive(previousProfiles, log)
 
         Toast.makeText(
             this,
-            "${newProfile.emoji} ${newProfile.label}モードへ切替(再起動なし)",
+            "${profileDisplayTag(newProfiles)} へ切替(再起動なし)",
             Toast.LENGTH_SHORT
         ).show()
 
         val statusText = findViewById<TextView>(R.id.statusText)
         if (serverProcess?.isAlive == true) {
-            statusText.text = "[${newProfile.emoji} ${newProfile.label}] RUNNING (switched live, no restart)"
+            statusText.text = "[${profileDisplayTag(newProfiles)}] RUNNING (switched live, no restart)"
         } else {
             statusText.text =
-                "open-web-server [${newProfile.emoji} ${newProfile.label}モード] (not started)"
+                "open-web-server [${profileDisplayTag(newProfiles)}] (not started)"
         }
 
         if (log.isNotEmpty()) {
             android.util.Log.i("open-web-server", log.toString().trim())
         }
 
-        if (accelBackendEnvValue(previousProfile) != accelBackendEnvValue(newProfile)
+        if (accelBackendEnvValue(previousProfiles) != accelBackendEnvValue(newProfiles)
             && serverProcess?.isAlive == true
         ) {
             Toast.makeText(
@@ -442,8 +435,8 @@ class MainActivity : AppCompatActivity() {
      * 呼び直せる形へ別関数として新設した——`WakeLock`の実際の取得/解放を
      * 即座に行う点が中身)。
      */
-    private fun applyProfilePowerBehaviorLive(previousProfile: PowerProfile, log: StringBuilder) {
-        val needsWakeLock = currentProfile == PowerProfile.ALWAYS_ON
+    private fun applyProfilePowerBehaviorLive(previousProfiles: ActiveProfiles, log: StringBuilder) {
+        val needsWakeLock = currentProfiles.alwaysOn
         val hasWakeLock = wakeLock?.isHeld == true
 
         if (needsWakeLock && !hasWakeLock) {
@@ -455,7 +448,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 lock.acquire()
                 wakeLock = lock
-                log.appendLine("power: acquired PARTIAL_WAKE_LOCK live (switched to always-on profile)")
+                log.appendLine("power: acquired PARTIAL_WAKE_LOCK live (always-on enabled)")
             } catch (e: Exception) {
                 log.appendLine("power: failed to acquire WakeLock live: ${e.message}")
             }
@@ -463,72 +456,88 @@ class MainActivity : AppCompatActivity() {
             wakeLock?.release()
             wakeLock = null
             log.appendLine(
-                "power: released WakeLock live (switched away from always-on profile, " +
-                    "was: ${previousProfile.label})"
+                "power: released WakeLock live (always-on disabled, was: " +
+                    "${previousProfiles.displayLabels().joinToString("+")})"
             )
         }
     }
 
     /**
      * `activity-alias`(専用ホーム画面アイコン)経由なら`Intent.action`から、
-     * `ProfileSelectActivity`経由なら`EXTRA_PROFILE`から、どちらでも無い
-     * (直接`MainActivity`が再利用された等)場合は前回保存値から、
-     * プロファイルを決定する。
+     * `ProfileSelectActivity`経由なら`EXTRA_PROFILES`(カンマ区切り)から、
+     * どちらでも無い(直接`MainActivity`が再利用された等)場合は前回保存値
+     * から、プロファイルの組み合わせを決定する。
      */
-    private fun resolveProfile(): PowerProfile {
+    private fun resolveProfiles(): ActiveProfiles {
         return when (intent?.action) {
-            "tokyo.runo.openwebserver.LAUNCH_MEMORY_SAVER" -> PowerProfile.MEMORY_SAVER
-            "tokyo.runo.openwebserver.LAUNCH_POWER_SAVE" -> PowerProfile.POWER_SAVE
-            "tokyo.runo.openwebserver.LAUNCH_NORMAL" -> PowerProfile.NORMAL
-            "tokyo.runo.openwebserver.LAUNCH_ALWAYS_ON" -> PowerProfile.ALWAYS_ON
+            "tokyo.runo.openwebserver.LAUNCH_MEMORY_SAVER" -> ActiveProfiles(memorySaver = true)
+            "tokyo.runo.openwebserver.LAUNCH_POWER_SAVE" -> ActiveProfiles(powerSave = true)
+            "tokyo.runo.openwebserver.LAUNCH_NORMAL" -> ActiveProfiles()
+            "tokyo.runo.openwebserver.LAUNCH_ALWAYS_ON" -> ActiveProfiles(alwaysOn = true)
             else -> {
-                val extra = intent?.getStringExtra(EXTRA_PROFILE)
-                if (extra != null) PowerProfile.fromPrefValue(extra) else PowerProfile.load(this)
+                val extra = intent?.getStringExtra(EXTRA_PROFILES)
+                if (extra != null) {
+                    val values = extra.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    ActiveProfiles.fromPrefValues(values)
+                } else {
+                    PowerProfileStore.load(this)
+                }
             }
         }
     }
 
     /**
-     * プロファイルごとの電源管理の中身そのもの。
-     * - 省電力/通常: `WakeLock`を一切取得しない(=Android Doze/App
-     *   Standbyに逆らわない、これが「省電力対応」の実体)。
-     * - 常時電源接続: `PARTIAL_WAKE_LOCK`を保持し、画面消灯後もCPUを
-     *   スリープさせない(充電しっぱなしのサーバー専用機を想定)。
+     * プロファイル組み合わせごとの電源管理の中身そのもの。
+     * - 常時電源接続が無効: `WakeLock`を一切取得しない(=Android Doze/
+     *   App Standbyに逆らわない、これが「省電力対応」の実体)。
+     * - 常時電源接続が有効: `PARTIAL_WAKE_LOCK`を保持し、画面消灯後も
+     *   CPUをスリープさせない(充電しっぱなしのサーバー専用機を想定)。
+     * - 省メモリが有効: WakeLockの有無とは独立に、ログ保持行数・
+     *   ヘルスチェック本文の保持サイズを大きく絞る(別軸の合成)。
      */
     private fun applyProfilePowerBehavior(log: StringBuilder) {
-        when (currentProfile) {
-            PowerProfile.ALWAYS_ON -> {
-                try {
-                    val pm = getSystemService(POWER_SERVICE) as PowerManager
-                    val lock = pm.newWakeLock(
-                        PowerManager.PARTIAL_WAKE_LOCK,
-                        "OpenWebServer::AlwaysOnWakeLock"
-                    )
-                    lock.acquire()
-                    wakeLock = lock
-                    log.appendLine("power: acquired PARTIAL_WAKE_LOCK (always-on profile)")
-                } catch (e: Exception) {
-                    log.appendLine("power: failed to acquire WakeLock: ${e.message}")
-                }
-            }
-            PowerProfile.POWER_SAVE -> {
-                log.appendLine("power: no WakeLock acquired (power-save profile, Doze-friendly)")
-            }
-            PowerProfile.MEMORY_SAVER -> {
-                // 「省電力」とは別軸: WakeLockの有無ではなく、ログ保持行数
-                // (`logBufferMaxLines`)・ヘルスチェック本文の保持サイズ
-                // (`healthBodyPreviewMaxChars`)を大きく絞ることでメモリ
-                // 使用量そのものを減らす、というのがこのプロファイルの
-                // 実体。詳細な数値差は各関数のdoc参照。
-                log.appendLine(
-                    "memory: log buffer capped at ${logBufferMaxLines(currentProfile)} lines, " +
-                        "health body preview capped at ${healthBodyPreviewMaxChars(currentProfile)} chars " +
-                        "(memory-saver profile, no background prefetch/no large caches)"
+        if (currentProfiles.alwaysOn) {
+            try {
+                val pm = getSystemService(POWER_SERVICE) as PowerManager
+                val lock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "OpenWebServer::AlwaysOnWakeLock"
                 )
+                lock.acquire()
+                wakeLock = lock
+                log.appendLine("power: acquired PARTIAL_WAKE_LOCK (always-on enabled)")
+            } catch (e: Exception) {
+                log.appendLine("power: failed to acquire WakeLock: ${e.message}")
             }
-            PowerProfile.NORMAL -> {
-                log.appendLine("power: no WakeLock acquired (normal profile)")
-            }
+        } else {
+            log.appendLine("power: no WakeLock acquired (always-on not selected)")
+        }
+
+        if (currentProfiles.powerSave) {
+            log.appendLine(
+                "power: polling interval extended to ${healthPollIntervalMs(currentProfiles) / 1000}s " +
+                    "(power-save enabled" +
+                    (if (currentProfiles.alwaysOn) ", but overridden by always-on for this axis" else "") +
+                    ")"
+            )
+        }
+
+        if (currentProfiles.memorySaver) {
+            // 「省電力」/「常時電源接続」とは別軸: WakeLockの有無ではなく、
+            // ログ保持行数(`logBufferMaxLines`)・ヘルスチェック本文の
+            // 保持サイズ(`healthBodyPreviewMaxChars`)を大きく絞ることで
+            // メモリ使用量そのものを減らす、というのがこのフラグの実体。
+            // 常時電源接続/省電力の状態に関わらず常に適用される(独立軸)。
+            log.appendLine(
+                "memory: log buffer capped at ${logBufferMaxLines(currentProfiles)} lines, " +
+                    "health body preview capped at ${healthBodyPreviewMaxChars(currentProfiles)} chars " +
+                    "(memory-saver enabled, no background prefetch/no large caches, " +
+                    "independent of power-save/always-on state)"
+            )
+        }
+
+        if (currentProfiles.isNormal) {
+            log.appendLine("power: normal profile (no flags active, balanced defaults)")
         }
     }
 
@@ -542,10 +551,10 @@ class MainActivity : AppCompatActivity() {
             .setTitle("検出したハードウェア情報 / Detected Hardware Info")
             .setMessage(
                 hardwareDetection.toHumanReadableSummary() +
-                    "\n\n常時電源接続モードで起動した場合、OPEN_WEB_SERVER_ACCEL_BACKEND=\"" +
+                    "\n\n常時電源接続を有効にして起動した場合、OPEN_WEB_SERVER_ACCEL_BACKEND=\"" +
                     hardwareDetection.toAccelBackendEnvValue() +
                     "\" として渡されます。" +
-                    "\nWhen started in Always-On mode, OPEN_WEB_SERVER_ACCEL_BACKEND=\"" +
+                    "\nWhen started with Always-On enabled, OPEN_WEB_SERVER_ACCEL_BACKEND=\"" +
                     hardwareDetection.toAccelBackendEnvValue() +
                     "\" will be passed."
             )
@@ -577,8 +586,8 @@ class MainActivity : AppCompatActivity() {
             val pb = ProcessBuilder(binaryPath.absolutePath)
             pb.directory(filesDir)
             pb.environment()["OPEN_WEB_SERVER_BIND"] = "127.0.0.1:$bindPort"
-            pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfile)
-            log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfile)}")
+            pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfiles)
+            log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfiles)}")
 
             // DuckDNS DDNS設定画面(2026-07-24追加)からRust側管理API
             // (`/admin/ddns/*`)を叩けるようにするため、`SecureDdnsStore`に
@@ -618,26 +627,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 起動後の継続的な死活監視(2026-07-24追加)。プロファイルごとに
-     * 間隔を変える(`healthPollIntervalMs`)ことが「省電力版が実際に
-     * 省電力になる」施策そのもの——省電力版はこのループの頻度自体を
-     * 大きく落とし、CPU/無線を起こす回数を最小化する。常時電源接続版は
-     * 短い間隔で即応性を優先する。
+     * 起動後の継続的な死活監視(2026-07-24追加)。プロファイルの組み合わせ
+     * ごとに間隔を変える(`healthPollIntervalMs`)ことが「省電力が実際に
+     * 省電力になる」施策そのもの——省電力有効時はこのループの頻度自体を
+     * 大きく落とし、CPU/無線を起こす回数を最小化する。常時電源接続が
+     * 有効なら短い間隔で即応性を優先する(省電力に優先、上記doc参照)。
      */
     private fun startPeriodicHealthPoll(statusText: TextView) {
         healthPollJob?.cancel()
         healthPollJob = CoroutineScope(Dispatchers.Main).launch {
             while (isActive) {
                 // **2026-07-26変更(ユーザー指示「途中からでもプロファイル
-                // 切替できるように」対応)**: 以前はループ開始時に
-                // `healthPollIntervalMs(currentProfile)`を1度だけ評価して
-                // `intervalMs`へ固定していたため、`switchProfileLive()`で
-                // `currentProfile`を書き換えてもこのループの間隔には次回
-                // ループ起動(=サーバー再起動)まで反映されなかった。
-                // 毎イテレーションで`currentProfile`を読み直す形に変更し、
-                // アプリ再起動はもちろんサーバープロセス再起動も無しに、
-                // 次の1回の待機から新しい間隔が反映されるようにした。
-                val intervalMs = healthPollIntervalMs(currentProfile)
+                // 切替できるように」対応)**: 毎イテレーションで
+                // `currentProfiles`を読み直す形のため、アプリ再起動は
+                // もちろんサーバープロセス再起動も無しに、次の1回の待機
+                // から新しい間隔が反映される。
+                val intervalMs = healthPollIntervalMs(currentProfiles)
                 delay(intervalMs)
                 val ok = withContext(Dispatchers.IO) {
                     try {
@@ -653,10 +658,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 statusText.text = if (ok) {
-                    "[${currentProfile.emoji} ${currentProfile.label}] RUNNING " +
+                    "[${profileDisplayTag(currentProfiles)}] RUNNING " +
                         "(poll every ${intervalMs / 1000}s)"
                 } else {
-                    "[${currentProfile.emoji} ${currentProfile.label}] health check failed"
+                    "[${profileDisplayTag(currentProfiles)}] health check failed"
                 }
             }
         }
@@ -673,7 +678,7 @@ class MainActivity : AppCompatActivity() {
                 val code = conn.responseCode
                 val body = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
-                val maxPreview = healthBodyPreviewMaxChars(currentProfile)
+                val maxPreview = healthBodyPreviewMaxChars(currentProfiles)
                 val bodyPreview = if (body.length > maxPreview) body.take(maxPreview) + "…(truncated)" else body
                 log.appendLine("attempt ${attempt + 1}: GET /healthz -> $code \"$bodyPreview\"")
                 trimLogBuffer(log)

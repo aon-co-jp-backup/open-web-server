@@ -71,6 +71,23 @@ pub struct AppState {
     pub power_profile: Arc<PowerProfileRegistry>,
 }
 
+/// `OPEN_WEB_SERVER_TLS_CERT_DIR`環境変数で指定されたディレクトリ
+/// (未設定なら既定`./tls-certs/`)を、`TenantCertResolver`のACME証明書
+/// ディスク永続化先として返す。**2026-07-26追記(本番障害の再発防止策)**:
+/// 以前はこの永続化が存在せず、`open-web-server`プロセスの再起動だけで
+/// 稼働中の約20ドメイン全てのTLS証明書がメモリから消え、HTTPS経由の
+/// 全アクセスが一斉に落ちる実障害が発生した(うち`karu.tokyo`は短時間に
+/// 何度も再ACME取得したことでLet's Encryptの実レート制限に達し、約24時間
+/// 証明書を取得できないまま停止した)。本関数が返すディレクトリへ
+/// `TenantCertResolver::load_from_disk`が起動時に既存証明書を復元する
+/// ことで、再起動後も既存の全ドメインが即座にHTTPSで応答できるようにする
+/// (詳細・テストは`open_web_server_wire::tls`モジュールdoc参照)。
+fn tls_cert_dir_from_env() -> std::path::PathBuf {
+    std::env::var("OPEN_WEB_SERVER_TLS_CERT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("./tls-certs/"))
+}
+
 /// `OPEN_WEB_SERVER_ACCEL_BACKEND`環境変数の文字列表現をパースする。
 /// 未知の値・未設定は`Cpu`(最も安全な既定)にフォールバックする。
 fn accel_backend_from_env() -> AccelBackend {
@@ -101,7 +118,7 @@ impl AppState {
         let ledger = Arc::new(Ledger::new(config, wal));
         let db_state_reader = DbStateReader::shared(open_runo_endpoint);
         let tenants = Arc::new(TenantRegistry::new());
-        let tls_resolver = TenantCertResolver::new();
+        let tls_resolver = TenantCertResolver::load_from_disk(tls_cert_dir_from_env());
         let acme_challenges = Arc::new(ChallengeStore::new());
         let keyring = Arc::new(KeyGuardian::load_from_disk(GuardianConfig::from_env()));
         let web_vhosts = Arc::new(WebVhostRegistry::new());

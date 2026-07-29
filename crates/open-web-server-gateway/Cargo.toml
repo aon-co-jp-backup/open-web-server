@@ -83,6 +83,13 @@ fastcgi-client = ["dep:fastcgi-client"]
 # (この既存の「サブクレートのfeatureをゲートウェイ側へ透過させる」パターンは
 # 新設ではなく、`custom_domain`/`custom_domain_db`と同じ形)。
 disaster_email_backup = ["open-web-server-ledger/disaster_email_backup"]
+# SET横断(open-easy-web/open-web-server/open-raid-z/aruaru-db)自動同期
+# ディザスタバックアップ(`open-web-server-ledger::crossrepo_backup`)。
+# `open-web-server-ledger`側の同名featureをそのまま伝播させるだけ(既存の
+# `disaster_email_backup`/`custom_domain`と同じ「サブクレートのfeatureを
+# ゲートウェイ側へ透過させる」パターン)。既定オフ、`CROSSREPO_BACKUP_DIR`
+# 未設定なら何もしない(既存動作に一切影響しない)。
+crossrepo_backup = ["open-web-server-ledger/crossrepo_backup"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

@@ -66,6 +66,18 @@
           含める。4つともホーム画面に並べてインストールでき、タップした
           瞬間にそのプロファイルで`MainActivity`が起動する
           (`ProfileSelectActivity`を経由しない近道)。
+
+          **2026-07-26更新(組み合わせ選択への再設計)**: プロファイルが
+          複数同時に有効化できるようになったため、ホーム画面の「代表
+          アイコン」は`PowerProfileStore.applyLauncherIcon()`が
+          `ActiveProfiles.representativeForIcon()`の優先順位(省メモリ >
+          省電力 > 常時電源接続 > 通常)で選んだ1つだけを有効化し、残り
+          3つを無効化する(`setComponentEnabledSetting`、詳細は
+          `PowerProfile.kt`の`representativeForIcon()`のdoc参照)。この
+          4つの`activity-alias`自体・各`LAUNCH_*`アクションは変更して
+          いない(単一フラグでの起動ショートカットとして引き続き機能する、
+          複数フラグを一度に指定して起動したい場合は`ProfileSelectActivity`
+          のチェックボックスUIを使う)。
         -->
         <activity-alias
             android:name=".LauncherMemorySaver"

@@ -43,6 +43,8 @@ use open_web_server_wire::udp_channel::{UdpChannelKeys, UdpSender};
 use tracing::{info, warn};
 
 pub mod audit_log;
+#[cfg(feature = "crossrepo_backup")]
+pub mod crossrepo_backup;
 #[cfg(feature = "disaster_email_backup")]
 pub mod disaster_email_backup;
 pub mod multi_region;

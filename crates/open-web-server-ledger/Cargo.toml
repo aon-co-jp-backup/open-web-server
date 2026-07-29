@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "crossrepo-backup-cli"
+path = "src/bin/crossrepo_backup_cli.rs"
+required-features = ["crossrepo_backup"]
+
 [dependencies]
 open-web-server-core = { path = "../open-web-server-core" }
 open-web-server-wire = { path = "../open-web-server-wire" }
@@ -12,6 +17,7 @@ async-trait.workspace = true
 chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,6 +25,7 @@ reqwest.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 # スタンドアロンのメール・ディザスタバックアップ(disaster_email_backup
 # feature有効時のみ)。姉妹リポジトリ`open-raid-z`が実装・テスト済みの
 # `open_raid_z_core::offsite_backup::EmailBackupTarget`をpath依存で再利用し、
@@ -29,6 +36,11 @@ open_raid_z_core = { path = "../../../open-raid-z/open_runo_zfs_source/open_raid
 
 [features]
 disaster_email_backup = ["dep:open_raid_z_core"]
+# 横断リポジトリ自動同期バックアップ (open-easy-web/open-web-server/
+# open-raid-z/aruaru-dbの重要ファイルを定期的にローカル/VPSフォルダへ
+# 同期する)。offsite_backup::OffsiteBackupTargetを再利用するため
+# open_raid_z_coreのoffsite_backup featureが必要。
+crossrepo_backup = ["dep:open_raid_z_core", "open_raid_z_core/offsite_backup"]
 
 [dev-dependencies]
 hyper.workspace = true

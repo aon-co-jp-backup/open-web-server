@@ -3,18 +3,20 @@ package tokyo.runo.openwebserver
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
+import android.widget.CheckBox
 import androidx.appcompat.app.AppCompatActivity
 
 /**
  * 起動時の電源プロファイル選択画面(2026-07-24新設、LAUNCHER。同日中に
- * 3択→4択[省メモリ版を追加]へ拡張)。
+ * 3択→4択[省メモリ版を追加]へ拡張、2026-07-26に**排他選択(ラジオ的挙動の
+ * ボタン)→組み合わせ選択(チェックボックス)**へ変更)。
  *
- * 「文字表示」と「アイコン」の両方でプロファイルを区別できるように、
- * 各ボタンは絵文字(脳/電池/天秤/プラグ)+日本語ラベルを併記する。加えて
- * ホーム画面上にも4プロファイルそれぞれの専用アイコン(`activity-alias`、
- * `AndroidManifest.xml`参照)を用意し、アイコンから直接その
- * プロファイルで起動できるようにしている——この画面はその「アイコンを
- * 追加インストールせず、後からアプリ内で選び直したい」場合の経路。
+ * ユーザー指示「4つのモードを組み合わせで選択出来るようにして」への
+ * 対応。旧実装はボタン押下=即座にその1プロファイルのみで起動、だった。
+ * 新実装は[CheckBox]×3(省メモリ/省電力/常時電源接続、「通常」は独立
+ * トグルではない——`ActiveProfiles`のdoc参照)+「この組み合わせで起動」
+ * ボタンの構成。**互いに素なチェックボックスではない**ため、たとえば
+ * 省メモリ+省電力の両方にチェックを入れて起動できる。
  */
 class ProfileSelectActivity : AppCompatActivity() {
 
@@ -22,24 +24,25 @@ class ProfileSelectActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_profile_select)
 
-        findViewById<Button>(R.id.buttonMemorySaver).setOnClickListener {
-            launchWithProfile(PowerProfile.MEMORY_SAVER)
-        }
-        findViewById<Button>(R.id.buttonPowerSave).setOnClickListener {
-            launchWithProfile(PowerProfile.POWER_SAVE)
-        }
-        findViewById<Button>(R.id.buttonNormal).setOnClickListener {
-            launchWithProfile(PowerProfile.NORMAL)
-        }
-        findViewById<Button>(R.id.buttonAlwaysOn).setOnClickListener {
-            launchWithProfile(PowerProfile.ALWAYS_ON)
+        val checkMemorySaver = findViewById<CheckBox>(R.id.checkMemorySaver)
+        val checkPowerSave = findViewById<CheckBox>(R.id.checkPowerSave)
+        val checkAlwaysOn = findViewById<CheckBox>(R.id.checkAlwaysOn)
+        val launchButton = findViewById<Button>(R.id.buttonLaunchCombination)
+
+        launchButton.setOnClickListener {
+            val profiles = ActiveProfiles(
+                memorySaver = checkMemorySaver.isChecked,
+                powerSave = checkPowerSave.isChecked,
+                alwaysOn = checkAlwaysOn.isChecked,
+            )
+            launchWithProfiles(profiles)
         }
     }
 
-    private fun launchWithProfile(profile: PowerProfile) {
-        PowerProfile.save(this, profile)
+    private fun launchWithProfiles(profiles: ActiveProfiles) {
+        PowerProfileStore.save(this, profiles)
         val intent = Intent(this, MainActivity::class.java)
-        intent.putExtra(MainActivity.EXTRA_PROFILE, profile.prefValue)
+        intent.putExtra(MainActivity.EXTRA_PROFILES, profiles.toPrefValues().joinToString(","))
         startActivity(intent)
         finish()
     }

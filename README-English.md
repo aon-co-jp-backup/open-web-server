@@ -465,6 +465,41 @@ open-web-server/
   has no distinct "actually reduce memory" mechanism yet for
   `memory_saver` — honestly scoped as naming/consistency only for now.
   See `CLAUDE.md`'s 2026-07-26 HANDOFF for full detail.
+- [x] **Power profiles redesigned from exclusive choice to combinable
+  flags, on every platform** (2026-07-26, same day) — the 4 profiles
+  (memory-saver / power-save / normal / always-on) used to be a
+  single-choice pick. Redesigned into 3 independent boolean flags
+  (memory-saver / power-save / always-on); "normal" is not a flag —
+  it is simply "no flag active" (documented in code comments on both
+  sides). Any combination can now be active at once on Windows, Linux,
+  and Android: memory-saver + power-save composes both effects
+  simultaneously (each numeric setting takes the more conservative
+  value across active flags, e.g. poll interval stays extended *and*
+  the memory-cache factor stays reduced). Power-save + always-on is a
+  semantically contradictory combination; the resolution (documented
+  in `power_profile.rs`/`PowerProfile.kt`): always-on overrides only
+  power-save's battery-conservation axis (poll-interval extension) and
+  keeps its own short interval, since a permanently-powered device has
+  no battery concern — but this does **not** disable memory-saver's
+  independent memory-reduction axis if it's also selected. Desktop's
+  `power_profile.rs` exposes `PowerProfileFlags`/`effective_settings()`;
+  Android's `PowerProfile.kt` exposes the equivalent `ActiveProfiles`.
+  The admin API payload changed from a single string
+  (`{"profile": "power_save"}`) to an array
+  (`{"profiles": ["power_save", "memory_saver"]}`, empty array =
+  normal). Android's `ProfileSelectActivity` changed from 4 exclusive
+  buttons to 3 checkboxes + a launch button; the live-switch dialog is
+  now a multi-select checklist. The 4 launcher-icon aliases are kept,
+  but when multiple flags are active only one "representative" icon is
+  shown, chosen by priority: memory-saver > power-save > always-on >
+  normal (documented in `ActiveProfiles.representativeForIcon()`).
+  Verified with real `cargo test` runs (individual-flag behavior,
+  composed combinations, and the contradictory-combination resolution);
+  Android/Kotlin changes are verified by code review + the Rust-side
+  logic tests only — real device/emulator testing is blocked in this
+  environment by a known `adb unauthorized` issue and is honestly
+  reported as unverified. See `CLAUDE.md`'s 2026-07-26 HANDOFF for the
+  full test output and exact commit hash.
 - [x] **Structured access log with size-based rotation** (2026-07-24,
   `access_log`, opt-in) — modeled on Nginx/Apache operational best
   practices found via bilingual (JA/EN) web search: JSON Lines access

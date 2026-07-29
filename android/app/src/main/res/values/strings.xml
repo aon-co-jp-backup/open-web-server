@@ -19,10 +19,16 @@
     <string name="profile_power_save_desc">スマホとして普段使いする端末向け。バックグラウンドでの常時稼働を避け、Android標準の省電力(Doze)機能に逆らいません。\nFor devices used as regular smartphones. Avoids continuous background operation and cooperates with Android\'s standard Doze power-saving behavior instead of fighting it.</string>
 
     <string name="profile_normal_button">⚖️ 通常 モード</string>
-    <string name="profile_normal_desc">通常のスマホ利用とサーバー稼働を両立するバランス型(既定)。\nA balanced default profile that lets normal smartphone use and server operation coexist.</string>
+    <!--
+      2026-07-26: 「通常」は組み合わせ選択の独立チェックボックスでは
+      なくなった(`ActiveProfiles`参照)。上記3つのチェックボックスを
+      すべて外した状態が「通常」であることを説明文として明記する。
+    -->
+    <string name="profile_normal_desc">上記3つのチェックをすべて外すと「通常」モード(バランス型、既定)になります。\nUnchecking all three above selects "Normal" mode (a balanced default).</string>
 
     <string name="profile_always_on_button">🔌 常時電源接続 モード</string>
-    <string name="profile_always_on_desc">充電しっぱなしのサーバー専用端末向け。WakeLockでスリープを防ぎ、常時稼働を優先します。\nFor a dedicated server device that stays plugged in. Holds a WakeLock to prevent sleep and prioritizes continuous uptime.</string>
+    <string name="profile_always_on_desc">充電しっぱなしのサーバー専用端末向け。WakeLockでスリープを防ぎ、常時稼働を優先します(省電力と同時に選択した場合は、この常時電源接続が優先されます)。\nFor a dedicated server device that stays plugged in. Holds a WakeLock to prevent sleep and prioritizes continuous uptime (if Power Save is also checked, Always-On takes priority for this axis).</string>
+    <string name="profile_launch_combination_button">この組み合わせで起動 / Launch with this combination</string>
 
     <string name="open_easy_web_button">🌐 open-easy-web ウィザードを開く</string>
     <string name="change_profile_button">電源プロファイルを変更</string>

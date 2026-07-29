@@ -35,3 +35,4 @@ acme-account-key.der
 android/keystore-scratch/
 *.keystore
 *.jks
+crates/open-web-server-gateway/tls-certs/
