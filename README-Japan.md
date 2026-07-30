@@ -234,6 +234,16 @@ curl -X POST http://localhost:8080/api/v1/items/grant \
   }'
 ```
 
+## セキュリティ(2026-07-30監査・修正)
+
+`aruaru-server`側での監査をきっかけに、本リポジトリの非公開エンドポイント
+も棚卸しした。`/admin/*`(tenants/keys/watchdog/redirects/power-profile/
+web-vhost/ddns/disaster-email-backup)は既に`x-admin-token`/`KeyGuardian`
+認証で保護済みだったが、`GET /internal/db/state/:target/:key/at/
+:commit_id`(過去コミット時点の課金/金融データ照会)が無認証のまま
+残っていたため認証を追加した。あわせてトークン比較を定数時間比較
+(タイミングサイドチャネル対策)へ統一した。
+
 ## プロジェクト構成
 
 ```text

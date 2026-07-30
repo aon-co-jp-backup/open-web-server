@@ -16,6 +16,23 @@
 > (この節自体も更新のたび古くなるため、都度そちらを正とする)。
 > 最終更新: 2026-07-20
 
+## 0. セキュリティ監査: 非公開エンドポイントの認証漏れ(2026-07-30追加、重要)
+
+`aruaru-server`側で「`/admin/*`の大半が無認証だった」という重大な
+ギャップが見つかったのをきっかけに本リポジトリも監査した。
+`/admin/*`自体は既に`handlers::tenants::check_admin_auth`
+(`x-admin-token`+`KeyGuardian`Bearerキー)で保護済みだったが、
+**`GET /internal/db/state/:target/:key/at/:commit_id`
+(VersionLessAPI+Git版管理ハイブリッドの読み出し側)が無認証のまま
+残っていた**。`/api/v1/*`(公開の決済API)とは異なり`/internal/*`は
+内部照会用途のため認証を追加した。**移植先で`/internal/*`や管理系の
+新規エンドポイントを追加する際は、`/api/v1/*`(公開API)と同列に
+扱わず、必ず`check_admin_auth`を明示的に呼ぶこと**(このパターンの
+見落としが今回のギャップの原因だった)。あわせて`check_static_admin_auth`
+のトークン比較を素の`==`から定数時間比較(`constant_time_eq`、
+CWE-208対策)へ変更した——新規crate依存を追加しない最小実装のため、
+他リポジトリへそのままコピーできる。
+
 ---
 
 ## 1. open-web-server とは(30秒版)
