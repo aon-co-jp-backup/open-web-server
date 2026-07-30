@@ -12,7 +12,8 @@
 
 use std::sync::Arc;
 
-use hyper::{Response, StatusCode};
+use hyper::body::Incoming;
+use hyper::{Request, Response, StatusCode};
 
 use crate::response::{json_response, text_response, BoxBody};
 use crate::state::AppState;
@@ -43,12 +44,25 @@ fn parse_path(path: &str) -> Option<ParsedPath> {
 }
 
 /// `GET /internal/db/state/:target/:key/at/:commit_id` の本体。
+///
+/// **2026-07-30追記(セキュリティ強化)**: 過去のコミット時点の状態
+/// (課金アイテム・金融/決済データを含みうる)を誰でも無認証で照会
+/// できてしまっていた実際のギャップ(`aruaru-server`の`/admin/*`で
+/// 発見した「非公開APIが無認証」と同種のパターン)を修正——`/api/v1/*`
+/// (公開型の決済API)とは異なり、この`/internal/*`エンドポイントは
+/// 内部の状態照会用途であり公開すべきではないため、既存の
+/// `handlers::tenants::check_admin_auth`(`x-admin-token`/
+/// `KeyGuardian`認証)を必須にした。
 #[tracing::instrument(
     name = "get_state_at_commit",
-    skip(state),
+    skip(state, req),
     fields(target = tracing::field::Empty, key = tracing::field::Empty, commit_id = tracing::field::Empty)
 )]
-pub async fn get_state_at_commit(state: Arc<AppState>, path: &str) -> Response<BoxBody> {
+pub async fn get_state_at_commit(state: Arc<AppState>, path: &str, req: &Request<Incoming>) -> Response<BoxBody> {
+    if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, req) {
+        return resp;
+    }
+
     let Some(parsed) = parse_path(path) else {
         return text_response(
             StatusCode::BAD_REQUEST,

@@ -16,6 +16,23 @@ use crate::tenant_router::{TenantConfig, TenantError};
 
 const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
+/// 定数時間文字列比較(2026-07-30追記、`aruaru-server`側で発見・修正した
+/// タイミングサイドチャネル〈CWE-208〉対策と同じ理由・同じ実装。素の
+/// `==`比較は一致した先頭バイト数に応じてわずかに応答時間が変化しうる
+/// ため、外部から到達可能な管理トークン比較にこの種の脆弱性を持ち込ま
+/// ないよう、全バイトを走査してから結果をXOR累積で判定する。新規crate
+/// 依存は追加せず、この用途限定の最小実装とした。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = (a.len() ^ b.len()) as u8;
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// `OPEN_WEB_SERVER_ADMIN_TOKEN` が設定されている場合のみ検証する
 /// 静的共有シークレット認証(第二引数の`state`は使わない、キー方式との
 /// 呼び出しシグネチャ統一のためだけに受け取る)。
@@ -30,7 +47,7 @@ fn check_static_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBo
         .and_then(|v| v.to_str().ok());
 
     match provided {
-        Some(token) if token == expected => Ok(()),
+        Some(token) if constant_time_eq(token, &expected) => Ok(()),
         _ => Err(text_response(
             StatusCode::UNAUTHORIZED,
             format!("missing or invalid '{ADMIN_TOKEN_HEADER}' header"),

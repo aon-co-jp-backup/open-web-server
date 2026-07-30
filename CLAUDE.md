@@ -611,6 +611,53 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-30 セキュリティ監査: 非公開`/internal/*`エンドポイントの認証漏れ+定数時間トークン比較を追加
+
+ユーザー指示「aruaru-serverで発見したのと同様のセキュリティ(公開型以外の
+非公開・ログイン系エンドポイントの認証、タイミングサイドチャネル対策)を
+open-web-serverにも適用して」への対応。
+
+1. **監査結果(良い前提)**: `aruaru-server`と異なり、`open-web-server`の
+   `/admin/*`エンドポイントは`tenants`/`keys`/`watchdog`/`redirects`/
+   `power-profile`/`web-vhost`/`ddns`/`disaster-email-backup`のいずれも
+   既に`handlers::tenants::check_admin_auth`(`x-admin-token`共有
+   シークレット+`KeyGuardian`発行のBearerキーの二段構え)で個別に
+   保護済みだった(各ハンドラファイルの関数数と`check_admin_auth`
+   呼び出し回数を突き合わせて確認)。
+2. **発見した実際のギャップ**: `GET /internal/db/state/:target/:key/
+   at/:commit_id`(VersionLessAPI+Git版管理ハイブリッドの読み出し側、
+   課金アイテム・金融/決済データの過去コミット時点の状態を返しうる)
+   が**無認証のまま**だった——`/api/v1/*`(公開の決済API、ユーザーが
+   意図的に公開型として除外した対象)とは異なり、この`/internal/*`は
+   内部照会用途であり非公開であるべきエンドポイント。
+3. **修正**: `handlers::state_query::get_state_at_commit`に
+   `check_admin_auth`を追加(シグネチャに`&Request<Incoming>`を追加、
+   `main.rs`の呼び出し箇所も更新)。
+4. **タイミングサイドチャネル対策**: `handlers::tenants::
+   check_static_admin_auth`の`token == expected`という素の比較を、
+   `aruaru-server`と同じ`constant_time_eq`(全バイト走査+XOR累積判定、
+   新規crate依存無し)に置き換え——これは`check_admin_auth`経由で
+   `/admin/*`全体・`disaster-email-backup`・今回保護した
+   `/internal/db/state/...`すべてに反映される。
+5. **実機検証(型チェックのみで完了と報告しない方針を徹底)**: 実際に
+   `open-web-server`を起動し、`GET /internal/db/state/game_items/
+   player-1/at/commit-abc`が(a)トークン未指定で401(修正前は無条件で
+   処理が進み、到達可能なopen-runoがあれば実データが返っていた)、
+   (b)誤ったトークンで401、(c)正しいトークンでは認証ゲートを通過し
+   (上流〈open-runo〉未到達のため502、認証エラーではないことを確認)、
+   ことを確認した。
+6. **検証**: `cargo build --workspace`警告のみ(既存31件、今回の変更
+   由来の新規警告無し)、`cargo test -p open-web-server-gateway`
+   **138件全green**(リグレッション無し)。
+- 次にすべきこと: (1) `check_static_admin_auth`が
+  `OPEN_WEB_SERVER_ADMIN_TOKEN`未設定時に無条件で通す(=認証事実上
+  無効)設計は`aruaru-server`の「未設定なら503」という失敗時閉塞
+  (fail-closed)設計とは異なる——`KeyGuardian`のBearerキー経路が
+  先に評価されるため実運用ではキー発行前提だが、両リポジトリの
+  ポリシーを揃えるべきか次回検討の価値あり、(2) `/graphql`等
+  他の非公開エンドポイントの棚卸し(今回は`/admin/*`+`/internal/*`
+  限定)。
+
 ### 2026-07-29(続き3) ドメイン/URL死活監視+自動復旧(`domain_watchdog`)を新規実装・VPS本番で有効化
 
 ユーザー指示「登録したはずのドメイン・URL等が正常に表示されているか

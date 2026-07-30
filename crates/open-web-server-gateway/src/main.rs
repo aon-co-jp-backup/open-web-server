@@ -222,7 +222,8 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             crate::response::json_response(StatusCode::OK, &serde_json::json!({ "healthy": true, "seconds_since_tick": 0, "note": "ddns feature disabled" }))
         }
         (Method::GET, p) if p.starts_with("/internal/db/state/") => {
-            handlers::state_query::get_state_at_commit(state, p).await
+            let path = p.to_string();
+            handlers::state_query::get_state_at_commit(state, &path, &req).await
         }
         (Method::GET, p) if p.starts_with("/.well-known/acme-challenge/") => {
             acme::challenge_response_handler(&state.acme_challenges, &req).await
