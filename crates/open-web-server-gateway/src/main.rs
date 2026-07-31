@@ -20,6 +20,7 @@ mod dual_write;
 mod free_domain;
 mod oauth_provider;
 mod handlers;
+mod ip_allowlist;
 mod keyring;
 mod middleware;
 #[cfg(feature = "fastcgi-client")]
@@ -52,6 +53,13 @@ use tracing::Instrument;
 
 use response::{text_response, BoxBody};
 use state::AppState;
+
+/// リクエストの送信元アドレスを`Request::extensions()`経由でハンドラへ
+/// 渡すためのマーカー型(2026-07-30新設、`ip_allowlist`のIP許可リスト
+/// 判定に使用)。`hyper::Request`はTCP接続情報を持たないため、`route()`
+/// (実TCP accept直後、`peer_addr`を知っている箇所)で明示的に挿入する。
+#[derive(Clone, Copy)]
+pub(crate) struct PeerAddr(pub Option<SocketAddr>);
 
 /// パス/メソッドに応じてハンドラへディスパッチする。
 ///
@@ -334,6 +342,8 @@ async fn route(
 
     async move {
         let started = std::time::Instant::now();
+        let mut req = req;
+        req.extensions_mut().insert(PeerAddr(peer_addr));
         let response = dispatch(state, req).await;
         let response = compression::maybe_gzip(&accept_encoding_headers, response).await;
         let response = middleware::cors::apply_response_headers(&cors_request_headers, response);
@@ -807,9 +817,16 @@ mod tests {
             sender
         }
 
-        // (1) 静的シークレットでキーを自動発行する。
+        // (1) 静的シークレットでキーを自動発行する。`roles`を指定しない
+        // (=空、これまでの既定の発行方法)ことが重要——2026-07-30の
+        // role権限分離導入により、`roles`が空のキーは後方互換のため
+        // 引き続きフルアクセスを持つ設計にした(既にVPS等で運用中の
+        // キーを突然ロックアウトしないため)。`roles`を明示指定した
+        // 制限付きキーがフルアクセスを持たないことは、下の
+        // `restricted_role_key_does_not_authorize_admin_requests`で
+        // 別途検証する。
         let mut sender = connect(addr).await;
-        let issue_body = serde_json::json!({ "owner": "ci-test-caller", "roles": ["developer"] }).to_string();
+        let issue_body = serde_json::json!({ "owner": "ci-test-caller" }).to_string();
         let issue_req = Request::builder()
             .method(Method::POST)
             .uri("/admin/keys")
@@ -863,6 +880,117 @@ mod tests {
             "a revoked key must fall back to (and fail) the static-secret check, not silently keep working"
         );
 
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// 2026-07-30新設: role権限分離の実証。`roles: ["developer"]`という
+    /// 明示的に制限されたキーは、`"admin"`を含まない限りフルアクセスを
+    /// 持たない——`Bearer`単独では管理APIが401になり、正しい静的
+    /// シークレットを追加で提示した場合のみ通ることを実HTTP経由で確認する。
+    #[tokio::test]
+    async fn restricted_role_key_does_not_authorize_admin_requests_alone() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-bootstrap-secret-2");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // 制限付きroleでキーを発行する。
+        let mut sender = connect(addr).await;
+        let issue_body = serde_json::json!({ "owner": "restricted-caller", "roles": ["developer"] }).to_string();
+        let issue_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/keys")
+            .header("x-admin-token", "test-bootstrap-secret-2")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(issue_body)))
+            .unwrap();
+        let issue_resp = sender.send_request(issue_req).await.unwrap();
+        assert_eq!(issue_resp.status(), StatusCode::CREATED);
+        let issue_bytes = http_body_util::BodyExt::collect(issue_resp.into_body()).await.unwrap().to_bytes();
+        let issued: serde_json::Value = serde_json::from_slice(&issue_bytes).unwrap();
+        let issued_key = issued["key"].as_str().unwrap().to_string();
+
+        // Bearer単独では管理APIが通らない(=フルアクセスを持たない)こと。
+        let mut sender = connect(addr).await;
+        let bearer_only_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/tenants")
+            .header("authorization", format!("Bearer {issued_key}"))
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let bearer_only_resp = sender.send_request(bearer_only_req).await.unwrap();
+        assert_eq!(
+            bearer_only_resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a key issued with a restricted, non-admin role must not grant full admin access on its own"
+        );
+
+        // 正しい静的シークレットを提示すれば(role制限に関わらず)通ること。
+        let mut sender = connect(addr).await;
+        let static_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/tenants")
+            .header("x-admin-token", "test-bootstrap-secret-2")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let static_resp = sender.send_request(static_req).await.unwrap();
+        assert_eq!(static_resp.status(), StatusCode::OK);
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// 2026-07-30新設: IPアドレス許可リストの実証。
+    /// `OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS`が設定されている場合、
+    /// 正しい静的シークレットを提示していても許可リスト外の送信元からは
+    /// 管理APIへ到達できないこと(このテストではループバック
+    /// `127.0.0.1`からの接続なので、許可リストに`127.0.0.1`を含めれば
+    /// 通り、含めなければ403になることの両方を確認する)。
+    #[tokio::test]
+    async fn admin_ip_allowlist_blocks_disallowed_source_even_with_correct_token() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-bootstrap-secret-3");
+        // 127.0.0.1以外(実際には到達しないIP)のみ許可 → このテストの
+        // 接続元(127.0.0.1)は弾かれるはず。
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS", "203.0.113.5");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/tenants")
+            .header("x-admin-token", "test-bootstrap-secret-3")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "a correct token from a non-allowlisted source IP must still be rejected"
+        );
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS");
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
     }
 

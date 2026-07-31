@@ -55,27 +55,66 @@ fn check_static_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBo
     }
 }
 
+/// キーの`roles`が管理API(`/admin/*`全体・`/internal/*`)への
+/// フルアクセスを許可するかどうか。**2026-07-30追記(セキュリティ強化、
+/// roleベース権限分離)**: 従来は`KeyDecision::Ok`(=有効なキー)であれば
+/// `owner`/`roles`を一切見ずに無条件でフルアクセスを許可していた——
+/// 「developer向けに発行した1本のキー」も「真の管理者向けキー」も
+/// 同じ権限を持ってしまう権限昇格に近い設計上の欠陥だった
+/// (`CLAUDE.md`の2026-07-30続きエントリで発見・記録)。
+///
+/// **後方互換のための設計判断(ユーザー確認済み)**: `roles`が空
+/// (`issue_key`呼び出し時に`roles`未指定、これまでの既定の発行方法)
+/// のキーは**引き続きフルアクセス**として扱う——VPS等で既に運用中の
+/// キーが今回の変更で突然ロックアウトされることを避けるため。
+/// **今後、明示的に`roles`を指定して発行したキー**(例:
+/// `["developer"]`のような制限付きロール)は、`"admin"`ロールを
+/// 含んでいない限りフルアクセスを持たない——制限付きキーを新たに
+/// 発行する場合にのみ、この制限が実際に効く設計。
+fn key_grants_admin_access(roles: &[String]) -> bool {
+    roles.is_empty() || roles.iter().any(|r| r == "admin")
+}
+
 /// 管理API向け認証。**「APIキーを意識しない仕様」の中核**:
 /// `KeyGuardian`が発行した`Authorization: Bearer <key>`が検証に成功
-/// すればそれで通す(この経路を使う限り運用者は`OPEN_WEB_SERVER_
-/// ADMIN_TOKEN`という共有シークレットの存在自体を意識しなくてよい)。
-/// キーが無い・無効・失効済み・一時停止中の場合は、既存の静的
-/// 共有シークレット(`x-admin-token`)へフォールバックする——最初の
-/// キーを発行する行為自体は、この静的シークレットで権限を持つ人が
-/// 行う想定(ブートストラップの割り切り、`handlers::keys`のdoc
-/// comment参照)。
+/// し、かつそのキーの`roles`が管理アクセスを許可する場合(上記
+/// `key_grants_admin_access`参照)にそれで通す(この経路を使う限り
+/// 運用者は`OPEN_WEB_SERVER_ADMIN_TOKEN`という共有シークレットの
+/// 存在自体を意識しなくてよい)。キーが無い・無効・失効済み・
+/// 一時停止中・**または制限付きroleでフルアクセスを持たない**場合は、
+/// 既存の静的共有シークレット(`x-admin-token`)へフォールバックする
+/// ——最初のキーを発行する行為自体は、この静的シークレットで権限を
+/// 持つ人が行う想定(ブートストラップの割り切り、`handlers::keys`の
+/// doc comment参照)。
 pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+    // IPアドレス許可リスト(2026-07-30新設、`ip_allowlist`参照)。
+    // `OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS`が設定されている場合のみ有効
+    // (既定は無効)。設定時は、正しいトークン/APIキーを持っていても
+    // 許可リスト外の送信元からは管理APIへ到達できない——多層防御として
+    // トークン検証より先に判定する。
+    if let Some(allowlist) = crate::ip_allowlist::allowlist_from_env() {
+        let peer_ip = req.extensions().get::<crate::PeerAddr>().and_then(|p| p.0).map(|addr| addr.ip());
+        let allowed = peer_ip.is_some_and(|ip| crate::ip_allowlist::is_allowed(&allowlist, ip));
+        if !allowed {
+            return Err(text_response(
+                StatusCode::FORBIDDEN,
+                "source IP address is not on the admin allowlist (OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS)",
+            ));
+        }
+    }
+
     match crate::handlers::keys::check_bearer_key(state, req) {
-        crate::keyring::KeyDecision::Ok { .. } => Ok(()),
+        crate::keyring::KeyDecision::Ok { roles, .. } if key_grants_admin_access(&roles) => Ok(()),
         crate::keyring::KeyDecision::Suspended => Err(text_response(
             StatusCode::TOO_MANY_REQUESTS,
             "API key temporarily suspended due to anomalous request rate",
         )),
-        // レジストリが空・未知のキー・キー未提示のいずれの場合も、
-        // 静的シークレットへフォールバックする。
-        crate::keyring::KeyDecision::RegistryEmpty | crate::keyring::KeyDecision::Rejected => {
-            check_static_admin_auth(req)
-        }
+        // レジストリが空・未知のキー・キー未提示・制限付きroleで
+        // フルアクセスを持たないキーのいずれの場合も、静的シークレット
+        // へフォールバックする。
+        crate::keyring::KeyDecision::RegistryEmpty
+        | crate::keyring::KeyDecision::Rejected
+        | crate::keyring::KeyDecision::Ok { .. } => check_static_admin_auth(req),
     }
 }
 
