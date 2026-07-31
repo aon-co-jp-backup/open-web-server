@@ -105,9 +105,16 @@ pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Res
 
     match crate::handlers::keys::check_bearer_key(state, req) {
         crate::keyring::KeyDecision::Ok { roles, .. } if key_grants_admin_access(&roles) => Ok(()),
-        crate::keyring::KeyDecision::Suspended => Err(text_response(
+        // 2026-07-30追記: 異常検知(`Suspended`)時、その`owner`が確認済み
+        // TOTP経由の一時オーバーライド(`POST /admin/2fa/verify`)を
+        // 持っていれば通す(`admin-2fa` feature有効時のみ)。無効時は
+        // 従来通り常に拒否する。
+        #[cfg(feature = "admin-2fa")]
+        crate::keyring::KeyDecision::Suspended { owner } if state.two_factor.has_valid_override(&owner, chrono::Utc::now()) => Ok(()),
+        crate::keyring::KeyDecision::Suspended { .. } => Err(text_response(
             StatusCode::TOO_MANY_REQUESTS,
-            "API key temporarily suspended due to anomalous request rate",
+            "API key temporarily suspended due to anomalous request rate\
+             (if 2FA is enrolled for this owner, verify via POST /admin/2fa/verify to proceed)",
         )),
         // レジストリが空・未知のキー・キー未提示・制限付きroleで
         // フルアクセスを持たないキーのいずれの場合も、静的シークレット

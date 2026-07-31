@@ -76,6 +76,12 @@ pub struct AppState {
     /// `GET /admin/watchdog/status`で(ループが動いていなくても空の状態を)
     /// 参照できる。
     pub watchdog: Arc<WatchdogState>,
+    /// 2FA(TOTP、`admin-2fa` feature、2026-07-30新設)。`handlers::
+    /// admin_login`のログインフロー(メールOTP+TOTP両方必須)・
+    /// `handlers::tenants::check_admin_auth`の異常検知時オーバーライド
+    /// 判定で使用。
+    #[cfg(feature = "admin-2fa")]
+    pub two_factor: Arc<crate::two_factor::TwoFactorStore>,
 }
 
 /// `OPEN_WEB_SERVER_TLS_CERT_DIR`環境変数で指定されたディレクトリ
@@ -137,6 +143,8 @@ impl AppState {
         tracing::info!(?accel_backend, "payload accelerator backend resolved from OPEN_WEB_SERVER_ACCEL_BACKEND");
         let power_profile = Arc::new(PowerProfileRegistry::new());
         let watchdog = Arc::new(WatchdogState::new());
+        #[cfg(feature = "admin-2fa")]
+        let two_factor = Arc::new(crate::two_factor::TwoFactorStore::new());
 
         Ok(Self {
             ledger,
@@ -153,6 +161,8 @@ impl AppState {
             accel_backend,
             power_profile,
             watchdog,
+            #[cfg(feature = "admin-2fa")]
+            two_factor,
         })
     }
 

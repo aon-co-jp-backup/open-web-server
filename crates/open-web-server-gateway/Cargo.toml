@@ -57,6 +57,23 @@ igd-next = { version = "0.15", optional = true, features = ["aio_tokio"] }
 # 実HTTP呼び出し、およびGitHub OAuthのトークン交換に使う。
 sqlx = { workspace = true, optional = true }
 fastcgi-client = { version = "0.11.1", features = ["runtime-tokio"], optional = true }
+# 2FA(TOTP、Google Authenticator等のスマホアプリでQRコード撮影して登録する
+# 標準方式、admin-2fa feature向け)。RFC 6238のHMAC-SHA1計算に使用、
+# 活発にメンテされているRustCrypto製の標準crate。
+hmac = { version = "0.12", optional = true }
+sha1 = { version = "0.10", optional = true }
+# TOTP登録用のQRコード生成(SVG出力、画像デコード用の追加依存を避けるため
+# ラスタ画像ではなくSVGで出力する)。
+qrcode = { version = "0.14", optional = true }
+rand = { workspace = true, optional = true }
+# メールOTP送信(admin-2fa feature向け)。rs-syncの`mail.rs`と同じ
+# クレート・同じ同期SMTPクライアント方式。
+lettre = { version = "0.11", optional = true, default-features = false, features = [
+    "smtp-transport",
+    "builder",
+    "hostname",
+    "rustls-tls",
+] }
 
 [features]
 default = []
@@ -96,6 +113,11 @@ domain-watchdog = ["dep:reqwest"]
 # ゲートウェイ側へ透過させる」パターン)。既定オフ、`CROSSREPO_BACKUP_DIR`
 # 未設定なら何もしない(既存動作に一切影響しない)。
 crossrepo_backup = ["open-web-server-ledger/crossrepo_backup"]
+# 2FA(TOTP、2026-07-30新設)。KeyGuardianが異常なリクエスト頻度を検知
+# (`KeyDecision::Suspended`)した際、owner向けにあらかじめ登録済みの
+# TOTPシークレット(スマホの認証アプリでQRコードを撮影して登録)による
+# 追加確認を要求する。既定オフ。
+admin-2fa = ["dep:hmac", "dep:sha1", "dep:qrcode", "dep:ring", "dep:rand", "dep:lettre"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

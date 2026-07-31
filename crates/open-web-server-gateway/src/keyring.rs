@@ -66,8 +66,10 @@ pub enum KeyDecision {
     Ok { owner: String, roles: Vec<String> },
     /// 未知・失効・期限切れのキー。
     Rejected,
-    /// 異常なリクエスト頻度を検知し一時停止中。
-    Suspended,
+    /// 異常なリクエスト頻度を検知し一時停止中(2026-07-30追記: `owner`を
+    /// 持たせ、`admin-2fa` featureでのTOTP再確認オーバーライドに使える
+    /// ようにした)。
+    Suspended { owner: String },
 }
 
 #[derive(Debug, Clone)]
@@ -309,7 +311,7 @@ impl KeyGuardian {
 
         if let Some(until) = u.suspended_until {
             if now < until {
-                return KeyDecision::Suspended;
+                return KeyDecision::Suspended { owner: record.owner };
             }
             u.suspended_until = None;
         }
@@ -324,7 +326,7 @@ impl KeyGuardian {
             {
                 u.suspended_until = Some(now + self.config.cooldown);
                 tracing::warn!(owner = %record.owner, "KeyGuardian: anomalous request rate — key quarantined");
-                return KeyDecision::Suspended;
+                return KeyDecision::Suspended { owner: record.owner };
             }
             u.interval_secs = Some(learned * (1.0 - ALPHA) + gap * ALPHA);
         }
@@ -427,8 +429,8 @@ mod tests {
         let after_warmup = t0 + Duration::seconds(180);
 
         let burst = after_warmup + Duration::milliseconds(100);
-        assert_eq!(g.verify(&key, burst), KeyDecision::Suspended);
-        assert_eq!(g.verify(&key, burst + Duration::seconds(10)), KeyDecision::Suspended);
+        assert_eq!(g.verify(&key, burst), KeyDecision::Suspended { owner: "dave".to_string() });
+        assert_eq!(g.verify(&key, burst + Duration::seconds(10)), KeyDecision::Suspended { owner: "dave".to_string() });
 
         assert!(matches!(g.verify(&key, burst + Duration::seconds(61)), KeyDecision::Ok { .. }));
     }

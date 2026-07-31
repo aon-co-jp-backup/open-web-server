@@ -30,6 +30,8 @@ mod power_profile;
 mod proxy;
 mod redirects;
 mod response;
+#[cfg(feature = "admin-2fa")]
+mod two_factor;
 #[cfg(feature = "sftp")]
 mod sftp;
 mod state;
@@ -150,6 +152,20 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
         (Method::GET, "/admin/keys") => handlers::keys::key_status(state, &req).await,
         (Method::POST, "/admin/keys/revoke") => handlers::keys::revoke_owner(state, req).await,
+        // 2FA(TOTP、admin-2fa feature、2026-07-30新設)。enroll/confirmは
+        // 管理者トークン必須(ブートストラップ)、login系は認証不要
+        // (ログインフローの入口そのもののため、`handlers::admin_login`の
+        // doc comment参照)。
+        #[cfg(feature = "admin-2fa")]
+        (Method::POST, "/admin/2fa/enroll") => handlers::admin_login::enroll(state, req).await,
+        #[cfg(feature = "admin-2fa")]
+        (Method::POST, "/admin/2fa/confirm") => handlers::admin_login::confirm(state, req).await,
+        #[cfg(feature = "admin-2fa")]
+        (Method::POST, "/admin/2fa/verify") => handlers::admin_login::verify_suspension_override(state, req).await,
+        #[cfg(feature = "admin-2fa")]
+        (Method::POST, "/admin/login/request-otp") => handlers::admin_login::request_otp(state, req).await,
+        #[cfg(feature = "admin-2fa")]
+        (Method::POST, "/admin/login/verify") => handlers::admin_login::verify_login(state, req).await,
         // スタンドアロンのメール・ディザスタバックアップ(disaster_email_backup
         // feature)。VPS同期先・マルチリージョンレプリケータの設定有無に関わらず、
         // メールアドレスひとつだけで有効化できる(`open-easy-web`のdist_sync.rsと
