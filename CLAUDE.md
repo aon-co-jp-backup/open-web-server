@@ -611,6 +611,78 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-07-31 管理ログインに常時二段階認証(メールOTP+TOTP/QRコード)を実装+ロールベース権限分離+IPアレースリスト実装完了
+
+ユーザー指示「他人のアカウントのIDやパスワードやDATAやDATABASEなどを
+覗き見や読み書き出来ないように」への継続対応。前回(2026-07-30)記録した
+2つの未着手事項(roleベース権限分離・IP/MAC確認)を実装し、さらに
+なりすまし対策としてユーザーと相談の上、常時二段階認証を追加した。
+
+1. **roleベース権限分離**(`handlers/tenants.rs::key_grants_admin_access`):
+   `KeyGuardian`が発行したキーの`roles`を実際に検査するようにした。
+   ユーザー確認済みの方針: 既発行済みキー(roles未指定=空)は後方互換の
+   ため引き続きfull-admin扱い、`roles`が明示的に指定されかつ`"admin"`を
+   含まない場合はアクセス拒否(例: `["developer"]`のみのキーは
+   `/admin/*`にアクセス不可)。
+2. **IPアドレス許可リスト**(`ip_allowlist.rs`、新規): MACアドレスは
+   インターネット越しには技術的に確認不可能なため対象外とし(ユーザー
+   確認済み)、IPアドレスの許可リストのみ実装。
+   `OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS`環境変数(カンマ区切り、単一IP/
+   CIDR両対応)で設定、未設定時は既存動作のまま(オプトイン)。
+   `hyper::Request`はTCP接続元アドレスを保持しないため、`main.rs`で
+   `PeerAddr`という拡張情報を`accept`時点で`req.extensions_mut()`へ
+   注入し、認証ハンドラ側で取り出す設計で対応した。
+3. **常時二段階認証(メールOTP+TOTP/QRコード)**(`two_factor.rs`+
+   `handlers/admin_login.rs`、新規): 「なりすまし対策」の相談の中で、
+   SMS(ユーザー指摘によりハイコストなので不採用)→メールのみ→
+   スマホでQRコード撮影(TOTP)、と方式を絞り込み、最終的に
+   「怪しいと感じたらではなく、最初から、メールのワンタイムパスワード
+   +TOTPの両方必須」という常時二段階認証の設計でユーザーと合意した。
+   - TOTP(RFC 6238)・Base32・QRコード生成(`qrcode`クレート、
+     otpauth:// URI)は外部サービス契約不要で自前実装。
+   - メールOTPは`lettre`クレート(既存rs-syncと同じSMTP実装パターン)、
+     `OPEN_WEB_SERVER_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM`で設定。
+   - `POST /admin/login/verify`はメールOTP・TOTPコード**両方**が
+     正しくないとログインキーを発行しない(`verify_login()`、
+     いずれか片方だけでは失敗)。
+   - アカウント列挙対策: `POST /admin/login/request-otp`は登録
+     済み/未登録owner問わず常に200を返す(存在有無を漏らさない)。
+   - 新規Cargo feature`admin-2fa`(既定オフ、既存の`ddns`/`acme`等と
+     同じopt-inパターン)。
+4. **実機E2E検証(型チェックのみで完了と報告しない、既存運用ルール
+   徹底)**: 実際に`open-web-server`(`--features admin-2fa`)を起動し、
+   (a) `POST /admin/2fa/enroll`で実TOTPシークレット発行+QR SVG生成を
+   確認、(b) 独立したPython製RFC6238実装で同じシークレットから計算
+   したコードで`POST /admin/2fa/confirm`が成功することを確認(Rust側
+   実装とPython側リファレンス実装が完全一致=正確性の裏取り)、
+   (c) `POST /admin/2fa/verify`で誤コード401・正コード200を確認、
+   (d) `POST /admin/login/request-otp`が未登録ownerでも200を返す
+   (列挙攻撃対策)ことを確認。`cargo test --workspace`は
+   **151件全green**(2FA関連8件・IPアレースリスト5件・role制御1件を
+   含む)。
+5. **正直な開示・未着手事項**: (a) `/admin/login/request-otp`+
+   `/admin/login/verify`の完全なE2E(実SMTP経由でのメール受信確認)は
+   実SMTP資格情報が無いため未実施(ロジックレベルの検証と
+   `verify_login`の両要素必須ロジックのユニットテストのみ)。
+   (b) VPS本番環境への`admin-2fa` feature込みの再デプロイ・実地確認は
+   未実施(次回VPSセッションでの課題)。
+
+**次回着手事項(ユーザー指示、2026-07-31)**: 二段階認証ログイン後の
+セッションについて、「ランダム要素のある高速な暗号化+セキュリティを
+しっかりした通信とDATABASE」にすること、との追加指示があった。
+現状、ログイン成功後に発行される`KeyGuardian`Bearerキー自体はランダム
+生成済みだが、(1) このキーを使った以降の通信経路(既存の
+`open-web-server-wire::SecureChannel`という4層防御通信+リプレイ対策の
+実装が既にこのリポジトリに存在する——TLS1.3→相互認証→AEAD暗号化→
+seq/timestampリプレイ対策、`ReplayGuard`によるランダムnonce込み)を
+管理ログインセッションの経路へ実際に接続する配線、(2) セッション状態・
+2FA登録情報(`TwoFactorStore`)自体の永続化先(現状プロセス内メモリの
+み、`KeyGuardian`と同様のディスク永続化、またはPostgreSQL/aruaru-dbの
+DUAL DATABASE構成への統合)、の2点を次回セッションで検討・実装する
+こと。既存の`SecureChannel`/`PostgresWal`/`MultiRegionReplicator`等の
+既存資産を再利用する形で、新規に暗号方式を作り直すのではなく既存の
+「4層4重」アーキテクチャへ統合する方向で進めること。
+
 ### 2026-07-30(続き) セキュリティ調査: KeyGuardianに「なりすまし」の実害は無いが、roleベース権限分離が未実装(次回着手事項として記録、コード変更なし)
 
 ユーザー指示「他人のアカウントのIDやパスワードやDATAやDATABASEなどを
