@@ -18,6 +18,7 @@
 //! フィールドのみ用意)。
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use chrono::{DateTime, Utc};
@@ -26,6 +27,7 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 
 type HmacSha1 = Hmac<Sha1>;
@@ -90,7 +92,7 @@ fn totp_matches(secret: &[u8], code: &str, now: DateTime<Utc>) -> bool {
     false
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotpEnrollment {
     pub secret: Vec<u8>,
     pub confirmed: bool,
@@ -98,6 +100,47 @@ pub struct TotpEnrollment {
     /// 将来のSMS拡張向けの記録用フィールド(今回は送信ロジック未実装、
     /// モジュールdoc参照)。
     pub phone_number: Option<String>,
+}
+
+/// TOTP登録済みシークレットを`path`へアトミックに書き込む(`keyring.rs`の
+/// `write_records_atomically`と同じ「一時ファイル→rename」パターン——
+/// 書き込み途中のクラッシュで永続化ファイルが破損しないようにするため)。
+/// **正直な開示**: シークレット自体は平文でディスクに書かれる
+/// (`KeyGuardian`がキーをハッシュのみ保存するのとは異なり、TOTP検証には
+/// シークレット原文が必要なため)。ファイルシステム自体のアクセス権限
+/// (ホストOSの権限分離)が最終防衛線になる設計であることを明記する。
+fn write_enrollments_atomically(path: &Path, enrollments: &HashMap<String, TotpEnrollment>) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(enrollments).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp-{}",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("json"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, json)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn load_enrollments_from_path(path: &Path) -> HashMap<String, TotpEnrollment> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "TwoFactorStore: failed to parse persisted enrollments, starting empty");
+                HashMap::new()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "TwoFactorStore: failed to read persisted enrollments, starting empty");
+            HashMap::new()
+        }
+    }
 }
 
 struct EmailOtpChallenge {
@@ -169,11 +212,41 @@ pub struct TwoFactorStore {
     enrollments: RwLock<HashMap<String, TotpEnrollment>>,
     overrides: RwLock<HashMap<String, DateTime<Utc>>>,
     email_challenges: RwLock<HashMap<String, EmailOtpChallenge>>,
+    persistence_path: Option<PathBuf>,
 }
 
 impl TwoFactorStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `OPEN_WEB_SERVER_2FA_STORE_PATH`が設定されていれば、そのファイルから
+    /// TOTP登録済み情報を復元して起動する(`KeyGuardian::load_from_disk`と
+    /// 同じ「補助系機能の失敗は本体起動を止めない」設計方針——ファイルが
+    /// 無い・読めない・壊れているいずれの場合もパニックせず空の状態から
+    /// 開始する)。これが無いと、プロセス再起動のたびに全ユーザーが
+    /// TOTP再登録(QRコード再撮影)を強いられてしまう。
+    pub fn load_from_env() -> Self {
+        let persistence_path = std::env::var("OPEN_WEB_SERVER_2FA_STORE_PATH").ok().map(PathBuf::from);
+        let enrollments = match &persistence_path {
+            Some(path) => load_enrollments_from_path(path),
+            None => HashMap::new(),
+        };
+        Self {
+            enrollments: RwLock::new(enrollments),
+            overrides: RwLock::new(HashMap::new()),
+            email_challenges: RwLock::new(HashMap::new()),
+            persistence_path,
+        }
+    }
+
+    fn persist(&self, enrollments: &HashMap<String, TotpEnrollment>) {
+        let Some(path) = &self.persistence_path else {
+            return;
+        };
+        if let Err(e) = write_enrollments_atomically(path, enrollments) {
+            tracing::warn!(error = %e, path = %path.display(), "TwoFactorStore: failed to persist enrollments to disk");
+        }
     }
 
     /// `owner`向けに新しいTOTPシークレットを生成し、未確認状態で登録する。
@@ -195,10 +268,10 @@ impl TwoFactorStore {
             .ok()
             .map(|code| code.render::<qrcode::render::svg::Color>().min_dimensions(240, 240).build());
 
-        self.enrollments.write().unwrap().insert(
-            owner.to_string(),
-            TotpEnrollment { secret, confirmed: false, email, phone_number },
-        );
+        let mut enrollments = self.enrollments.write().unwrap();
+        enrollments.insert(owner.to_string(), TotpEnrollment { secret, confirmed: false, email, phone_number });
+        self.persist(&enrollments);
+        drop(enrollments);
 
         EnrollmentResponse { owner: owner.to_string(), secret_base32, otpauth_url, qr_svg }
     }
@@ -212,6 +285,7 @@ impl TwoFactorStore {
         };
         if totp_matches(&enrollment.secret, code, now) {
             enrollment.confirmed = true;
+            self.persist(&enrollments);
             true
         } else {
             false
@@ -436,5 +510,52 @@ mod tests {
         let secret = store.enrollments.read().unwrap().get("frank").unwrap().secret.clone();
         let real_totp = format!("{:06}", totp_at(&secret, now));
         assert!(!store.verify_login("frank", &email_otp, &real_totp, now), "unconfirmed TOTP enrollment must not authorize login");
+    }
+
+    /// プロセス再起動を想定し、確認済みTOTP登録が独立した第二の
+    /// `TwoFactorStore`インスタンスへ実ファイル経由で引き継がれることを
+    /// 検証する(`KeyGuardian`の`issued_key_survives_reload_into_a_fresh_
+    /// instance`と同じ検証パターン)。
+    #[test]
+    fn confirmed_enrollment_survives_reload_into_a_fresh_instance_via_disk() {
+        let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-test-{}", uuid::Uuid::new_v4()));
+        let path = tmp_dir.join("2fa-store.json");
+        // SAFETY: このプロセス内で他のテストと環境変数名が衝突しないよう
+        // 一意な一時パスを使う(並列テスト実行下でも安全)。
+        unsafe {
+            std::env::set_var("OPEN_WEB_SERVER_2FA_STORE_PATH", &path);
+        }
+
+        let now = Utc::now();
+        let store1 = TwoFactorStore::load_from_env();
+        store1.enroll("carol", None, None);
+        let secret = store1.enrollments.read().unwrap().get("carol").unwrap().secret.clone();
+        let real_code = format!("{:06}", totp_at(&secret, now));
+        assert!(store1.confirm("carol", &real_code, now));
+        assert!(store1.has_confirmed_enrollment("carol"));
+
+        // 独立した第二のインスタンスが、同じディスク上のファイルから
+        // 確認済み状態を復元できることを確認する。
+        let store2 = TwoFactorStore::load_from_env();
+        assert!(store2.has_confirmed_enrollment("carol"), "confirmed enrollment must survive reload from disk");
+
+        unsafe {
+            std::env::remove_var("OPEN_WEB_SERVER_2FA_STORE_PATH");
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn missing_persistence_file_starts_empty_without_crashing() {
+        let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-missing-{}", uuid::Uuid::new_v4()));
+        let path = tmp_dir.join("does-not-exist.json");
+        unsafe {
+            std::env::set_var("OPEN_WEB_SERVER_2FA_STORE_PATH", &path);
+        }
+        let store = TwoFactorStore::load_from_env();
+        assert!(!store.has_confirmed_enrollment("nobody"));
+        unsafe {
+            std::env::remove_var("OPEN_WEB_SERVER_2FA_STORE_PATH");
+        }
     }
 }

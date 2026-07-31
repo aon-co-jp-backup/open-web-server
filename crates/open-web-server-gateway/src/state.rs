@@ -144,7 +144,7 @@ impl AppState {
         let power_profile = Arc::new(PowerProfileRegistry::new());
         let watchdog = Arc::new(WatchdogState::new());
         #[cfg(feature = "admin-2fa")]
-        let two_factor = Arc::new(crate::two_factor::TwoFactorStore::new());
+        let two_factor = Arc::new(crate::two_factor::TwoFactorStore::load_from_env());
 
         Ok(Self {
             ledger,
