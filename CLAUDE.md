@@ -611,6 +611,45 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-03(続き2) Apache `.htaccess`のRewriteRule相当を実装(改善計画の項目1)
+
+改善計画「(1) Apache互換の深掘り」の最初の1項目として、`rewrite.rs`
+(正規表現パターン→置換先、登録順に評価し最初のマッチで確定
+〈`[L]`常時暗黙適用〉)を新設。内部リライト(Apacheの`[L]`のみ相当、
+サーバー内部でパスを書き換え以後の静的配信/PHP委譲へそのまま渡す)と
+外部リダイレクト(Apacheの`[R=301,L]`相当、実際に`301`+`Location`を
+返す)の2択を実装。`WebVhostConfig.rewrite_rules`(既定空、既存動作と
+完全後方互換)、不正な正規表現パターンはvhost全体を止めずスキップする
+(警告ログのみ)。
+
+*English*: Added `rewrite.rs` implementing Apache `.htaccess`
+`RewriteRule`-equivalent behavior — regex pattern → substitution,
+rules evaluated in order with first-match-wins (`[L]` always
+implicit), supporting internal rewrite (`[L]` alone) or external
+301 redirect (`[R=301,L]`). `WebVhostConfig.rewrite_rules` defaults
+to empty (fully backward-compatible); invalid regex patterns are
+skipped with a warning rather than blocking the whole vhost.
+
+**検証**: 単体テスト6件(`rewrite::apply`の純粋関数、マッチ無し・
+キャプチャグループ・リダイレクト・複数ルールでの最初マッチ優先・
+不正パターンのスキップ)+実HTTP経由の統合テスト1件
+(`web_vhost_rewrite_rules_work_over_real_http`——内部リライトで
+実際に書き換え後のファイルが配信されること、外部リダイレクトで
+実際に`301`+`Location`が返ることを実サーバー起動で確認)。
+`cargo test --workspace`は**gateway 164件・ledger 20件(1件ignored)・
+wire 24件、全green**(リグレッション無し、コミット`62e8f0e`)。
+
+**正直な開示・未着手**: (1) `RewriteCond`(条件付きリライト、
+`%{HTTP_HOST}`等の変数展開)は未実装——単純なパスパターンマッチのみ。
+(2) 正規表現はリクエストのたびにコンパイルする(キャッシュ無し)——
+一般的なルール数では問題にならないはずだが、大量ルール+高頻度アクセス
+では将来最適化の余地がある。(3) Basic/Digest認証・ディレクトリ単位の
+アクセス制御は改善計画の残り項目のまま未着手。
+
+- 次にすべきこと: (1) 改善計画の残り(brotli圧縮、Basic/Digest認証、
+  実設定ファイルパーサー、RPoemの独自価値の再定義)、(2) 正規表現の
+  コンパイル済みキャッシュ(実運用で性能問題が顕在化してから)。
+
 ### 2026-08-03(続き) Nginx `limit_req`相当のレート制限を実装(改善計画の項目2)
 
 直前エントリの改善計画「(2) Nginx互換の深掘り」の最初の1項目として、

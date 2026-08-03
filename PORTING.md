@@ -557,6 +557,36 @@ matching Nginx's `limit_req nodelay` behavior. Only trusts the real
 TCP peer address. See CLAUDE.md's 2026-08-03 (続き) HANDOFF entry for
 details and honest gaps.
 
+### 4.15 Apache `.htaccess`のRewriteRule相当(2026-08-03新設)
+
+正規表現パターン→置換先のリライト/リダイレクトルール
+(`WebVhostConfig.rewrite_rules`、既定空)。登録順に評価し最初の
+マッチで確定(`[L]`常時暗黙適用)。
+
+```json
+{
+  "host": "example.com",
+  "docroot": "/var/www/example",
+  "rewrite_rules": [
+    {"pattern": "^/old\\.html$", "substitution": "/new.html", "redirect": false},
+    {"pattern": "^/legacy/(.*)$", "substitution": "/modern/$1", "redirect": true}
+  ]
+}
+```
+
+`redirect: false`は内部リライト(クライアントには見えず、以後の静的
+配信/PHP委譲へ書き換え後のパスをそのまま渡す)、`redirect: true`は
+外部`301`リダイレクト(`Location`ヘッダー)。実HTTP経由の統合テストで
+両方の経路を検証済み。詳細・正直な未着手事項は[CLAUDE.md](CLAUDE.md)の
+2026-08-03(続き2)HANDOFF参照。
+
+*English*: Regex pattern → substitution rewrite/redirect rules
+(`WebVhostConfig.rewrite_rules`, defaults to empty). Evaluated in
+order, first match wins. `redirect: false` rewrites the path
+internally (transparent to the client); `redirect: true` returns an
+external `301` with `Location`. See CLAUDE.md's 2026-08-03 (続き2)
+HANDOFF entry for details and honest gaps.
+
 ### 4.11 Android版(`android/`、2026-07-23〜24新設、3電源プロファイル対応)
 
 `android/`配下のKotlin/Gradleプロジェクトは、`open-web-server-gateway`

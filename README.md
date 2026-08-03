@@ -69,6 +69,10 @@ pgwire サーバー本体)で、こちらは開発の過程で Claude が名付�
 request rate limiting (`rate_limit.rs`, token bucket, opt-in via
 `OPEN_WEB_SERVER_RATE_LIMIT_RPS`/`_BURST`, returns `429` immediately
 once burst is exhausted — verified with real end-to-end HTTP tests).
+Also added Apache `.htaccess`-style `RewriteRule` support
+(`rewrite.rs`, `WebVhostConfig.rewrite_rules`) — regex pattern →
+substitution, first-match-wins, internal rewrite or external `301`
+redirect. Verified with 6 unit tests + 1 real end-to-end HTTP test.
 
 *English*: Added `PUT /admin/web-vhosts/:host/compat-mode` so the
 Apache/Nginx-compat virtual host mode can be switched at any time
