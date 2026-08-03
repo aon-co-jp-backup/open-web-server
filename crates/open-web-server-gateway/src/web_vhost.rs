@@ -206,6 +206,28 @@ impl WebVhostRegistry {
         self.vhosts.read().await.len()
     }
 
+    /// 既存vhostの`compat_mode`のみを変更する(2026-08-03追加、ユーザー
+    /// 指示「Apache/Nginxのヴァーチャルホストプロファイルはどちらでも
+    /// 読めていつでも両方対応可能に」)。
+    ///
+    /// 従来、`compat_mode`を変えるには`upsert`へ`docroot`/`php_enabled`
+    /// 等を含む完全な`WebVhostConfig`を再送する必要があった——現在の
+    /// 設定値を把握していないと誤って他のフィールドをリセットしてしまう
+    /// リスクがあるため、`compat_mode`だけを安全に差し替えられる専用の
+    /// 更新経路を追加した。インストール時に限らず、稼働中いつでも
+    /// (`PUT /admin/web-vhosts/:host/compat-mode`経由で)切り替え可能。
+    pub async fn set_compat_mode(&self, host: &str, compat_mode: CompatMode) -> Result<(), WebVhostError> {
+        let mut guard = self.vhosts.write().await;
+        let Some(existing) = guard.get(host) else {
+            return Err(WebVhostError::NotFound(host.to_string()));
+        };
+        let mut updated = (**existing).clone();
+        updated.compat_mode = compat_mode;
+        guard.insert(host.to_string(), Arc::new(updated));
+        self.persist(&guard).await;
+        Ok(())
+    }
+
     /// `web_vhosts.toml`相当のTOML文字列から一括ロードする。
     pub async fn load_from_toml(&self, toml_str: &str) -> anyhow::Result<usize> {
         let parsed: WebVhostsFile = toml::from_str(toml_str)?;
@@ -286,6 +308,56 @@ mod tests {
 
         assert!(!path.exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn set_compat_mode_changes_only_that_field_and_persists() {
+        let dir = std::env::temp_dir().join(format!(
+            "web_vhosts_compat_mode_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("web_vhosts.toml");
+
+        let registry = WebVhostRegistry::new();
+        registry.set_persist_path(path.clone()).await;
+        registry
+            .upsert(WebVhostConfig {
+                host: "audiocafe.tokyo".to_string(),
+                docroot: PathBuf::from("/var/www/audiocafe.tokyo"),
+                php_enabled: true,
+                compat_mode: CompatMode::default(),
+                php_mode: PhpMode::default(),
+            })
+            .await;
+
+        // 稼働中いつでも、docroot/php_enabledを再送せずcompat_modeだけ変更できる。
+        registry.set_compat_mode("audiocafe.tokyo", CompatMode::Apache).await.unwrap();
+
+        let updated = registry.resolve("audiocafe.tokyo").await.unwrap();
+        assert_eq!(updated.compat_mode, CompatMode::Apache);
+        // 他フィールドは維持されたまま。
+        assert_eq!(updated.docroot, PathBuf::from("/var/www/audiocafe.tokyo"));
+        assert!(updated.php_enabled);
+
+        // 永続化ファイルにも即座に反映される(=再起動後も維持される)。
+        let toml_str = std::fs::read_to_string(&path).unwrap();
+        let reloaded = WebVhostRegistry::new();
+        reloaded.load_from_toml(&toml_str).await.unwrap();
+        assert_eq!(reloaded.resolve("audiocafe.tokyo").await.unwrap().compat_mode, CompatMode::Apache);
+
+        // Nginx互換へ戻すことも即座にできる(いつでも両方向に切替可能)。
+        registry.set_compat_mode("audiocafe.tokyo", CompatMode::Nginx).await.unwrap();
+        assert_eq!(registry.resolve("audiocafe.tokyo").await.unwrap().compat_mode, CompatMode::Nginx);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn set_compat_mode_on_unknown_host_returns_not_found() {
+        let registry = WebVhostRegistry::new();
+        let err = registry.set_compat_mode("unknown.example", CompatMode::Apache).await.unwrap_err();
+        assert!(matches!(err, WebVhostError::NotFound(h) if h == "unknown.example"));
     }
 }
 

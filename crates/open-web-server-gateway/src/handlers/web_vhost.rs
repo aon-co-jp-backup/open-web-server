@@ -116,6 +116,38 @@ pub async fn upsert_web_vhost(state: Arc<AppState>, req: Request<Incoming>) -> R
     text_response(StatusCode::CREATED, "web vhost registered")
 }
 
+#[derive(serde::Deserialize)]
+struct UpdateCompatModeRequest {
+    compat_mode: CompatMode,
+}
+
+/// `PUT /admin/web-vhosts/:host/compat-mode` — 既存vhostの
+/// Apache互換/Nginx互換モードだけを変更する(2026-08-03新設、ユーザー
+/// 指示「Apache/Nginxのヴァーチャルホストプロファイルはどちらでも
+/// 読めていつでも両方対応可能に」)。`docroot`等の他フィールドを再送する
+/// 必要がなく、稼働中いつでも安全に切り替えられる。ホスト未登録なら404。
+pub async fn update_compat_mode(
+    state: Arc<AppState>,
+    req: Request<Incoming>,
+    host: &str,
+) -> Response<BoxBody> {
+    if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, &req) {
+        return resp;
+    }
+
+    let body: UpdateCompatModeRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+
+    match state.web_vhosts.set_compat_mode(host, body.compat_mode).await {
+        Ok(()) => text_response(StatusCode::OK, "compat mode updated"),
+        Err(WebVhostError::NotFound(host)) => {
+            text_response(StatusCode::NOT_FOUND, format!("host '{host}' not found"))
+        }
+    }
+}
+
 /// `DELETE /admin/web-vhosts/:host`
 pub async fn remove_web_vhost(
     state: Arc<AppState>,

@@ -147,6 +147,15 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             let host = p.trim_start_matches("/admin/web-vhosts/").to_string();
             handlers::web_vhost::remove_web_vhost(state, &req, &host).await
         }
+        // Apache/Nginx互換モードをいつでも切り替え可能にする専用API
+        // (2026-08-03新設、`docroot`等の再送不要)。
+        (Method::PUT, p) if p.starts_with("/admin/web-vhosts/") && p.ends_with("/compat-mode") => {
+            let host = p
+                .trim_start_matches("/admin/web-vhosts/")
+                .trim_end_matches("/compat-mode")
+                .to_string();
+            handlers::web_vhost::update_compat_mode(state, req, &host).await
+        }
         // 自己運用型APIキー(KeyGuardian、「第二のTomcat」REST-API不要・
         // 自動発行/自動失効の実現)。
         (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
