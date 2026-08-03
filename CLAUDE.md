@@ -611,6 +611,50 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-03(続き) Nginx `limit_req`相当のレート制限を実装(改善計画の項目2)
+
+直前エントリの改善計画「(2) Nginx互換の深掘り」の最初の1項目として、
+クライアントIPごとのリクエストレート制限を実装した(`rate_limit.rs`
+新設)。トークンバケット方式、`OPEN_WEB_SERVER_RATE_LIMIT_RPS`(秒間
+許容リクエスト数)/`OPEN_WEB_SERVER_RATE_LIMIT_BURST`(既定はRPSと同値)
+で設定、未設定なら既定無効(既存動作を一切変えない)。実TCP接続の
+送信元IPのみを判定基準にする(`X-Forwarded-For`等のヘッダーは偽装
+可能なため信用しない、正直な開示としてモジュールdocに明記)。超過分は
+Nginxの`nodelay`同様に**待機させず即座に**`429 Too Many Requests`で
+拒否する(ワーカーが詰まらないようにするため)。
+
+*English*: Added `rate_limit.rs` — a token-bucket rate limiter keyed by
+client IP (`OPEN_WEB_SERVER_RATE_LIMIT_RPS`/`_BURST`, disabled by
+default). Only trusts the real TCP peer address, not spoofable
+proxy headers. Rejects with `429` immediately once burst is
+exhausted (no queuing, matching Nginx's `nodelay` behavior).
+
+**検証**: 単体テスト8件(トークンバケットの基本動作・IPごとの独立性・
+時間経過での回復・env var解析)+実HTTP経由の統合テスト2件
+(バースト超過で`429`が実際に返ること、未設定時は10回連続リクエストしても
+一切拒否されないこと)。`cargo test --workspace`は**gateway 157件・
+ledger 20件(1件ignored)・wire 24件、全green**(リグレッション無し、
+コミット`4b26cfa`)。
+
+**正直な開示・未着手**: (1) Nginxの`zone`(複数workerプロセス間の共有
+メモリ)相当の機構は無い——単一プロセス内`RwLock<HashMap>`のみ(本サーバー
+自体が単一プロセスでマルチコアを使う設計のため現状はこれで十分)。
+(2) `evict_idle()`(非アクティブなIPのバケット間引き)は実装したが
+呼び出し元は未配線——長時間稼働でのメモリ増加が実運用で問題になった
+場合、バックグラウンドタスクから定期的に呼ぶ配線を追加すること。
+
+*English (honest gaps)*: (1) No Nginx `zone`-equivalent shared-memory
+mechanism across worker processes — single in-process `RwLock<HashMap>`
+only (sufficient given this server's single-process multi-core
+design). (2) `evict_idle()` (pruning idle IP buckets) is implemented
+but not yet wired to any caller — add a periodic background task call
+if long-running memory growth becomes an issue in practice.
+
+- 次にすべきこと: (1) `evict_idle()`をバックグラウンドタスクへ配線
+  (優先度低、実運用で問題が顕在化してから)、(2) 改善計画の残り項目
+  (Apache `.htaccess`相当のリライトルール・brotli圧縮・実設定ファイル
+  パーサー・RPoemの独自価値の再定義)。
+
 ### 2026-08-03 Apache/Nginx互換性・RPoem(Tomcat相当)連携の改善計画(ユーザー指示、日英併記)
 
 ユーザー指示「open-web-serverをJavaで言う所のApacheとNginx互換で、

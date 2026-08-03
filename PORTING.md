@@ -532,6 +532,31 @@ compatibility, real config-file parsing/import, and redefining
 RPoem's unique value as the Tomcat equivalent — is recorded (not yet
 started) in [CLAUDE.md](CLAUDE.md)'s 2026-08-03 HANDOFF entry.
 
+### 4.14 Nginx `limit_req`相当のリクエストレート制限(2026-08-03新設、既定無効・オプトイン)
+
+クライアントIPごとのトークンバケット方式レート制限
+(`rate_limit.rs`)。`OPEN_WEB_SERVER_RATE_LIMIT_RPS`(秒間許容
+リクエスト数)を設定した場合のみ有効、`OPEN_WEB_SERVER_RATE_LIMIT_
+BURST`(既定はRPSと同値)でバースト許容量を調整できる。超過分は
+Nginxの`nodelay`同様に待機させず即座に`429 Too Many Requests`で拒否。
+
+```bash
+OPEN_WEB_SERVER_RATE_LIMIT_RPS=10 OPEN_WEB_SERVER_RATE_LIMIT_BURST=20 ./open-web-server
+```
+
+送信元IPの判定は実TCP接続のピアアドレスのみを使い、`X-Forwarded-For`
+等のヘッダーは信用しない(偽装可能なため)。実HTTP経由の統合テスト
+(バースト超過時の429・未設定時は10連続リクエストでも拒否されない
+こと)で検証済み。詳細・正直な未着手事項は[CLAUDE.md](CLAUDE.md)の
+2026-08-03(続き)HANDOFF参照。
+
+*English*: Per-client-IP token-bucket rate limiting
+(`OPEN_WEB_SERVER_RATE_LIMIT_RPS`/`_BURST`, opt-in, disabled by
+default). Rejects with `429` immediately once burst is exhausted,
+matching Nginx's `limit_req nodelay` behavior. Only trusts the real
+TCP peer address. See CLAUDE.md's 2026-08-03 (続き) HANDOFF entry for
+details and honest gaps.
+
 ### 4.11 Android版(`android/`、2026-07-23〜24新設、3電源プロファイル対応)
 
 `android/`配下のKotlin/Gradleプロジェクトは、`open-web-server-gateway`
