@@ -94,6 +94,12 @@ pub struct WebVhostConfig {
     /// `php -S`ビルトインサーバー方式=完全後方互換)。
     #[serde(default)]
     pub php_mode: PhpMode,
+    /// Apache `.htaccess`の`RewriteRule`相当のパスリライト/リダイレクト
+    /// ルール(2026-08-03追加、`crate::rewrite`参照)。登録順に評価し
+    /// 最初にマッチしたルールで確定する。既定は空(既存動作と完全後方
+    /// 互換)。
+    #[serde(default)]
+    pub rewrite_rules: Vec<crate::rewrite::RewriteRule>,
 }
 
 fn default_php_enabled() -> bool {
@@ -262,6 +268,7 @@ mod tests {
                 php_enabled: true,
                 compat_mode: CompatMode::default(),
                 php_mode: PhpMode::default(),
+                rewrite_rules: Vec::new(),
             })
             .await;
 
@@ -303,6 +310,7 @@ mod tests {
                 php_enabled: false,
                 compat_mode: CompatMode::default(),
                 php_mode: PhpMode::default(),
+                rewrite_rules: Vec::new(),
             })
             .await;
 
@@ -328,6 +336,7 @@ mod tests {
                 php_enabled: true,
                 compat_mode: CompatMode::default(),
                 php_mode: PhpMode::default(),
+                rewrite_rules: Vec::new(),
             })
             .await;
 
@@ -372,6 +381,7 @@ mod legacy_tests {
             php_enabled: true,
             compat_mode: CompatMode::default(),
             php_mode: PhpMode::default(),
+            rewrite_rules: Vec::new(),
         }
     }
 

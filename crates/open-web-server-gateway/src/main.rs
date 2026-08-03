@@ -30,6 +30,7 @@ mod power_profile;
 mod proxy;
 mod rate_limit;
 mod redirects;
+mod rewrite;
 mod response;
 #[cfg(feature = "admin-2fa")]
 mod two_factor;
@@ -1699,6 +1700,84 @@ mod tests {
             resp.headers().get("access-control-allow-origin").is_none(),
             "CORS headers must never appear when OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS is unset"
         );
+    }
+
+    /// Apache `.htaccess`のRewriteRule相当が、`web_vhost::dispatch`の
+    /// 実際の配線経由(単体テストの`rewrite::apply`呼び出しだけでなく)で
+    /// 機能することを実HTTP経由で検証する: 外部リダイレクトは実際に
+    /// `301`+`Location`、内部リライトは書き換え後のパスのファイルが
+    /// 実際に配信されることを確認する。
+    #[tokio::test]
+    async fn web_vhost_rewrite_rules_work_over_real_http() {
+        let dir = std::env::temp_dir().join(format!("owsg-rewrite-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("new.html"), b"<html>rewritten target</html>").unwrap();
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        state
+            .web_vhosts
+            .upsert(web_vhost::WebVhostConfig {
+                host: "rewrite-test.example".to_string(),
+                docroot: dir.clone(),
+                php_enabled: false,
+                compat_mode: web_vhost::CompatMode::default(),
+                php_mode: web_vhost::PhpMode::default(),
+                rewrite_rules: vec![
+                    rewrite::RewriteRule {
+                        pattern: r"^/old\.html$".to_string(),
+                        substitution: "/new.html".to_string(),
+                        redirect: false,
+                    },
+                    rewrite::RewriteRule {
+                        pattern: r"^/legacy/(.*)$".to_string(),
+                        substitution: "/modern/$1".to_string(),
+                        redirect: true,
+                    },
+                ],
+            })
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let connect = || async {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        };
+
+        // 内部リライト: /old.html -> /new.html、クライアントには見えず
+        // 書き換え後のファイルがそのまま200で配信される。
+        let mut sender = connect().await;
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/old.html")
+            .header("host", "rewrite-test.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("rewritten target"));
+
+        // 外部リダイレクト: /legacy/foo -> 301 Location: /modern/foo
+        let mut sender = connect().await;
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/legacy/foo")
+            .header("host", "rewrite-test.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(resp.headers().get("location").unwrap(), "/modern/foo");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     static RATE_LIMIT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

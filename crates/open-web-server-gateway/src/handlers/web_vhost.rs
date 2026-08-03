@@ -17,6 +17,7 @@ use hyper::{Request, Response, StatusCode};
 
 use crate::proxy;
 use crate::response::{json_response, read_json_body, text_response, BoxBody};
+use crate::rewrite::{self, RewriteOutcome};
 use crate::state::AppState;
 use crate::static_files;
 use crate::web_vhost::{CompatMode, PhpMode, WebVhostConfig, WebVhostError};
@@ -24,9 +25,30 @@ use crate::web_vhost::{CompatMode, PhpMode, WebVhostConfig, WebVhostError};
 pub async fn dispatch(
     state: Arc<AppState>,
     vhost: Arc<WebVhostConfig>,
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
 ) -> Response<BoxBody> {
-    let path = req.uri().path().to_string();
+    let original_path = req.uri().path().to_string();
+
+    // Apache `.htaccess`のRewriteRule相当(`crate::rewrite`参照)。
+    // 外部リダイレクトは即座に301を返す。内部リライトは、以後の静的
+    // 配信・PHP委譲のいずれの経路でも書き換え後のパスを使うよう、
+    // リクエストのURI自体を差し替える。
+    let path = match rewrite::apply(&original_path, &vhost.rewrite_rules) {
+        RewriteOutcome::Redirect(target) => {
+            let mut resp = Response::builder().status(StatusCode::MOVED_PERMANENTLY).body(BoxBody::default()).unwrap();
+            if let Ok(value) = hyper::header::HeaderValue::from_str(&target) {
+                resp.headers_mut().insert(hyper::header::LOCATION, value);
+            }
+            return resp;
+        }
+        RewriteOutcome::Rewritten(new_path) => {
+            if let Ok(new_uri) = new_path.parse::<hyper::Uri>() {
+                *req.uri_mut() = new_uri;
+            }
+            req.uri().path().to_string()
+        }
+        RewriteOutcome::Unchanged => original_path,
+    };
 
     if static_files::is_static_asset(&path) {
         let resp = static_files::serve(&vhost.docroot, &path);
