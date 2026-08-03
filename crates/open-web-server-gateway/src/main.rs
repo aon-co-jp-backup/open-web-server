@@ -292,9 +292,14 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
                 None => None,
             };
             if let Some(tenant) = prefix_tenant {
+                let strip = if tenant.config.strip_prefix {
+                    tenant.config.path_prefix.as_deref()
+                } else {
+                    None
+                };
                 return proxy::forward_to_stripped_with_host_override(
                     &tenant.config.backend_addr,
-                    tenant.config.path_prefix.as_deref(),
+                    strip,
                     tenant.config.override_host.as_deref(),
                     req,
                 )
@@ -1644,6 +1649,7 @@ mod tests {
                 db_uri: "postgres://localhost/db".to_string(),
                 path_prefix: Some("/aruaru".to_string()),
                 override_host: Some("audiocafe.tokyo".to_string()),
+                strip_prefix: true,
             })
             .await
             .unwrap();

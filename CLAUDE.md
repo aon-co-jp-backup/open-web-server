@@ -611,6 +611,35 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026/08/03 修正しました — `aruaru.tokyo`・`audiocafe.tokyo/aruaru`・`/aruaru-lady`・`/rakuten-mobile`がトップページを誤って表示していた実バグを修正
+
+`https://aruaru.tokyo/`等、`audiocafe.tokyo/aruaru`・`/aruaru-lady`・
+`/rakuten-mobile`へリンクしているページすべてが、実際にはRustバック
+エンド(`audiocafe-tokyo-rust`、`127.0.0.1:4400`)のトップページ
+(`<title>AUDIOCAFE | World — Select Your Language</title>`)を誤って
+表示していた(ユーザー報告)。
+
+**原因**: `tenant_router::TenantConfig.path_prefix`によるリバースプロキシ
+転送は、`RS-Blog`/`RS-Chiketto`/`RS-EC`(いずれも`/`をトップとして
+期待するルーティング実装)向けに、転送前にプレフィックス部分を必ず
+リクエストパスから除去(strip)する設計だった。しかし
+`audiocafe-tokyo-rust`側は`/aruaru`・`/aruaru-lady`・`/rakuten-mobile`を
+**リテラルパスのまま**ルート登録している(プレフィックス除去後の
+`/`相当のパスを期待する設計ではない)ため、除去後の`/`がRust側の
+トップページハンドラに一致してしまっていた——`domains.toml`の
+設定自体(`path_prefix`)は正しかったが、転送ロジックが常にstripする
+という前提がこのバックエンドの実装と噛み合っていなかった実バグ。
+
+**修正**: `TenantConfig`に`strip_prefix: bool`(既定`true`、既存の
+RS-Blog等との後方互換)を追加し、`main::dispatch()`の`path_prefix`
+転送分岐でこのフラグを見てstripの有無を切り替えるようにした
+(`crates/open-web-server-gateway/src/tenant_router.rs`・`main.rs`)。
+VPS本番の`domains.toml`側で、`audiocafe.tokyo`(`/aruaru`・
+`/aruaru-lady`・`/rakuten-mobile`)・`aruaru.tokyo`
+(同3パス、`override_host="audiocafe.tokyo"`)の該当エントリに
+`strip_prefix = false`を追記。
+
+
 ### 2026-08-03(続き4) 実Apache/Nginx設定ファイルのインポートを実装(改善計画の項目3、完了)——これで改善計画4項目すべて完了
 
 ユーザーへ範囲を確認したところ「vhost定義の基本部分だけで良い」との

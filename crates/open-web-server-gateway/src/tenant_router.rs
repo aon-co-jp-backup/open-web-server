@@ -88,6 +88,20 @@ pub struct TenantConfig {
     /// (完全な後方互換)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_host: Option<String>,
+    /// `path_prefix`をバックエンドへ転送する前にリクエストパスから取り除くか
+    /// (2026-08-03追記、実バグ修正)。既定`true`は既存のRS-Blog/RS-Chiketto/
+    /// RS-EC(いずれも`/`をトップとして期待するルーティング実装)との後方互換。
+    /// `audiocafe-tokyo-rust`のように、バックエンド自身が
+    /// `path_prefix`と同じリテラルパス(例: `/aruaru`)でルートを登録している
+    /// 場合、ストリップすると`/`になってしまい誤ってトップページの
+    /// ハンドラへ一致してしまう実バグがあったため、この場合は`false`を
+    /// 指定してストリップを無効化できるようにした。
+    #[serde(default = "default_true")]
+    pub strip_prefix: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// ルーティング済みテナントの実行時ハンドル。
@@ -364,6 +378,7 @@ mod tests {
             db_uri: "postgres://localhost/db".to_string(),
             path_prefix: None,
             override_host: None,
+            strip_prefix: true,
         }
     }
 
@@ -375,6 +390,7 @@ mod tests {
             db_uri: "postgres://localhost/db".to_string(),
             path_prefix: Some(prefix.to_string()),
             override_host: None,
+            strip_prefix: true,
         }
     }
 
