@@ -139,6 +139,56 @@ pub async fn upsert_web_vhost(state: Arc<AppState>, req: Request<Incoming>) -> R
 }
 
 #[derive(serde::Deserialize)]
+struct ImportVhostRequest {
+    /// `"apache"`または`"nginx"`。
+    format: String,
+    /// 生の設定テキスト(`<VirtualHost>`ブロック、または`server {}`
+    /// ブロック——ブロック自体を含んでいても中身だけでもどちらでもよい、
+    /// `config_import`は行単位でディレクティブを拾うだけなので構造の
+    /// ネストを気にしない)。
+    config: String,
+}
+
+/// `POST /admin/web-vhosts/import` — 実際のApache/Nginx設定ファイルから
+/// vhost定義の基本部分(ホスト名・ドキュメントルート・PHP-FPM接続先)を
+/// 読み取って登録する(2026-08-03新設、改善計画「(3) 実設定ファイルの
+/// パース/インポート」対応、ユーザー指示によりスコープを基本部分のみに
+/// 限定)。パース成功時は通常の`upsert`と同じ経路で登録される
+/// (`compat_mode`は既定値〈Nginx互換〉、`rewrite_rules`は空——設定
+/// ファイルの`RewriteRule`/`rewrite`ディレクティブ自体は今回のスコープ外、
+/// 必要なら登録後に`PUT .../compat-mode`や`upsert`で追加設定する)。
+pub async fn import_web_vhost(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+    if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, &req) {
+        return resp;
+    }
+
+    let body: ImportVhostRequest = match read_json_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+
+    let parsed = match body.format.to_lowercase().as_str() {
+        "apache" => crate::config_import::parse_apache_vhost(&body.config),
+        "nginx" => crate::config_import::parse_nginx_server(&body.config),
+        other => {
+            return text_response(
+                StatusCode::BAD_REQUEST,
+                format!("unknown format '{other}', expected 'apache' or 'nginx'"),
+            )
+        }
+    };
+
+    match parsed {
+        Ok(config) => {
+            let host = config.host.clone();
+            state.web_vhosts.upsert(config).await;
+            text_response(StatusCode::CREATED, format!("web vhost '{host}' imported"))
+        }
+        Err(e) => text_response(StatusCode::BAD_REQUEST, format!("failed to parse config: {e}")),
+    }
+}
+
+#[derive(serde::Deserialize)]
 struct UpdateCompatModeRequest {
     compat_mode: CompatMode,
 }

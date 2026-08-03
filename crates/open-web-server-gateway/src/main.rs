@@ -12,6 +12,7 @@ mod access_log;
 mod acme;
 mod app_proxy;
 mod compression;
+mod config_import;
 mod custom_dns;
 #[cfg(feature = "ddns")]
 mod ddns;
@@ -141,6 +142,11 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         // 配信エンジン構想、`web_vhost`参照)。
         (Method::POST, "/admin/web-vhosts") => {
             handlers::web_vhost::upsert_web_vhost(state, req).await
+        }
+        // 実Apache/Nginx設定ファイルからvhost定義の基本部分をインポート
+        // (2026-08-03新設、改善計画「(3)」対応)。
+        (Method::POST, "/admin/web-vhosts/import") => {
+            handlers::web_vhost::import_web_vhost(state, req).await
         }
         (Method::GET, "/admin/web-vhosts") => {
             handlers::web_vhost::list_web_vhosts(state, &req).await
@@ -1778,6 +1784,109 @@ mod tests {
         assert_eq!(resp.headers().get("location").unwrap(), "/modern/foo");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `POST /admin/web-vhosts/import`を実HTTP経由で検証する:
+    /// 実際のApache vhostブロックのテキストを送り、パース結果が
+    /// 正しく登録されて即座にリクエストを受け付けられることを確認する。
+    #[tokio::test]
+    async fn import_apache_vhost_registers_and_serves_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-import-secret");
+
+        let dir = std::env::temp_dir().join(format!("owsg-import-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), b"<html>imported vhost</html>").unwrap();
+        let docroot_str = dir.to_string_lossy().replace('\\', "/");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed"));
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let apache_conf = format!(
+            "<VirtualHost *:80>\n    ServerName imported-vhost.example\n    DocumentRoot \"{docroot_str}\"\n</VirtualHost>\n"
+        );
+        let body = serde_json::json!({ "format": "apache", "config": apache_conf }).to_string();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/web-vhosts/import")
+            .header("x-admin-token", "test-import-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // 登録直後、実際にこのホストへのリクエストが処理できることを確認。
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/")
+            .header("host", "imported-vhost.example")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("imported vhost"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 不正な`format`・パース失敗(必須ディレクティブ欠如)いずれも
+    /// `400`で明確に返し、パニックしないことを実HTTP経由で確認する。
+    #[tokio::test]
+    async fn import_web_vhost_rejects_unknown_format_and_unparseable_config() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-import-secret-2");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed"));
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let connect = || async {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        };
+
+        let mut sender = connect().await;
+        let body = serde_json::json!({ "format": "iis", "config": "whatever" }).to_string();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/web-vhosts/import")
+            .header("x-admin-token", "test-import-secret-2")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+            .unwrap();
+        assert_eq!(sender.send_request(req).await.unwrap().status(), StatusCode::BAD_REQUEST);
+
+        let mut sender = connect().await;
+        let body = serde_json::json!({ "format": "nginx", "config": "server_name only.example;" }).to_string();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/web-vhosts/import")
+            .header("x-admin-token", "test-import-secret-2")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+            .unwrap();
+        assert_eq!(sender.send_request(req).await.unwrap().status(), StatusCode::BAD_REQUEST);
     }
 
     static RATE_LIMIT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
