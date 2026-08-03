@@ -611,6 +611,30 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-03(続き3) RPoemの独自価値を再定義(改善計画の項目4、詳細はRPoem側CLAUDE.md参照)
+
+改善計画「(4) RPoem(Tomcat相当)固有の価値の再定義」に対応。
+`RPoem/CLAUDE.md`の2026-08-03エントリに詳細を記録済み——要約すると、
+RPoemの`SharedDispatcher`(単純なテナント振り分け)は
+`open-web-server::TenantRegistry`と重複するため既存判断通り本番未
+デプロイのままだが、`open-runo-federation`(GraphQL Federation合成)・
+`open-runo-scim`(OSS版SCIM 2.0、実Cosmoでは有料版限定)・
+`open-runo-versionless-api`(フィールド単位互換ルール)等は
+open-web-serverのリバースプロキシ層では原理的に代替不可能な、
+真のアプリケーションランタイム価値であり、これがRPoemの
+「Tomcat/WunderGraph Cosmo Enterprise相当」の実体である、と再定義した。
+
+*English*: RPoem's unique value has been redefined (see `RPoem/
+CLAUDE.md`'s 2026-08-03 entry for the full write-up): not a
+tenant-dispatch container (already covered by open-web-server's
+`TenantRegistry`), but a GraphQL Federation Gateway with OSS-tier
+enterprise features (SCIM 2.0) and field-level API versionless
+compatibility — capabilities a reverse proxy cannot substitute for.
+
+これで改善計画4項目のうち3項目(1: RewriteRule、2: レート制限、
+4: RPoem再定義)が完了。残る「(3) 実設定ファイルのパース/インポート」
+は大きめの新機能のため、着手前にユーザーへ要件範囲を再確認すること。
+
 ### 2026-08-03(続き2) Apache `.htaccess`のRewriteRule相当を実装(改善計画の項目1)
 
 改善計画「(1) Apache互換の深掘り」の最初の1項目として、`rewrite.rs`
