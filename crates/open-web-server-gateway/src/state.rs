@@ -82,6 +82,10 @@ pub struct AppState {
     /// 判定で使用。
     #[cfg(feature = "admin-2fa")]
     pub two_factor: Arc<crate::two_factor::TwoFactorStore>,
+    /// Nginx `limit_req`相当のクライアントIPごとリクエストレート制限
+    /// (`rate_limit`参照、2026-08-03新設)。`OPEN_WEB_SERVER_RATE_LIMIT_RPS`
+    /// 未設定なら`None`(既定無効、既存動作を一切変えない)。
+    pub rate_limiter: Option<Arc<crate::rate_limit::RateLimiter>>,
 }
 
 /// `OPEN_WEB_SERVER_TLS_CERT_DIR`環境変数で指定されたディレクトリ
@@ -145,6 +149,11 @@ impl AppState {
         let watchdog = Arc::new(WatchdogState::new());
         #[cfg(feature = "admin-2fa")]
         let two_factor = Arc::new(crate::two_factor::TwoFactorStore::load_from_env());
+        let rate_limit_config = crate::rate_limit::RateLimitConfig::from_env();
+        if let Some(cfg) = rate_limit_config {
+            tracing::info!(?cfg, "request rate limiting enabled from OPEN_WEB_SERVER_RATE_LIMIT_RPS");
+        }
+        let rate_limiter = rate_limit_config.map(|cfg| Arc::new(crate::rate_limit::RateLimiter::new(cfg)));
 
         Ok(Self {
             ledger,
@@ -163,6 +172,7 @@ impl AppState {
             watchdog,
             #[cfg(feature = "admin-2fa")]
             two_factor,
+            rate_limiter,
         })
     }
 

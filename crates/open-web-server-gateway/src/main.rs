@@ -28,6 +28,7 @@ mod php_fastcgi;
 mod php_server;
 mod power_profile;
 mod proxy;
+mod rate_limit;
 mod redirects;
 mod response;
 #[cfg(feature = "admin-2fa")]
@@ -352,6 +353,23 @@ async fn route(
         let _enter = span.enter();
         tracing::info!("cors preflight handled");
         return Ok(preflight_response);
+    }
+
+    // Nginx `limit_req`相当のレート制限(既定無効・オプトイン、
+    // `rate_limit`参照)。CORSプリフライトより後・`dispatch`より前で
+    // 判定する(プリフライト自体はブラウザの仕様上必ず先に処理する必要が
+    // あるため、レート制限の対象から除外する)。
+    if let (Some(limiter), Some(addr)) = (&state.rate_limiter, peer_addr) {
+        if !limiter.try_acquire(addr.ip()).await {
+            let _enter = span.enter();
+            tracing::warn!(client_ip = %addr.ip(), "request rate limit exceeded");
+            let resp = response::text_response(
+                hyper::StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded, please slow down",
+            );
+            tracing::Span::current().record("status", resp.status().as_u16());
+            return Ok(resp);
+        }
     }
 
     // Nginx互換のgzip圧縮(compression.rs)を適用する際、レスポンス側
@@ -1681,6 +1699,79 @@ mod tests {
             resp.headers().get("access-control-allow-origin").is_none(),
             "CORS headers must never appear when OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS is unset"
         );
+    }
+
+    static RATE_LIMIT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Nginx `limit_req`相当のレート制限を実HTTP経由で検証する:
+    /// バースト容量までは`200`、それを超えると`429`、既定(未設定)では
+    /// 無制限に`200`のままであることを一気通貫で確認する。
+    #[tokio::test]
+    async fn rate_limit_returns_429_after_burst_is_exhausted_over_real_http() {
+        let _env_guard = RATE_LIMIT_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_RATE_LIMIT_RPS", "1");
+        std::env::set_var("OPEN_WEB_SERVER_RATE_LIMIT_BURST", "2");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with rate limit set"));
+        std::env::remove_var("OPEN_WEB_SERVER_RATE_LIMIT_RPS");
+        std::env::remove_var("OPEN_WEB_SERVER_RATE_LIMIT_BURST");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let send = |sender: &mut hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>>| {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri("/healthz")
+                .body(http_body_util::Full::new(bytes::Bytes::new()))
+                .unwrap();
+            sender.send_request(req)
+        };
+
+        // バースト容量2件は通る。
+        assert_eq!(send(&mut sender).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(send(&mut sender).await.unwrap().status(), StatusCode::OK);
+        // 3件目は即座に拒否される(トークンが1秒あたり1個しか回復しないため)。
+        assert_eq!(send(&mut sender).await.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// レート制限が未設定(既定)の場合は、大量に連続リクエストを送っても
+    /// 一切拒否されないことの確認(オプトイン方式であることの直接検証)。
+    #[tokio::test]
+    async fn rate_limit_is_absent_by_default_over_real_http() {
+        let _env_guard = RATE_LIMIT_ENV_LOCK.lock().await;
+        std::env::remove_var("OPEN_WEB_SERVER_RATE_LIMIT_RPS");
+        std::env::remove_var("OPEN_WEB_SERVER_RATE_LIMIT_BURST");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        for _ in 0..10 {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri("/healthz")
+                .body(http_body_util::Full::new(bytes::Bytes::new()))
+                .unwrap();
+            let resp = sender.send_request(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
     }
 
     /// `domain_watchdog`の管理API(コンテンツ確認の登録・一覧・死活状態
