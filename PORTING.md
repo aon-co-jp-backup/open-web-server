@@ -587,6 +587,34 @@ internally (transparent to the client); `redirect: true` returns an
 external `301` with `Location`. See CLAUDE.md's 2026-08-03 (続き2)
 HANDOFF entry for details and honest gaps.
 
+### 4.16 実Apache/Nginx設定ファイルのvhostインポート(2026-08-03新設、基本部分のみ)
+
+ユーザー確認済みのスコープ「vhost定義の基本部分だけで良い」に基づき、
+`<VirtualHost>`/`server{}`ブロックからホスト名・ドキュメントルート・
+PHP-FPM接続先のみを抽出する最小パーサー。
+
+```bash
+curl -X POST http://127.0.0.1:8080/admin/web-vhosts/import \
+  -H "x-admin-token: <token>" -H "Content-Type: application/json" \
+  -d '{
+    "format": "apache",
+    "config": "<VirtualHost *:80>\n  ServerName mail.example.com\n  DocumentRoot \"/var/www/webmail\"\n</VirtualHost>"
+  }'
+```
+
+ドメイン・サブドメインの用途を問わない(メールサーバーのWebmail・
+ファイルサーバー管理画面・バックアップダッシュボード・DB管理パネル等)
+——Apache/Nginxのvhostブロックが共通して持つ汎用フィールドのみを
+見るため。`RewriteRule`等の複雑なディレクティブは無視される
+(エラーにはしない)。詳細は[CLAUDE.md](CLAUDE.md)の2026-08-03(続き4)
+HANDOFF参照。
+
+*English*: Minimal parser extracting only host, docroot, and PHP-FPM
+address from a real Apache/Nginx vhost block, per the user's
+explicit scope decision. Works for any domain/subdomain use case
+since it only reads generic vhost fields. See CLAUDE.md's 2026-08-03
+(続き4) HANDOFF entry for details.
+
 ### 4.11 Android版(`android/`、2026-07-23〜24新設、3電源プロファイル対応)
 
 `android/`配下のKotlin/Gradleプロジェクトは、`open-web-server-gateway`

@@ -611,6 +611,53 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-03(続き4) 実Apache/Nginx設定ファイルのインポートを実装(改善計画の項目3、完了)——これで改善計画4項目すべて完了
+
+ユーザーへ範囲を確認したところ「vhost定義の基本部分だけで良い」との
+回答を得たため、フルの`httpd.conf`/`nginx.conf`パーサーではなく、
+最小限の`config_import.rs`を実装した: `<VirtualHost>`ブロック/
+`server{}`ブロックから`ServerName`/`server_name`(ホスト名)・
+`DocumentRoot`/`root`(ドキュメントルート)・`SetHandler
+"proxy:fcgi://..."`/`fastcgi_pass`(PHP-FPM接続先、あれば
+`PhpMode::FastCgi`として検出)のみを抽出する。認識できないディレクティブ
+(`RewriteRule`・SSL設定・`<Directory>`/`<Location>`ブロック等)は
+エラーにせず単純に無視する(「読めるものだけ読む」寛容な設計)。
+
+**ユーザー確認済みの用途**: ドメイン・サブドメインの用途を問わない
+(メールサーバーのWebmail画面・ファイルサーバー管理画面・バックアップ
+サーバーダッシュボード・DB管理パネル等)——本パーサーはApache/Nginxの
+vhostブロックが共通して持つ「ホスト名+ドキュメントルート+PHP-FPM
+接続先」という汎用フィールドのみを見るため、バックエンドが実際に
+何を提供するかに関わらず動作する。
+
+*English*: Per the user's explicit scoping ("just the basic vhost
+definition part is fine"), implemented a minimal `config_import.rs`
+rather than a full config-language parser: extracts `ServerName`/
+`server_name`, `DocumentRoot`/`root`, and `fastcgi_pass`/`SetHandler
+proxy:fcgi://` (detected as `PhpMode::FastCgi`) from a `<VirtualHost>`
+or `server{}` block. Unrecognized directives are silently ignored
+rather than causing failure. Confirmed to work for any domain/
+subdomain use case (mail server webmail, file server admin UI,
+backup dashboard, DB admin panel, etc.) since it only reads the
+generic fields Apache/Nginx vhost blocks share.
+
+新規`POST /admin/web-vhosts/import`(`{"format": "apache"|"nginx",
+"config": "<生の設定テキスト>"}`)。**検証**: 単体テスト7件(両形式の
+パース・引用符処理・複数`server_name`・必須項目欠如時の明確な
+エラー)+実HTTP経由の統合テスト2件(インポート直後に実際にリクエストを
+処理できること、不正な`format`/パース不能な設定がいずれも`400`で
+明確に拒否されパニックしないこと)。`cargo test --workspace`は
+**gateway 173件・ledger 20件(1件ignored)・wire 24件、全green**
+(リグレッション無し、コミット`d11e683`)。
+
+**これで2026-08-03の改善計画4項目(RewriteRule・レート制限・
+設定ファイルインポート・RPoem再定義)すべてが完了した。**
+
+- 次にすべきこと: 特に緊急の課題は無し。将来、より高度なディレクティブ
+  (`RewriteRule`のインポート反映・SSL証明書パスの読み取り等)が
+  実際に必要になった時点で、今回と同じ「基本部分から段階的に拡張する」
+  方針で追加を検討する。
+
 ### 2026-08-03(続き3) RPoemの独自価値を再定義(改善計画の項目4、詳細はRPoem側CLAUDE.md参照)
 
 改善計画「(4) RPoem(Tomcat相当)固有の価値の再定義」に対応。

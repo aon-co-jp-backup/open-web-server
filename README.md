@@ -73,6 +73,14 @@ Also added Apache `.htaccess`-style `RewriteRule` support
 (`rewrite.rs`, `WebVhostConfig.rewrite_rules`) — regex pattern →
 substitution, first-match-wins, internal rewrite or external `301`
 redirect. Verified with 6 unit tests + 1 real end-to-end HTTP test.
+And `POST /admin/web-vhosts/import` (`config_import.rs`) reads the
+basic vhost fields (ServerName/server_name, DocumentRoot/root,
+PHP-FPM address) from a real Apache `<VirtualHost>` or Nginx
+`server{}` block — scoped to "basic vhost definition" per user
+confirmation, works for any domain/subdomain use case (mail/file/
+backup/DB admin web UIs). **This completes all 4 items of the
+2026-08-03 improvement plan** (RewriteRule, rate limiting, config
+import, RPoem value redefinition — see [CLAUDE.md](CLAUDE.md)).
 
 *English*: Added `PUT /admin/web-vhosts/:host/compat-mode` so the
 Apache/Nginx-compat virtual host mode can be switched at any time
