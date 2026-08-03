@@ -611,6 +611,97 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-03 Apache/Nginx互換性・RPoem(Tomcat相当)連携の改善計画(ユーザー指示、日英併記)
+
+ユーザー指示「open-web-serverをJavaで言う所のApacheとNginx互換で、
+Tomcatの互換としてのRPoemの実用性と互換性と使いやすさなどを向上して」
+「open-web-serverは、インストール時だけでなく、インストール後も、いつでも、
+ApacheとNginxのヴァーチャルホストのプロファイルはどちらでも読めて
+いつでも両方に対応可能に改善して」への対応。
+
+**今回すぐに実装・検証・デプロイ済みのもの(1件)**:
+`web_vhost::CompatMode`(Apache互換/Nginx互換、静的サイトの
+「ファイル未検出時にindex.htmlへフォールバックするか/素直に404か」の
+切り替え)は、従来インストール時(`POST /admin/web-vhosts`での完全な
+`WebVhostConfig`再送)にしか変更できなかった。新設
+`PUT /admin/web-vhosts/:host/compat-mode`
+(`WebVhostRegistry::set_compat_mode()`)により、**稼働中いつでも
+docroot等の他設定を再送せずcompat_modeだけを安全に切り替え**られる
+ようになった(変更は既存の永続化機構〈`persist_path`〉経由で即座に
+`web_vhosts.toml`へ反映され、再起動後も維持される)。単体テスト2件
+(他フィールド不変であることの確認・存在しないホストへの404)を追加、
+`cargo test --workspace`は既存24件+web_vhost関連17件、全green
+(コミット`afb765e`)。
+
+*English*: `CompatMode` (Apache-style vs. Nginx-style fallback
+behavior for static sites) could previously only be changed by
+resending a full `WebVhostConfig` at vhost-creation time. Added
+`PUT /admin/web-vhosts/:host/compat-mode` so the mode can be switched
+at any time while running, without resending docroot/php_enabled/etc.
+The change is persisted immediately via the existing `persist_path`
+mechanism and survives restarts. Added 2 unit tests; full workspace
+test suite passes with no regressions (commit `afb765e`).
+
+**残る改善計画(未着手、次回以降の優先順位案、正直な開示)**:
+
+1. **Apache互換の深掘り**(現状は404 vs index.htmlフォールバックの
+   1点のみ): `.htaccess`相当のリライトルール(`RewriteRule`のような
+   パスパターン→リダイレクト/内部書き換え)、Basic/Digest認証、
+   ディレクトリごとの個別アクセス制御(`<Directory>`相当)。
+   *English*: Deepen Apache compatibility beyond the single
+   404-vs-fallback behavior — `.htaccess`-style rewrite rules,
+   Basic/Digest auth, per-directory access control.
+2. **Nginx互換の深掘り**: brotli圧縮(現状gzipのみ)、リクエストレート
+   制限(`limit_req`相当)、静的アセットのキャッシュヘッダー
+   細分化(拡張子/パスパターンごと)、複数バックエンドへの
+   ロードバランシング(`upstream`ブロック相当、現状`tenant_router`は
+   1ホスト=1バックエンド固定)。
+   *English*: Deepen Nginx compatibility — brotli compression
+   (currently gzip only), request rate limiting (`limit_req`
+   equivalent), finer-grained static asset cache headers, load
+   balancing across multiple backends per host (`tenant_router`
+   currently maps one host to exactly one backend).
+3. **設定の相互運用性(「どちらのプロファイルも読める」の本来的な
+   拡張)**: 現状の`CompatMode`は内部的な簡易トグルであり、実際の
+   Apache `httpd.conf`のVirtualHostブロックやNginxの`server{}`
+   ブロックをパースして読み込む機能ではない。将来、実運用者が
+   既存のApache/Nginx設定ファイルをそのまま持ち込んで移行できる
+   ようにするには、実際の設定ファイルパーサー(限定的な構文サブセット
+   でよい)の新規実装が必要——これは大きめの新機能であり、着手前に
+   ユーザーへ本当に必要な範囲(全構文か、vhost定義の基本部分のみか)を
+   再確認すること。
+   *English*: The current `CompatMode` is an internal simplified
+   toggle, not a real Apache `httpd.conf`/Nginx `server{}` config file
+   parser/importer. Truly letting operators bring existing config
+   files over would require a new config-file parser (a limited
+   subset would likely suffice) — a substantial feature; confirm the
+   real required scope with the user before starting.
+4. **RPoem(Tomcat相当)の実用性・互換性・使いやすさ向上**: 現状RPoemは
+   `open-runo-gateway::appserver_tenants`(`SharedDispatcher`)を持つが、
+   本番で一度もデプロイされていない(`open-raid-z/CLAUDE.md`
+   2026-08-01エントリで「open-web-serverのTenantRegistryと機能重複する
+   ため見送り」と判断済み)。Tomcat相当としての価値を出すには、
+   `open-web-server`のリバースプロキシ機構では代替できない
+   RPoem固有の付加価値(例: JVMのServlet/JSPライフサイクル相当の
+   何らかのアプリケーションランタイム機能、RPoem固有のミドルウェア/
+   認証層の共有等)を具体化する必要がある——現状は「重複インフラを
+   デプロイしない」という判断が正しい以上、次に着手すべきは
+   「RPoemだけが提供できる具体的な価値は何か」の再定義そのもの。
+   *English*: RPoem currently has `open-runo-gateway::
+   appserver_tenants` (`SharedDispatcher`) but has never been deployed
+   in production (already judged redundant with open-web-server's
+   `TenantRegistry`, per `open-raid-z/CLAUDE.md`'s 2026-08-01 entry).
+   For RPoem to earn its "Tomcat equivalent" role, it needs a concrete
+   value-add that open-web-server's reverse proxy can't already
+   provide (e.g., some servlet/JSP-lifecycle-equivalent application
+   runtime feature, or a shared RPoem-specific middleware/auth layer).
+   Given that "don't deploy redundant infrastructure" remains the
+   right call, the next step is redefining what RPoem uniquely offers.
+- 次にすべきこと(優先順位はユーザー確認の上で決定): (1) Apache
+  `.htaccess`相当のリライトルール、(2) Nginx `limit_req`相当の
+  レート制限、(3) RPoemの独自価値の再定義、(4) 実際の設定ファイル
+  パーサー(範囲が大きいため要件再確認後に着手)。
+
 ### 2026-07-31 管理ログインに常時二段階認証(メールOTP+TOTP/QRコード)を実装+ロールベース権限分離+IPアレースリスト実装完了
 
 ユーザー指示「他人のアカウントのIDやパスワードやDATAやDATABASEなどを

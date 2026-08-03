@@ -63,6 +63,17 @@ pgwire サーバー本体)で、こちらは開発の過程で Claude が名付�
 
 13. **構造化アクセスログ + サイズローテーション**(`access_log`、2026-07-24新設、既定無効・オプトイン) — Nginx/Apacheの運用ベストプラクティス(日英Web検索で確認)を参考に、JSON Lines形式の永続アクセスログを追加。`OPEN_WEB_SERVER_ACCESS_LOG_PATH`設定時のみ有効化し、`OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES`(既定10MiB)超過で`.1.gz`へgzip圧縮ローテーション、`OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS`(既定5)世代までシフト保持する。実バイナリでのローテーション+gzip展開まで実機検証済み(詳細は[PORTING.md §4.11](PORTING.md#411-構造化アクセスログローテーション2026-07-24新設既定無効オプトイン)参照)。
 14. **RS-LinkFusion(WAN/LAN/WiFiボンディング)との連携を実機検証**(2026-07-24) — `open-web-server`は`OPEN_WEB_SERVER_BIND`でbindアドレスを外部注入するだけでネットワークインターフェースに関知しない設計のため、[RS-LinkFusion](https://github.com/aon-co-jp/RS-LinkFusion)のボンディングトンネル経由での動作に**追加のコード変更は不要**と実機検証(3プロセス・実TCPソケットでのcurl疎通)で確認した。TUN仮想アダプタ方式(`gateway-serve`/`gateway-connect`)は管理者権限が必要なためこの開発環境では未検証(詳細は[PORTING.md §4.12](PORTING.md#412-rs-linkfusionwanlanwifiボンディングとの連携2026-07-24実機検証済み追加コード不要)参照)。
+15. **Apache/Nginxヴァーチャルホストプロファイルをいつでも切替可能に**(2026-08-03) — `PUT /admin/web-vhosts/:host/compat-mode`を新設し、稼働中いつでも(インストール時に限らず)docroot等を再送せずApache互換/Nginx互換モードだけを安全に切り替えられるようにした(`WebVhostRegistry::set_compat_mode()`、既存の永続化機構経由で再起動後も維持)。より深いApache互換(`.htaccess`相当のリライトルール等)・Nginx互換(brotli圧縮・レート制限等)・実設定ファイルのパース/インポート・RPoem(Tomcat相当)の独自価値の再定義は、改善計画として[CLAUDE.md](CLAUDE.md)の2026-08-03 HANDOFFに日英併記で記録済み(未着手、次回以降の優先課題)。
+
+*English*: Added `PUT /admin/web-vhosts/:host/compat-mode` so the
+Apache/Nginx-compat virtual host mode can be switched at any time
+while running (not just at install time), without resending
+docroot/php_enabled — persisted via the existing mechanism and
+survives restarts. A broader improvement plan (deeper Apache
+compatibility, deeper Nginx compatibility, real config-file
+parsing/import, and redefining RPoem's unique value as the
+"Tomcat equivalent") is recorded bilingually in [CLAUDE.md](CLAUDE.md)'s
+2026-08-03 HANDOFF entry (not yet started, next-priority candidates).
 
 ## クイックスタート(5分で動かす)
 

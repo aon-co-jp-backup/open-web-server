@@ -498,6 +498,40 @@ curl http://127.0.0.1:15199/healthz   # => "ok" (200)
 仮想アダプタのIP(RS-LinkFusion既定`10.66.0.2`等)に向けるだけで動作する
 想定。詳細は`RS-LinkFusion/PORTING.md`側にも追記済み。
 
+### 4.13 Apache/Nginxヴァーチャルホストプロファイルの実行時切替+改善計画(2026-08-03新設)
+
+ユーザー指示「open-web-serverをJavaで言う所のApacheとNginx互換で、
+Tomcatの互換としてのRPoemの実用性と互換性と使いやすさなどを向上して」
+「インストール後もいつでも両方のプロファイルに対応可能に」への対応。
+
+**実装・デプロイ済み**: `PUT /admin/web-vhosts/:host/compat-mode`
+(`{"compat_mode": "apache"}`または`{"compat_mode": "nginx"}`)で、
+稼働中のvhostの`docroot`等を再送せず互換モードだけを安全に切り替え
+られる(`WebVhostRegistry::set_compat_mode()`、既存の
+`persist_path`永続化経由で再起動後も維持)。
+
+```bash
+curl -X PUT http://127.0.0.1:8080/admin/web-vhosts/audiocafe.tokyo/compat-mode \
+  -H "x-admin-token: <token>" -H "Content-Type: application/json" \
+  -d '{"compat_mode": "apache"}'
+```
+
+**改善計画(未着手、詳細・優先順位は[CLAUDE.md](CLAUDE.md)の
+2026-08-03 HANDOFF参照)**: (1) Apache互換の深掘り(`.htaccess`相当の
+リライトルール・Basic/Digest認証)、(2) Nginx互換の深掘り(brotli圧縮・
+レート制限・ロードバランシング)、(3) 実際のApache/Nginx設定ファイル
+そのものをパース/インポートする機能(大きめの新機能、要件再確認後に
+着手)、(4) RPoem(Tomcat相当)固有の価値の再定義(現状は
+open-web-serverのTenantRegistryと機能重複するため本番未デプロイ)。
+
+*English*: `PUT /admin/web-vhosts/:host/compat-mode` lets an
+operator switch a running vhost's Apache/Nginx compat mode at any
+time without resending `docroot` etc. (persisted, survives
+restarts). A broader improvement plan — deeper Apache/Nginx
+compatibility, real config-file parsing/import, and redefining
+RPoem's unique value as the Tomcat equivalent — is recorded (not yet
+started) in [CLAUDE.md](CLAUDE.md)'s 2026-08-03 HANDOFF entry.
+
 ### 4.11 Android版(`android/`、2026-07-23〜24新設、3電源プロファイル対応)
 
 `android/`配下のKotlin/Gradleプロジェクトは、`open-web-server-gateway`
