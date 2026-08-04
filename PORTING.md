@@ -798,3 +798,32 @@ impl PayloadAccelerator {
 PHP-FPM/FastCGI等の本番グレード直結経路を追加する場合も、この
 汎用リバースプロキシ経路とは独立したオプトイン機能として実装し、
 既存の言語非依存パスを壊さないこと。
+
+## 9. リバースプロキシの接続レース耐性(2026-08-04追加)
+
+`proxy.rs::forward_to_stripped`は、動的登録直後のバックエンド(RPoem等の
+「分身の術」テナント)へ最初の1リクエストを送った際に接続が確立直後に
+切断される、という実際のE2E検証(open-web-server↔RPoem)で観測された
+レースに対応するため、**接続自体が確立できなかった/確立直後に処理されず
+切断されたケースに限り**、50ms待機後に1回だけ再送する
+(`request_with_one_retry_on_connect_failure`、
+`hyper_util::Error::is_connect()`だけでなく`hyper::Error::is_canceled()`/
+`is_closed()`/`is_incomplete_message()`まで判定を広げている点が肝)。
+**到達後のエラー応答(4xx/5xx)は再送しない**——冪等性が保証できない
+リクエストでも安全。移植先で同種のリバースプロキシを実装する場合、
+この区別(「到達しなかった」vs「到達してエラーが返った」)を守ること。
+
+## 10. Android版: root化端末での外付けストレージ対応(2026-08-04追加)
+
+`android/app/src/main/java/tokyo/runo/openwebserver/
+ExternalStorageConfig.kt`+`MainActivity.kt`の`startServerProcess()`
+拡張部分がパターン。**Android 10+のScoped Storageにより、root化して
+いない端末ではネイティブバイナリがUSB外部ストレージへ直接POSIXパスで
+読み書きできない**——この機能はroot化済み端末専用であり、`su -c id`で
+実際にroot到達性を確認できない場合は**内部ストレージへの黙示的な
+フォールバックをせず起動を拒否する**設計を維持すること(移植先でも
+「保存先を誤認したままユーザーが運用し続ける」事故を防ぐため、この
+安全側の拒否パターンは省略しないこと)。root起動時は`su -c`が非rootの
+起動元プロセス環境を継承しない前提で、全環境変数を`export`込みの
+1シェルコマンド文字列として組み立てる(`shellQuote()`によるシングル
+クォートエスケープ必須、コマンドインジェクション対策)。
