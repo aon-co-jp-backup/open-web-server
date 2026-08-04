@@ -139,15 +139,17 @@ pub async fn forward_to_stripped(
         }
     };
 
-    let mut upstream_req = Request::builder()
-        .method(parts.method.clone())
-        .uri(upstream_uri);
+    let build_upstream_req = || -> Result<Request<Full<Bytes>>, String> {
+        let mut b = Request::builder()
+            .method(parts.method.clone())
+            .uri(upstream_uri.clone());
+        for (name, value) in parts.headers.iter() {
+            b = b.header(name, value);
+        }
+        b.body(Full::new(body_bytes.clone())).map_err(|e| e.to_string())
+    };
 
-    for (name, value) in parts.headers.iter() {
-        upstream_req = upstream_req.header(name, value);
-    }
-
-    let upstream_req = match upstream_req.body(Full::new(body_bytes)) {
+    let upstream_req = match build_upstream_req() {
         Ok(req) => req,
         Err(e) => {
             return text_response(
@@ -157,7 +159,9 @@ pub async fn forward_to_stripped(
         }
     };
 
-    match shared_client().request(upstream_req).await {
+    let attempt = request_with_one_retry_on_connect_failure(upstream_req, &build_upstream_req).await;
+
+    match attempt {
         Ok(upstream_resp) => {
             let (parts, body) = upstream_resp.into_parts();
             match BodyExt::collect(body).await {
@@ -172,5 +176,142 @@ pub async fn forward_to_stripped(
             StatusCode::BAD_GATEWAY,
             format!("failed to reach upstream '{base_url}': {e}"),
         ),
+    }
+}
+
+/// 接続確立自体の失敗(connection refused/reset/EOF等、`hyper_util`の
+/// `Error::is_connect()`が真になるクラス)のみを対象に、短い待機を
+/// 挟んで1回だけ再送する。**到達してエラー応答(4xx/5xx)が返った
+/// ケースは対象外**(サーバーに到達した以上、再送は二重実行の
+/// リスクを生むため)。2026-08-04、open-web-server↔RPoem実接続検証で
+/// 「動的登録された直後のバックエンドが一瞬だけ接続を受け付けない」
+/// 実際のレースを観測したことを受けて追加。
+async fn request_with_one_retry_on_connect_failure(
+    first_req: Request<Full<Bytes>>,
+    rebuild: &(dyn Fn() -> Result<Request<Full<Bytes>>, String> + Send + Sync),
+) -> Result<
+    Response<Incoming>,
+    hyper_util::client::legacy::Error,
+> {
+    let first = shared_client().request(first_req).await;
+    match first {
+        Err(e) if is_transient_connection_failure(&e) => {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            match rebuild() {
+                Ok(retry_req) => shared_client().request(retry_req).await,
+                Err(_) => Err(e),
+            }
+        }
+        other => other,
+    }
+}
+
+/// リクエストが実際にupstreamへ到達し処理された(エラー応答を含む)
+/// のではなく、「接続自体が確立できなかった/確立直後に切断された」
+/// ことを示すエラーかどうかを判定する。`hyper_util::Error::is_connect()`
+/// は`ErrorKind::Connect`(TCP接続自体の失敗)のみを対象とするため、
+/// 「acceptはしたが処理前に切断された」ケース(2026-08-04の実E2E検証で
+/// 実際に観測、RPoem側`ThreadedProxyServer`のワーカー起動直後の
+/// レース)は`ErrorKind::SendRequest`/`Canceled`として現れ捕捉されない
+/// ——`hyper::Error`(`source()`経由)の`is_canceled()`/`is_closed()`/
+/// `is_incomplete_message()`まで見て判定を広げる。
+fn is_transient_connection_failure(e: &hyper_util::client::legacy::Error) -> bool {
+    if e.is_connect() {
+        return true;
+    }
+    if let Some(source) = std::error::Error::source(e) {
+        if let Some(hyper_err) = source.downcast_ref::<hyper::Error>() {
+            return hyper_err.is_canceled()
+                || hyper_err.is_closed()
+                || hyper_err.is_incomplete_message();
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener as StdTcpListener;
+
+    fn build(uri: &str) -> Request<Full<Bytes>> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    }
+
+    /// 実際にE2E検証で観測された「バックエンド起動直後の一瞬だけ接続が
+    /// 失敗する」状況を再現する: 1回目の接続は即座に切断(応答を返さず
+    /// 閉じる)、2回目は正しく応答する。`request_with_one_retry_on_
+    /// connect_failure`が自動的に1回リトライして最終的に200を返すことを
+    /// 実TCP接続で検証する。
+    #[tokio::test]
+    async fn retries_once_and_recovers_from_a_transient_connect_failure() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+
+        tokio::spawn(async move {
+            // 1回目: 接続だけ受けて即座に閉じる(応答なし)。
+            let (stream, _) = tokio_listener.accept().await.unwrap();
+            drop(stream);
+
+            // 2回目: 正常に200を返す。
+            let (mut stream, _) = tokio_listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let body = "recovered";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let uri = format!("http://{addr}/");
+        let req = build(&uri);
+        let uri_for_retry = uri.clone();
+        let result = request_with_one_retry_on_connect_failure(req, &|| Ok(build(&uri_for_retry))).await;
+
+        let resp = result.expect("should recover on retry");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// 到達後にエラー応答(サーバーがリクエストを処理し、その上で
+    /// 明示的にエラーを返した)は再送しないことを確認する
+    /// (=このリトライは「到達すらしなかった」場合限定であることの実証)。
+    #[tokio::test]
+    async fn does_not_retry_after_reaching_the_server_even_on_error_status() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+
+        let accept_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accept_count_bg = accept_count.clone();
+        tokio::spawn(async move {
+            let (mut stream, _) = tokio_listener.accept().await.unwrap();
+            accept_count_bg.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let uri = format!("http://{addr}/");
+        let req = build(&uri);
+        let uri_for_retry = uri.clone();
+        let result = request_with_one_retry_on_connect_failure(req, &|| Ok(build(&uri_for_retry))).await;
+
+        let resp = result.expect("server responded, no connect error");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // わずかに待って、再送が発生していないこと(accept呼び出しが1回のみ)を確認。
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(accept_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

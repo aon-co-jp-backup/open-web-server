@@ -611,6 +611,47 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-04(続き) 実E2E検証で見つかった初回リクエスト502を修正 — リバースプロキシに接続レース耐性を追加
+
+直前のE2E検証(下記エントリ)で観測した「動的登録直後のバックエンドへの
+初回リクエストのみ一時的に502になる」という実バグを調査・修正した。
+
+**原因**: `proxy.rs::forward_to_stripped`は`shared_client()`
+(`hyper_util::client::legacy::Client`)で1回だけリクエストを送り、
+失敗すれば即座に`502 Bad Gateway`を返す設計だった。RPoem側
+`ThreadedProxyServer`のような「登録直後にバインドされたばかりの
+バックエンド」は、accept自体はできてもワーカースレッドプールへの
+ディスパッチが整うまでのごく短い間、確立した接続を処理せずに切断
+することがある——これがクライアント側(open-web-server)からは
+`hyper_util::Error`(`ErrorKind::SendRequest`/`Canceled`、
+`is_connect()`では捕捉されないクラス)として現れていた。
+
+**修正**: `request_with_one_retry_on_connect_failure`を新設し、
+「接続自体が確立できなかった/確立直後に処理されず切断された」
+エラー(`is_connect()`に加え、`hyper::Error::is_canceled()`/
+`is_closed()`/`is_incomplete_message()`まで判定を拡大)に限り、
+50ms待機してから1回だけ再送するようにした。**バックエンドに実際に
+到達しエラー応答(4xx/5xx)が返ったケースは再送しない**——二重実行
+リスクを避けるため、あくまで「サーバーに到達すらしなかった」ケース
+限定。`forward_to_stripped`/`forward_to_stripped_with_host_override`
+経由の全リバースプロキシ転送(マルチテナント振り分け・
+`app_proxy`単一アップストリームの両方)に自動的に適用される。
+
+**検証**: 単体テスト2件追加
+(`retries_once_and_recovers_from_a_transient_connect_failure`——1回目は
+接続だけ受けて応答せず切断、2回目は正常応答という状況を実TCP接続で
+再現し、最終的に200が返ることを確認。
+`does_not_retry_after_reaching_the_server_even_on_error_status`——
+サーバーが実際に処理し500を返した場合は再送されず`accept`が1回のみ
+呼ばれることを確認)。`cargo test -p open-web-server-gateway --bin
+open-web-server`**175件全green**(既存173件+新規2件、リグレッション
+無し)。
+
+- 次にすべきこと: (1) RPoem側`ThreadedProxyServer`自体の起動シーケンス
+  (`accept_thread`とワーカースレッドの起動順序)を見直し、根本原因側
+  (バックエンド起動直後の一瞬だけ処理できない設計)も解消できないか
+  検討する余地はあるが、クライアント側の耐性で実用上は解消済みと判断。
+
 ### 2026-08-04 RPoemとの`tenant_bridge`実接続E2E検証完了
 
 ユーザー指示「RPoemを実際にopen-web-serverに接続・実際にE2E検証」への
