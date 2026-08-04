@@ -157,9 +157,14 @@ class MainActivity : AppCompatActivity() {
         val changeProfileButton = findViewById<Button>(R.id.changeProfileButton)
         val ddnsSetupButton = findViewById<Button>(R.id.ddnsSetupButton)
         val hardwareInfoButton = findViewById<Button>(R.id.hardwareInfoButton)
+        val externalStorageButton = findViewById<Button>(R.id.externalStorageButton)
 
         hardwareInfoButton.setOnClickListener {
             showHardwareInfoDialog()
+        }
+
+        externalStorageButton.setOnClickListener {
+            showExternalStorageDialog()
         }
 
         statusText.text =
@@ -562,6 +567,73 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * 外付けHDD(root化端末専用)設定ダイアログ(2026-08-04新設)。
+     * `ExternalStorageConfig`へ保存するのみで、稼働中プロセスへは反映
+     * しない(次回サーバー起動時から有効、`startServerProcess()`参照)。
+     */
+    private fun showExternalStorageDialog() {
+        val container = android.widget.LinearLayout(this)
+        container.orientation = android.widget.LinearLayout.VERTICAL
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        container.setPadding(pad, pad, pad, pad)
+
+        val messageView = TextView(this)
+        messageView.text = getString(R.string.external_storage_dialog_message)
+        container.addView(messageView)
+
+        val pathInput = android.widget.EditText(this)
+        pathInput.hint = getString(R.string.external_storage_path_hint)
+        pathInput.setText(ExternalStorageConfig.getMountPath(this) ?: "")
+        container.addView(pathInput)
+
+        val enableCheckbox = android.widget.CheckBox(this)
+        enableCheckbox.text = getString(R.string.external_storage_enable_checkbox)
+        enableCheckbox.isChecked = ExternalStorageConfig.isEnabled(this)
+        container.addView(enableCheckbox)
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.external_storage_dialog_title)
+            .setView(container)
+            .setPositiveButton(R.string.external_storage_save_button) { _, _ ->
+                val path = pathInput.text.toString().trim()
+                if (enableCheckbox.isChecked && path.isEmpty()) {
+                    Toast.makeText(this, "マウントパスを入力してください", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                ExternalStorageConfig.save(this, enableCheckbox.isChecked, path)
+                Toast.makeText(this, "保存しました(次回サーバー起動から反映)", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
+    /**
+     * `su`(root権限昇格)へ実際に到達できるか同期的に確認する
+     * (`startServerProcess()`から`Dispatchers.IO`上で呼ばれる前提、
+     * UIスレッドをブロックしない)。`su -c id`の実行に成功し、
+     * 終了コード0が返れば root化済みと判断する。
+     */
+    private fun isRootAvailable(): Boolean {
+        return try {
+            val process = ProcessBuilder("su", "-c", "id").start()
+            val finished = process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+            finished && process.exitValue() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * `su -c`へ渡すシェルコマンド文字列組み立て用の最小限のシングル
+     * クォートエスケープ(POSIX shの慣用パターン: `'`を`'\''`に置換して
+     * シングルクォートで囲む)。ユーザーが入力するマウントパス・
+     * 管理トークンをそのままシェル文字列へ埋め込むため、コマンド
+     * インジェクション対策として必須。
+     */
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\\''") + "'"
+
     private fun openEasyWeb() {
         try {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(openEasyWebUrl))
@@ -583,23 +655,83 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
-            val pb = ProcessBuilder(binaryPath.absolutePath)
-            pb.directory(filesDir)
-            pb.environment()["OPEN_WEB_SERVER_BIND"] = "127.0.0.1:$bindPort"
-            pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfiles)
-            log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfiles)}")
-
-            // DuckDNS DDNS設定画面(2026-07-24追加)からRust側管理API
-            // (`/admin/ddns/*`)を叩けるようにするため、`SecureDdnsStore`に
-            // 保存済みの管理トークンをこのプロセスの`OPEN_WEB_SERVER_
-            // ADMIN_TOKEN`として渡す(未設定ならRust側は無認証のまま起動、
-            // 既存の後方互換動作)。トークン自体はログへ出力しない。
-            SecureDdnsStore.getAdminToken(this)?.let { token ->
-                pb.environment()["OPEN_WEB_SERVER_ADMIN_TOKEN"] = token
-                log.appendLine("admin token: configured (value not logged)")
+            // 外付けHDD(root化端末専用)を主ストレージにする設定
+            // (2026-08-04新設)。有効化されている場合はroot到達性を実際に
+            // 確認し、確認できなければ**黙って内部ストレージへフォール
+            // バックせず**明確に起動を中止する——「HDDに保存されている
+            // つもりが実は端末内蔵ストレージだった」という誤認事故を
+            // 避けるため(ExternalStorageConfigのdoc参照)。
+            val useExternalStorage = ExternalStorageConfig.isEnabled(this)
+            if (useExternalStorage) {
+                val mountPath = ExternalStorageConfig.getMountPath(this)
+                if (mountPath.isNullOrBlank()) {
+                    log.appendLine("ERROR: external storage is enabled but no mount path is configured")
+                    return false
+                }
+                log.appendLine("external storage requested: $mountPath (checking root access...)")
+                if (!isRootAvailable()) {
+                    log.appendLine(
+                        "ERROR: root access ('su') is not available on this device — " +
+                            "external HDD storage requires a rooted device (Android Scoped Storage " +
+                            "blocks direct file access to USB storage otherwise). " +
+                            "Falling back to internal storage was intentionally NOT done " +
+                            "to avoid the app silently writing where the user doesn't expect."
+                    )
+                    return false
+                }
+                log.appendLine("root access confirmed, launching via 'su' with data dir on external storage")
             }
-            pb.redirectErrorStream(true)
-            val process = pb.start()
+
+            val process: Process
+            if (useExternalStorage) {
+                val mountPath = ExternalStorageConfig.getMountPath(this)!!
+                val dataDir = ExternalStorageConfig.dataDirPath(mountPath)
+                val adminTokenExport = SecureDdnsStore.getAdminToken(this)?.let { token ->
+                    log.appendLine("admin token: configured (value not logged)")
+                    "export OPEN_WEB_SERVER_ADMIN_TOKEN=${shellQuote(token)}; "
+                } ?: ""
+                // `su -c`はroot権限で単一のシェルコマンド文字列を実行する
+                // ため、`ProcessBuilder.environment()`では環境変数を渡せない
+                // (root shellは非rootの起動元プロセス環境を継承しない前提の
+                // 実装があるため)。そのため全て`export`込みの1コマンド文字列
+                // として組み立てる。
+                val script = buildString {
+                    append("mkdir -p ${shellQuote(dataDir)}/tls-certs; ")
+                    append("cd ${shellQuote(dataDir)} && ")
+                    append("export OPEN_WEB_SERVER_BIND=${shellQuote("127.0.0.1:$bindPort")}; ")
+                    append("export OPEN_WEB_SERVER_ACCEL_BACKEND=${shellQuote(accelBackendEnvValue(currentProfiles))}; ")
+                    append("export OPEN_WEB_SERVER_WEB_VHOSTS_FILE=${shellQuote("$dataDir/web_vhosts.toml")}; ")
+                    append("export OPEN_WEB_SERVER_DOMAINS_FILE=${shellQuote("$dataDir/domains.toml")}; ")
+                    append("export OPEN_WEB_SERVER_REDIRECTS_FILE=${shellQuote("$dataDir/redirects.toml")}; ")
+                    append("export OPEN_WEB_SERVER_TLS_CERT_DIR=${shellQuote("$dataDir/tls-certs/")}; ")
+                    append("export OPEN_WEB_SERVER_KEY_STORE_PATH=${shellQuote("$dataDir/keyguardian.json")}; ")
+                    append("export OPEN_WEB_SERVER_ACME_ACCOUNT_KEY_PATH=${shellQuote("$dataDir/acme-account-key.der")}; ")
+                    append(adminTokenExport)
+                    append("exec ${shellQuote(binaryPath.absolutePath)}")
+                }
+                log.appendLine("data dir on external storage: $dataDir")
+                val pb = ProcessBuilder("su", "-c", script)
+                pb.redirectErrorStream(true)
+                process = pb.start()
+            } else {
+                val pb = ProcessBuilder(binaryPath.absolutePath)
+                pb.directory(filesDir)
+                pb.environment()["OPEN_WEB_SERVER_BIND"] = "127.0.0.1:$bindPort"
+                pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfiles)
+                log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfiles)}")
+
+                // DuckDNS DDNS設定画面(2026-07-24追加)からRust側管理API
+                // (`/admin/ddns/*`)を叩けるようにするため、`SecureDdnsStore`に
+                // 保存済みの管理トークンをこのプロセスの`OPEN_WEB_SERVER_
+                // ADMIN_TOKEN`として渡す(未設定ならRust側は無認証のまま起動、
+                // 既存の後方互換動作)。トークン自体はログへ出力しない。
+                SecureDdnsStore.getAdminToken(this)?.let { token ->
+                    pb.environment()["OPEN_WEB_SERVER_ADMIN_TOKEN"] = token
+                    log.appendLine("admin token: configured (value not logged)")
+                }
+                pb.redirectErrorStream(true)
+                process = pb.start()
+            }
             serverProcess = process
 
             // stdoutを非同期で読み続けてログ画面に反映する(バッファが

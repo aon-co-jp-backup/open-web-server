@@ -43,4 +43,11 @@
     <string name="ddns_registered_list_title">登録済みドメイン</string>
 
     <string name="hardware_info_button">🔍 ハードウェア検出情報を表示</string>
+
+    <string name="external_storage_button">💽 外付けHDDをストレージに使う(root)</string>
+    <string name="external_storage_dialog_title">外付けHDDを主ストレージに使う(root化端末専用)</string>
+    <string name="external_storage_dialog_message">root化していない端末では、ネイティブサーバーが外部USBストレージへ直接読み書きできません(Android Scoped Storageの制限)。root化済みの端末で、マウント済みのパス(例: /mnt/media_rw/XXXX-XXXX)を入力してください。次回のサーバー起動から有効になります。</string>
+    <string name="external_storage_path_hint">マウントパス(例: /mnt/media_rw/XXXX-XXXX)</string>
+    <string name="external_storage_enable_checkbox">有効化する</string>
+    <string name="external_storage_save_button">保存</string>
 </resources>

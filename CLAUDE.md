@@ -611,6 +611,62 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-04(続き2) Android版: root化端末で外付けHDDを主ストレージにする機能を追加
+
+ユーザー指示「使わなくなったスマホに外付けHDDをつないで、
+open-easy-webとopen-web-serverでRust＋RPoemなどのシステムを運用
+できないかな?」→「root化してでもHDDを主ストレージにしたい」への対応。
+
+**前提の確認(正直な開示)**: Android 10+のScoped Storageにより、
+root化していない端末ではネイティブバイナリがUSB外部ストレージへ
+直接POSIXファイルパスで読み書きできない(SAF経由の`content://`URIしか
+得られず`std::fs`は使えない)。この機能は**root化済み端末専用**——
+非root端末で有効化した場合は黙って内部ストレージへフォールバック
+せず、起動を明確に拒否して理由を表示する設計にした(「HDDに保存
+されているはず」という誤認事故を避けるため)。
+
+**実装**:
+1. 新規`ExternalStorageConfig.kt`(平文`SharedPreferences`、有効フラグ+
+   マウントパスを保持——秘密情報ではないため`SecureDdnsStore`の
+   `EncryptedSharedPreferences`は使わない)。
+2. `MainActivity`に「💽 外付けHDDをストレージに使う(root)」ボタン+
+   設定ダイアログ(マウントパス入力欄+有効化チェックボックス)を追加
+   (`activity_main.xml`/`layout-sw600dp`両方、`strings.xml`)。
+3. `startServerProcess()`を拡張: 有効化されている場合、まず
+   `isRootAvailable()`(`su -c id`を実行し終了コード0を確認)で実際に
+   root到達性を検証——**失敗時は起動自体を中止**(内部ストレージへの
+   フォールバックはしない)。成功時は`ProcessBuilder("su", "-c",
+   <shellスクリプト>)`でネイティブバイナリをroot権限で起動し、
+   `OPEN_WEB_SERVER_WEB_VHOSTS_FILE`/`_DOMAINS_FILE`/`_REDIRECTS_FILE`/
+   `_TLS_CERT_DIR`/`_KEY_STORE_PATH`/`_ACME_ACCOUNT_KEY_PATH`
+   (Rust側で既に対応済みの環境変数、今回新設した`open-web-server-data`
+   サブディレクトリを指す)を全て`export`込みの1コマンド文字列として
+   組み立てる(`su -c`はROOTシェルが非root起動元の環境変数を継承しない
+   前提のため)。無効時は既存の内部ストレージ起動ロジックを完全に
+   変更していない(後方互換)。
+4. マウントパス・管理トークンをシェル文字列へ埋め込むためのコマンド
+   インジェクション対策として、POSIX慣用のシングルクォートエスケープ
+   (`shellQuote()`)を新設・全箇所に適用。
+
+**検証(型チェックのみで完了と報告しない、既存運用ルール徹底の範囲内)**:
+`gradle :app:compileDebugKotlin`・`:app:assembleDebug`いずれも
+**BUILD SUCCESSFUL**(既存jniLibs同梱のまま、新規コンパイルエラー無し)。
+**正直な開示・未検証事項**: この開発環境には root化されたAndroid実機/
+エミュレータが無いため、(a) `isRootAvailable()`が実際のroot化端末で
+`su`昇格に成功すること、(b) `su -c`経由で起動したネイティブバイナリが
+実際に外付けHDDのマウントパス配下へ`web_vhosts.toml`等を書き込める
+こと、(c) 通常のroot化端末(Magisk等)での`su`プロンプト(初回昇格時に
+表示される許可ダイアログ)の実際の挙動、はいずれも実機検証していない
+——ビルド成功(型チェック+APK生成)とロジックの確認に留まる。
+
+- 次にすべきこと: (1) root化済み実機での`su`昇格プロンプト・
+  実際のファイル書き込みの実地検証、(2) exFAT/NTFS等マウント時の
+  ファイルシステム権限(chmod/chown)がroot経由でも書き込みを拒否
+  しないかの確認(ファイルシステム種別によっては追加のマウント
+  オプションが必要な場合がある)、(3) open-easy-web側にも同様の
+  外部ストレージ設定機能を展開するかどうかの検討(現状は
+  open-web-server単体のみ)。
+
 ### 2026-08-04(続き) 実E2E検証で見つかった初回リクエスト502を修正 — リバースプロキシに接続レース耐性を追加
 
 直前のE2E検証(下記エントリ)で観測した「動的登録直後のバックエンドへの
