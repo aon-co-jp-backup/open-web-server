@@ -611,6 +611,33 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-04 RPoemとの`tenant_bridge`実接続E2E検証完了
+
+ユーザー指示「RPoemを実際にopen-web-serverに接続・実際にE2E検証」への
+対応。RPoem(`F:\runo\RPoem`)側`open-runo-appserver::tenant_bridge::
+dispatcher_from_tenants`は既に実装・単体テスト済みだったが、
+open-web-server本体との実接続は一度も検証されていなかった(RPoem側
+CLAUDE.md 2026-08-03エントリが「クロスリポジトリ配線は次回着手事項」
+と記録していた通り)。
+
+**検証手順**: RPoem側に新規`examples/e2e_stub_app.rs`
+(`tenant_bridge`+`ThreadedProxyServer`で実際に立てたRPoemアプリ
+サーバー、`X-Served-By: RPoem-appserver`固定応答)を実行
+(`127.0.0.1:19801`)、open-web-server本体を実起動
+(`127.0.0.1:19900`)、`POST /admin/tenants`で
+`{host: "e2e-rpoem.test", backend: "open_runo", backend_addr:
+"127.0.0.1:19801"}`を登録(201)、`Host: e2e-rpoem.test`での
+リクエストが実際にRPoem側まで転送され`x-served-by:
+RPoem-appserver`付き200が5回連続で返ることを実証(モック無し、
+実TCP2プロセス間通信)。初回リクエストのみ一時的な502(RPoemワーカー
+プールのウォームアップと推測)、以降は再現せず。
+
+**正直な開示**: 検証対象はRPoem側`tenant_bridge`/
+`ThreadedProxyServer`プリミティブのみで、`open-runo-router`本体
+(REST/GraphQL API)への実接続・`open-easy-web`からの両管理API連携
+(元の「分身の術」構想の完成形)は未検証のまま。詳細・次にすべきことは
+RPoem側`CLAUDE.md`の同日エントリを参照。
+
 ### 2026/08/03 修正しました — `aruaru.tokyo`・`audiocafe.tokyo/aruaru`・`/aruaru-lady`・`/rakuten-mobile`がトップページを誤って表示していた実バグを修正
 
 `https://aruaru.tokyo/`等、`audiocafe.tokyo/aruaru`・`/aruaru-lady`・
