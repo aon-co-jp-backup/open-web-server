@@ -24,43 +24,6 @@ use hyper::{Request, Response, StatusCode};
 
 use crate::response::BoxBody;
 
-/// Let's Encrypt本番ディレクトリURL(`try_auto_https`が既定で使う先)。
-#[cfg(feature = "acme")]
-pub const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
-
-/// DDNS(DuckDNS)・自社ドメイン(`custom_dns`)の登録直後に、任意で
-/// 「登録した瞬間からhttps://で使える」ようにするための薄いヘルパー
-/// (2026-08-05新設、`handlers::free_domain::setup_free_domain`/
-/// `handlers::custom_dns::setup`から呼ばれる)。中身は`obtain_certificate_
-/// http01` + `TenantCertResolver::upsert_pem`を1回ずつ呼ぶだけで、
-/// `handlers::tls::obtain_tenant_tls_via_acme`(既存の手動エンドポイント)
-/// と全く同じ経路を通る——「別の実装」ではなく、同じ処理を登録フローへ
-/// 組み込んだだけ。
-///
-/// # 正直な開示(呼び出し前に必ず理解すること)
-/// DNSレコードの反映(DDNS更新・DNSプロバイダAPI経由の登録)は、ACME CAが
-/// 実際にそれを見て検証できるようになるまで**数秒〜数分の伝播遅延が
-/// ありうる**。この関数は**1回だけ**HTTP-01検証を試み、伝播が間に合わ
-/// なければ素直に失敗を返す(リトライループは持たない——無条件の長時間
-/// リトライは呼び出し元のHTTPレスポンスを不必要に長く塞ぐため)。失敗
-/// した場合、呼び出し元は「数分待ってから`POST /admin/tenants/:host/
-/// tls/acme`を再度呼ぶ」よう案内すること(この関数はその案内文までは
-/// 生成しない)。
-#[cfg(feature = "acme")]
-pub async fn try_auto_https(
-    state: &crate::state::AppState,
-    host: &str,
-    contact_email: &str,
-) -> Result<(), String> {
-    match obtain_certificate_http01(LETS_ENCRYPT_PRODUCTION_DIRECTORY, host, contact_email, &state.acme_challenges).await {
-        Ok((cert_pem, key_pem)) => state
-            .tls_resolver
-            .upsert_pem(host, cert_pem.as_bytes(), key_pem.as_bytes())
-            .map_err(|e| e.to_string()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
 /// トークン → key-authorization のインメモリ対応表。
 /// `open-web-server`自体が公開ACMEクライアントを実装していなくても、
 /// 外部のACMEクライアント(certbot等)がこのプロセスに向けて発行した

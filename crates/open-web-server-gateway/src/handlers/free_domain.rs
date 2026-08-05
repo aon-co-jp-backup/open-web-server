@@ -36,14 +36,6 @@ pub struct SetupFreeDomainRequest {
     /// duckdns.org上でユーザー自身が取得したトークン(このソフトウェアは
     /// 代行取得しない)。
     pub token: String,
-    /// 指定すると、DDNS登録の疎通確認が成功した直後に**1回だけ**
-    /// Let's Encrypt(HTTP-01)で実TLS証明書の取得を試みる(`acme` feature
-    /// 必須、2026-08-05追加、`crate::acme::try_auto_https`参照)。DNS
-    /// 伝播が間に合わず失敗した場合はレスポンスの`https_message`に
-    /// 案内が入る(リトライは呼び出し元が改めて`POST /admin/tenants/
-    /// :host/tls/acme`を呼ぶ想定、このフィールド自体は自動リトライしない)。
-    #[serde(default)]
-    pub contact_email: Option<String>,
 }
 
 #[cfg(feature = "ddns")]
@@ -61,13 +53,6 @@ pub struct SetupFreeDomainResponse {
     pub remaining_capacity: usize,
     /// 案内メッセージ(自動更新ループへの組み込み状況・正直なスコープ説明)。
     pub message: String,
-    /// `contact_email`を指定した場合のみ`Some`——HTTPS自動取得を試みたか
-    /// どうか(試みていなければ`None`、`contact_email`未指定または`acme`
-    /// feature無効時)。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub https_ready: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub https_message: Option<String>,
 }
 
 /// `POST /admin/ddns/setup-free-domain` — ドメインを1件登録し、即時疎通確認する。
@@ -142,38 +127,6 @@ pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> 
                 } else {
                     StatusCode::BAD_GATEWAY
                 };
-
-                let (https_ready, https_message) = if result.ok {
-                    match payload.contact_email.as_deref() {
-                        #[cfg(feature = "acme")]
-                        Some(email) => match crate::acme::try_auto_https(&state, &full_hostname, email).await {
-                            Ok(()) => (
-                                Some(true),
-                                Some(format!(
-                                    "'{full_hostname}' のTLS証明書を取得し、即座にhttps://で応答できるように\
-                                     なりました。"
-                                )),
-                            ),
-                            Err(e) => (
-                                Some(false),
-                                Some(format!(
-                                    "TLS証明書の自動取得は失敗しました(DNS伝播がまだ間に合っていない\
-                                     可能性があります): {e} — 数分待ってから POST /admin/tenants/\
-                                     {full_hostname}/tls/acme を再度呼び出してください。"
-                                )),
-                            ),
-                        },
-                        #[cfg(not(feature = "acme"))]
-                        Some(_) => (
-                            Some(false),
-                            Some("'contact_email' was provided, but this build was compiled without the 'acme' feature; TLS was not obtained automatically.".to_string()),
-                        ),
-                        None => (None, None),
-                    }
-                } else {
-                    (None, None)
-                };
-
                 json_response(
                     status,
                     &SetupFreeDomainResponse {
@@ -183,8 +136,6 @@ pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> 
                         registered_count,
                         remaining_capacity,
                         message,
-                        https_ready,
-                        https_message,
                     },
                 )
             }
