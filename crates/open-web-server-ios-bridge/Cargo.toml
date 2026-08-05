@@ -1,0 +1,22 @@
+[package]
+name = "open-web-server-ios-bridge"
+description = "open-web-server: iOS向けC ABIブリッジ(Swiftシェルから呼び出す薄いFFI層)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# iOSはAndroidの`ProcessBuilder`のような「同梱した任意の実行ファイルを
+# サブプロセスとして起動する」方式を許可しない(アプリバンドル内の
+# 実行ファイルはコード署名済みのアプリ本体・拡張機能に限られる)。
+# そのため`open-web-server-gateway`をサブプロセスではなく**このアプリの
+# プロセス内で直接呼び出すライブラリ**としてリンクし、Swift側から
+# C ABI経由で起動する設計とした(cdylib=動的フレームワーク、
+# staticlib=静的リンク、いずれかをXcode側の設定に応じて選べるよう両方
+# 生成する)。
+[lib]
+name = "open_web_server_ios_bridge"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+open-web-server-gateway = { path = "../open-web-server-gateway" }
+tokio.workspace = true

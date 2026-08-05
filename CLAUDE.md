@@ -611,6 +611,62 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-05 iOS版ソース一式を新規作成(ユーザー指示「固定IPを持たない
+PCやiPhoneやAndroidスマホやタブレットで通常のURLとDDNS無料ドメインでも
+簡単運用可能に」、iPhone対応が唯一の未着手プラットフォームだったため着手)
+
+**現状確認**: 通常ドメイン+DDNS無料ドメイン(DuckDNS)でのWindows/Linux/
+Android運用は既に実装済み(`ddns.rs`/`free_domain.rs`/ACME自動TLS/
+`android/`のDDNS設定UI)。iOS(iPhone/iPad)のみ両リポジトリ
+(`open-web-server`・`open-easy-web`)を通じて一切存在しなかった。
+
+**設計判断**: iOSはAndroid版のような「同梱バイナリをサブプロセスとして
+`ProcessBuilder`起動」を許可しない(コード署名済みのアプリ本体/拡張機能
+以外の実行ファイルを起動できない)。そのため、サーバー起動ロジックを
+アプリプロセス内へ**ライブラリとして直接リンク**する設計へ切り替えた:
+
+1. **`crates/open-web-server-gateway`をバイナリ→ライブラリ+薄いバイナリへ
+   リファクタリング**: 従来`main.rs`に直書きされていた`AppState`外の
+   ロジック(`dispatch`/`route`/`accept_loop`/`accept_tls_loop`/旧`main()`)
+   を`lib.rs`へ移設し、`async fn main()`(`#[tokio::main]`付き)を
+   `pub async fn run()`(ランタイムは呼び出し元が用意する前提)へ改名。
+   新しい`main.rs`は`#[tokio::main] async fn main() { open_web_server_
+   gateway::run().await }`のみの薄いラッパー。`Cargo.toml`に`[lib]`
+   ターゲット(`name = "open_web_server_gateway"`)を追加。
+2. **新規`crates/open-web-server-ios-bridge`**(`crate-type = ["cdylib",
+   "staticlib"]`): `owic_set_env`/`owic_start`/`owic_is_started`/
+   `owic_stop`のC ABI関数を公開。`owic_start`は専用OSスレッド上に
+   `tokio::runtime::Runtime`を構築し`run()`を実行(非ブロッキング、
+   `AtomicBool`で二重起動を防止)。`owic_stop`は**未実装のまま正直に
+   `false`固定**(`run()`側にshutdown経路が無く、安全に実装できないため
+   「動くふりをする」ことを避けた)。
+3. **新規`ios/`ディレクトリ**: `Package.swift`(Swift Package、
+   `COpenWebServerBridge`Cヘッダーターゲット+`OpenWebServerKit`Swift
+   ラッパーターゲット)、`Sources/OpenWebServerKit/{PowerProfile,
+   ServerBridge}.swift`(Android版`PowerProfile.kt`と同じ4分類・同じ
+   `prefValue`文字列を共有、`ServerBridge`が`GET /healthz`をポーリングして
+   実際の起動確認を行う設計はAndroid版`MainActivity.pollHealthz()`と
+   同型)、`App/{OpenWebServerApp,ContentView}.swift`(SwiftUI、Xcode iOS
+   Appプロジェクトへ後から追加する前提)、`README.md`(ビルド手順・
+   iOSのバックグラウンド実行制約の正直な開示)。
+
+**検証(正直な開示・範囲限定)**: `cargo build --workspace`/
+`cargo test -p open-web-server-gateway`(175件全green、既存のリファクタ
+リング前と同数・回帰なし)は**このWindows開発環境で実際に実行し確認
+済み**。しかし**iOS向けクロスビルド(`cargo build --target
+aarch64-apple-ios`)・Xcodeでのビルド・実機/シミュレータでの動作確認は
+この環境にmacOS/Xcodeが無いため一切実施していない**——Swift側コードは
+レビューベースで作成したのみで、構文エラーの有無すら未検証。
+Android版のように「実エミュレータで`/healthz`応答を確認済み」という
+段階には至っていないことを明記する。
+
+- 次にすべきこと: (1) macOS環境での実際のクロスビルド・Xcodeプロジェクト
+  作成・実機/シミュレータでの`/healthz`応答確認、(2) iOSのバックグラウンド
+  実行API(`BGProcessingTask`等)との統合検討、(3) `owic_stop()`の実装
+  (`run()`側にshutdown channelを追加する必要がある)、(4) `open-easy-web`
+  側への同様のiOSブリッジ展開の検討(今回はopen-web-server側のみ)、
+  (5) 10ヶ国語READMEへのiOS版の反映(今回はCLAUDE.mdのみ)。
+
 ### 2026-08-04(続き2) Android版: root化端末で外付けHDDを主ストレージにする機能を追加
 
 ユーザー指示「使わなくなったスマホに外付けHDDをつないで、

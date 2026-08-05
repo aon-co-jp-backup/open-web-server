@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "open_web_server_gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "open-web-server"
 path = "src/main.rs"

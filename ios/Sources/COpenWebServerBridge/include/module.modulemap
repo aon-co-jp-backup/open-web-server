@@ -1,0 +1,4 @@
+module COpenWebServerBridge {
+    header "open_web_server_bridge.h"
+    export *
+}

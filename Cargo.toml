@@ -5,6 +5,7 @@ members = [
     "crates/open-web-server-wire",
     "crates/open-web-server-ledger",
     "crates/open-web-server-gateway",
+    "crates/open-web-server-ios-bridge",
 ]
 
 [workspace.package]

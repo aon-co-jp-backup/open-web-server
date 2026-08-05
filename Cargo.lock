@@ -2400,6 +2400,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-web-server-ios-bridge"
+version = "0.1.0"
+dependencies = [
+ "open-web-server-gateway",
+ "tokio",
+]
+
+[[package]]
 name = "open-web-server-ledger"
 version = "0.1.0"
 dependencies = [
