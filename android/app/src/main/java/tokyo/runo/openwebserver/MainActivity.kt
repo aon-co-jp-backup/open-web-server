@@ -62,6 +62,82 @@ class MainActivity : AppCompatActivity() {
     private val bindPort = 18099
 
     /**
+     * 段階的バインドアドレス方式(2026-08-05、ユーザー指示「最初だけ
+     * バインドアドレスを0.0.0.0の後に段階的に自動で安全な方法に自動で
+     * 切り替えて」)。
+     *
+     * 初回起動(まだ実際にLAN/外部到達性の検証が済んでいない状態)は
+     * `0.0.0.0`(全インターフェース)でバインドし、実機検証を優先する。
+     * 一度でも`/healthz`への到達に成功したら`verified`フラグを永続化し、
+     * 以後の起動では**現在接続中のWiFiインターフェースの実IPアドレス
+     * のみ**にバインド範囲を狭める(モバイル回線・VPN等の他インター
+     * フェースには一切listenしない、`0.0.0.0`よりも露出範囲が狭い
+     * 安全側の既定へ自動移行する)。WiFi IPが取得できない場合は
+     * `0.0.0.0`のまま安全側にフォールバックする(誤って一切listenしない
+     * 状態に陥らないようにするため)。
+     */
+    private object BindAddressPolicy {
+        private const val PREFS_NAME = "bind_address_policy"
+        private const val KEY_VERIFIED = "reachability_verified"
+
+        fun isVerified(context: Context): Boolean =
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_VERIFIED, false)
+
+        fun markVerified(context: Context) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_VERIFIED, true)
+                .apply()
+        }
+
+        /** 現在接続中のWiFiのIPv4アドレス(取得できなければnull)。 */
+        private fun currentWifiIpv4(context: Context): String? {
+            return try {
+                val wifiManager =
+                    context.applicationContext.getSystemService(Context.WIFI_SERVICE)
+                        as? android.net.wifi.WifiManager ?: return null
+                val ipInt = wifiManager.connectionInfo?.ipAddress ?: return null
+                if (ipInt == 0) return null
+                String.format(
+                    "%d.%d.%d.%d",
+                    ipInt and 0xff,
+                    ipInt shr 8 and 0xff,
+                    ipInt shr 16 and 0xff,
+                    ipInt shr 24 and 0xff
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /** このプロセス起動で実際に使うべきbindアドレス(`host:port`)を返す。 */
+        fun resolveBindAddress(context: Context, port: Int, log: StringBuilder): String {
+            if (!isVerified(context)) {
+                log.appendLine(
+                    "bind policy: first run (not yet reachability-verified) -> binding 0.0.0.0 " +
+                        "for initial LAN/external verification"
+                )
+                return "0.0.0.0:$port"
+            }
+            val wifiIp = currentWifiIpv4(context)
+            return if (wifiIp != null) {
+                log.appendLine(
+                    "bind policy: reachability already verified -> narrowing to current WiFi " +
+                        "IP $wifiIp (safer than 0.0.0.0, no longer exposed on other interfaces)"
+                )
+                "$wifiIp:$port"
+            } else {
+                log.appendLine(
+                    "bind policy: reachability verified but WiFi IP unavailable -> falling back " +
+                        "to 0.0.0.0 to avoid failing to listen at all"
+                )
+                "0.0.0.0:$port"
+            }
+        }
+    }
+
+    /**
      * 定期ヘルスチェックのポーリング間隔(2026-07-24追加、2026-07-26に
      * 組み合わせ対応へ変更)。デスクトップ版`power_profile.rs::
      * effective_settings()`と同じ合成ルール: 常時電源接続が有効なら
@@ -198,6 +274,14 @@ class MainActivity : AppCompatActivity() {
                 startButton.isEnabled = true
 
                 if (healthOk) {
+                    if (!BindAddressPolicy.isVerified(this@MainActivity)) {
+                        BindAddressPolicy.markVerified(this@MainActivity)
+                        log.appendLine(
+                            "bind policy: reachability verified via this run's /healthz success " +
+                                "-> next launch will narrow bind address to the current WiFi IP"
+                        )
+                        logText.text = log.toString()
+                    }
                     startPeriodicHealthPoll(statusText)
                 }
             }
@@ -568,11 +652,42 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 外付けHDD(root化端末専用)設定ダイアログ(2026-08-04新設)。
-     * `ExternalStorageConfig`へ保存するのみで、稼働中プロセスへは反映
-     * しない(次回サーバー起動時から有効、`startServerProcess()`参照)。
+     * 外付けストレージ(root化端末専用)設定ダイアログ(2026-08-04新設、
+     * 2026-08-05にデバイス自動検知対応へ拡張)。`ExternalStorageConfig`へ
+     * 保存するのみで、稼働中プロセスへは反映しない(次回サーバー起動時
+     * から有効、`startServerProcess()`参照)。
+     *
+     * **2026-08-05拡張の経緯**: ユーザー指示「マイクロSDや外付けUSB HDD/
+     * SSD/nVME SSDなどを簡単接続後に簡単に選択可能にして」への対応
+     * (対応方針はユーザー確認済み: root不要のSAF方式ではなく、既存の
+     * root化・主ストレージ切替方式を拡張する)。従来の「マウントパスを
+     * 手入力必須」から、`ExternalStorageDeviceScanner`で検知した候補が
+     * あればタップで選択できるように改修した(検知0件の場合は従来通り
+     * 手入力のみへ自動フォールバック)。検知処理はブロッキングI/Oを
+     * 含むため`Dispatchers.IO`上で行い、結果が揃ってからダイアログを
+     * 表示する。
      */
     private fun showExternalStorageDialog() {
+        CoroutineScope(Dispatchers.Main).launch {
+            val candidates = withContext(Dispatchers.IO) {
+                ExternalStorageDeviceScanner.detectCandidates(this@MainActivity)
+            }
+            showExternalStorageDialogWithCandidates(candidates)
+        }
+    }
+
+    /**
+     * 検知済み候補(0件の場合を含む)を踏まえて実際のダイアログを組み立てる。
+     * 候補が1件以上あれば`RadioGroup`で選択肢として提示し、タップすると
+     * 上のマウントパス入力欄へ自動入力する(入力欄自体は残すため、
+     * 「候補から選択、または手入力」の両方が常に可能)。候補が0件の場合は
+     * 案内文のみ表示し、従来通り手入力のみのダイアログになる。
+     */
+    private fun showExternalStorageDialogWithCandidates(
+        candidates: List<ExternalStorageDeviceScanner.Candidate>
+    ) {
+        if (isFinishing || isDestroyed) return
+
         val container = android.widget.LinearLayout(this)
         container.orientation = android.widget.LinearLayout.VERTICAL
         val pad = (16 * resources.displayMetrics.density).toInt()
@@ -582,9 +697,39 @@ class MainActivity : AppCompatActivity() {
         messageView.text = getString(R.string.external_storage_dialog_message)
         container.addView(messageView)
 
+        val currentPath = ExternalStorageConfig.getMountPath(this) ?: ""
         val pathInput = android.widget.EditText(this)
         pathInput.hint = getString(R.string.external_storage_path_hint)
-        pathInput.setText(ExternalStorageConfig.getMountPath(this) ?: "")
+        pathInput.setText(currentPath)
+
+        if (candidates.isNotEmpty()) {
+            val candidatesLabel = TextView(this)
+            candidatesLabel.text =
+                "検知された外部ストレージ候補(タップで選択):\n" +
+                    "Detected external storage candidates (tap to select):"
+            container.addView(candidatesLabel)
+
+            val radioGroup = android.widget.RadioGroup(this)
+            radioGroup.orientation = android.widget.RadioGroup.VERTICAL
+            candidates.forEach { candidate ->
+                val radio = android.widget.RadioButton(this)
+                radio.id = android.view.View.generateViewId()
+                radio.text = "${candidate.label}\n${candidate.path}"
+                radio.isChecked = candidate.path == currentPath
+                radio.setOnClickListener { pathInput.setText(candidate.path) }
+                radioGroup.addView(radio)
+            }
+            container.addView(radioGroup)
+        } else {
+            // 候補0件時は従来通り手入力のみへフォールバック(ユーザー
+            // 指示通りの安全な既定動作)。
+            val noneLabel = TextView(this)
+            noneLabel.text =
+                "自動検知された外部ストレージ候補はありません。マウントパスを手入力してください。\n" +
+                    "No external storage candidates were detected automatically — please enter the mount path manually."
+            container.addView(noneLabel)
+        }
+
         container.addView(pathInput)
 
         val enableCheckbox = android.widget.CheckBox(this)
@@ -592,13 +737,20 @@ class MainActivity : AppCompatActivity() {
         enableCheckbox.isChecked = ExternalStorageConfig.isEnabled(this)
         container.addView(enableCheckbox)
 
+        val scrollView = android.widget.ScrollView(this)
+        scrollView.addView(container)
+
         AlertDialog.Builder(this)
             .setTitle(R.string.external_storage_dialog_title)
-            .setView(container)
+            .setView(scrollView)
             .setPositiveButton(R.string.external_storage_save_button) { _, _ ->
                 val path = pathInput.text.toString().trim()
                 if (enableCheckbox.isChecked && path.isEmpty()) {
-                    Toast.makeText(this, "マウントパスを入力してください", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        this,
+                        "マウントパスを入力するか、検知された候補から選択してください",
+                        Toast.LENGTH_LONG
+                    ).show()
                     return@setPositiveButton
                 }
                 ExternalStorageConfig.save(this, enableCheckbox.isChecked, path)
@@ -698,7 +850,7 @@ class MainActivity : AppCompatActivity() {
                 val script = buildString {
                     append("mkdir -p ${shellQuote(dataDir)}/tls-certs; ")
                     append("cd ${shellQuote(dataDir)} && ")
-                    append("export OPEN_WEB_SERVER_BIND=${shellQuote("127.0.0.1:$bindPort")}; ")
+                    append("export OPEN_WEB_SERVER_BIND=${shellQuote(BindAddressPolicy.resolveBindAddress(this@MainActivity, bindPort, log))}; ")
                     append("export OPEN_WEB_SERVER_ACCEL_BACKEND=${shellQuote(accelBackendEnvValue(currentProfiles))}; ")
                     append("export OPEN_WEB_SERVER_WEB_VHOSTS_FILE=${shellQuote("$dataDir/web_vhosts.toml")}; ")
                     append("export OPEN_WEB_SERVER_DOMAINS_FILE=${shellQuote("$dataDir/domains.toml")}; ")
@@ -716,7 +868,14 @@ class MainActivity : AppCompatActivity() {
             } else {
                 val pb = ProcessBuilder(binaryPath.absolutePath)
                 pb.directory(filesDir)
-                pb.environment()["OPEN_WEB_SERVER_BIND"] = "127.0.0.1:$bindPort"
+                // 2026-08-05: 初回のみ0.0.0.0でLAN/外部到達性を検証し、
+                // 検証成功後は自動的に現在のWiFi実IPのみへ絞る段階的方式
+                // (ユーザー指示、`BindAddressPolicy`参照)。管理API(/admin/*)
+                // はx-admin-token/KeyGuardian認証があり、未設定時は503で
+                // 自動無効化される安全設計のため、初回の0.0.0.0期間中も
+                // 露出は限定的。
+                pb.environment()["OPEN_WEB_SERVER_BIND"] =
+                    BindAddressPolicy.resolveBindAddress(this, bindPort, log)
                 pb.environment()["OPEN_WEB_SERVER_ACCEL_BACKEND"] = accelBackendEnvValue(currentProfiles)
                 log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfiles)}")
 

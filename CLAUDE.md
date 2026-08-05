@@ -611,6 +611,139 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-05(続き2) Android版: 外部ストレージデバイスの自動検知+選択式ダイアログを追加(open-easy-web側の移植元がroot化方式を先行実装、今回はopen-web-server本家側の拡張)
+
+**経緯**: `android/`の外付けHDDroot化機能(2026-08-04実装)はopen-easy-web側
+へ移植された経緯があるが(移植の詳細はopen-easy-web側CLAUDE.md参照)、
+ユーザーから「マイクロSDや外付けUSB HDD/SSD/nVME SSDなどを簡単接続後に
+簡単に選択可能にして」という指示があった。対応方針(ユーザー確認済み):
+root不要のSAF方式ではなく、既存のroot化・主ストレージ切替方式
+(`ExternalStorageConfig`)を拡張し、対象デバイス種別をSDカードだけでなく
+USB HDD/SSD/NVMe等へ広げる。
+
+**着手前の現状確認**: `ExternalStorageConfig.kt`(`F:\runo\open-web-server\
+android\app\src\main\java\tokyo\runo\openwebserver\ExternalStorageConfig.kt`)
+は有効フラグ+マウントパス文字列を保存するのみ、`MainActivity.kt`の
+`showExternalStorageDialog()`は「マウントパスをユーザーが手入力する」
+単一の`EditText`のみで、接続済みデバイスの自動検知・一覧表示は一切
+存在しなかったことを確認した(想定通りの現状)。
+
+**実装**:
+1. 新規`ExternalStorageDeviceScanner.kt`
+   (`android/app/src/main/java/tokyo/runo/openwebserver/`): 2経路で
+   候補を検知する。(a) `StorageManager.getStorageVolumes()`
+   (Android標準API、root不要)で`isRemovable`なボリュームを検知し、
+   API 30+は`getDirectory()`、それ未満は非公開`getPath()`を
+   リフレクション経由で呼んでマウントパスを取り出す。(b) root権限で
+   `su -c 'ls -1 /mnt/media_rw'`を実行し、`StorageManager`側で拾えな
+   かった慣例的なマウント先を補完する。両経路の結果をパスで重複排除
+   して統合する`detectCandidates(context)`を公開。
+2. **正直な開示(過剰な作り込みを避ける、コード内docにも明記)**:
+   マイクロSD/USBマスストレージ/NVMeという種別そのものを確実に判別する
+   標準APIは無いため、`StorageVolume.getDescription()`が有効な文字列を
+   返せばそれをラベルに使い、判別できない場合は一括して「外部ストレージ
+   候補」と表示するに留めた——ユーザー指示の「完全な種別判定が技術的に
+   困難な場合は一括りにしてよい」という許容範囲内。
+3. `MainActivity.kt::showExternalStorageDialog()`を非同期化
+   (`Dispatchers.IO`上で`detectCandidates()`を実行後、結果を
+   `showExternalStorageDialogWithCandidates()`へ渡してダイアログ表示)。
+   検知候補が1件以上あれば`RadioGroup`で選択肢として提示し、タップすると
+   既存のマウントパス`EditText`へ自動入力する(入力欄自体は残るため、
+   「候補から選択、または手入力」の両方が常に可能)。**候補が0件の場合は
+   案内文を表示した上で、従来通り手入力のみのダイアログへ自動
+   フォールバックする**(ユーザー指示通りの安全な既定動作)。
+4. **既存の安全設計は変更していない**: `isRootAvailable()`による
+   root到達性チェック、非root端末での起動拒否(内部ストレージへの
+   黙示フォールバックをしない設計)、`startServerProcess()`の分岐
+   ロジックはいずれも無変更。今回の変更は「マウントパスの入力補助
+   (検知+選択)」のみに限定した。
+5. `strings.xml`のボタンラベル・ダイアログ本文をSDカード限定の文言から
+   「マイクロSD/外付けUSB HDD・SSD/NVMe SSD等」を含む文言へ更新
+   (`external_storage_button`/`external_storage_dialog_title`/
+   `external_storage_dialog_message`/`external_storage_path_hint`)。
+
+**検証**: `gradle :app:assembleDebug`(`--console=plain`)で**BUILD
+SUCCESSFUL**(既存jniLibs同梱のまま、新規コンパイルエラー・新規警告
+無し)。
+
+**正直な開示・未検証事項(型チェック[ビルド成功]のみで完了と報告しない、
+既存運用ルール徹底の範囲内で明記)**: この開発環境にはroot化済みの
+Android実機/エミュレータも、実際にマイクロSD/USB OTG/USB-C接続の外部
+ストレージを接続できる実機環境も無いため、以下はいずれも実機検証
+していない——ロジックの妥当性確認とビルド成功の確認に留まる。
+(a) `StorageManager.getStorageVolumes()`が実機で実際にマイクロSD/USB
+マスストレージ/NVMe接続時に正しいマウントパスを返すこと(エミュレータ
+では外部ストレージのホットプラグ自体を再現しづらい)。
+(b) API 30未満での`getPath()`リフレクションが実際に動作すること
+(対象OSSVMでの非公開APIの挙動はOEMカスタマイズにより機種差がありうる)。
+(c) root経由の`/mnt/media_rw`列挙が、実際にUSB OTG/USB-C接続のHDD/SSD/
+NVMeで使われる慣例と一致すること(Android/root化ツール[Magisk等]の
+バージョン・機種によりマウント先ディレクトリ規則が異なる可能性がある)。
+(d) `RadioGroup`選択→`EditText`自動入力→保存→次回サーバー起動という
+一連のUI操作の実機タップでの確認。
+
+- 次にすべきこと: (1) root化済み実機+実際のマイクロSD/USB HDD/SSD/
+  NVMe接続環境での実地検証(検知精度・マウントパスの実在性)、
+  (2) open-easy-web側にも同様のデバイス自動検知機能を展開するかどうかの
+  検討(現状はopen-web-server本家のみ、既存の「移植は手動追従」運用に
+  従い次回検討)、(3) 機種依存が判明した場合の`detectViaRootMountedMedia()`
+  の検知パス追加(`/storage/`配下等、実機フィードバック次第)。
+
+### 2026-08-05 vhostインポート機能のスコープ拡張(RewriteCond・Basic認証・
+SSL証明書パス・基本IP許可/拒否リスト対応、ユーザー明示指示)
+
+**経緯**: `crates/open-web-server-gateway/src/config_import.rs`は
+2026-08-03(commit `d11e683`)時点でApache/Nginxのvhost設定から
+ServerName/DocumentRoot/fastcgi_passのみを読み取る最小パーサーだった。
+ユーザーから「vhostのフル構文対応(RewriteCond・Basic/Digest認証・
+SSL証明書パス読取)まで広げてほしい」と明示的な指示があり、今回
+それに対応した。
+
+**実装した機能**:
+- `rewrite.rs`: `RewriteCondition`(Apacheの`RewriteCond`相当)を追加。
+  対応変数は`%{HTTP_HOST}`/`%{REQUEST_METHOD}`/`%{QUERY_STRING}`
+  (Nginxの`if`では`$http_host`/`$request_method`/`$query_string`/
+  `$args`)の限定サブセットのみ。複数条件はAND評価。未知の変数名・
+  不正な正規表現はフェイルクローズ(マッチしない扱い)。新規
+  `RewriteContext`/`apply_with_context`を追加し、既存`apply`は
+  コンテキスト無しの後方互換入口として残した。
+- `config_import.rs`: Apacheの`RewriteCond`+`RewriteRule`ペア、Nginxの
+  `if (...) { return|rewrite ...; }`ブロックをパースして条件付き
+  `RewriteRule`を組み立てる処理を追加。Apacheの`AuthType Basic`+
+  `AuthName`+`AuthUserFile`、Nginxの`auth_basic`+`auth_basic_user_file`
+  から`BasicAuthConfig`(realm・user_fileパス)を抽出。Apacheの
+  `SSLCertificateFile`/`SSLCertificateKeyFile`、Nginxの
+  `ssl_certificate`/`ssl_certificate_key`から`TlsCertConfig`
+  (cert_path・key_path)を抽出。Apacheの`<Directory>`内`Allow from`/
+  `Deny from`、Nginxの`allow`/`deny`から`AccessControlConfig`
+  (allow/denyのIP/CIDR文字列リスト)を抽出。
+- `web_vhost.rs`: `WebVhostConfig`に`basic_auth: Option<BasicAuthConfig>`・
+  `tls_cert: Option<TlsCertConfig>`・`access_control:
+  Option<AccessControlConfig>`を追加(全て既定`None`、既存TOML/JSON
+  設定・既存呼び出し箇所との後方互換を維持)。
+
+**対象外にした機能とその理由(ユーザー指示に基づく正直な開示)**:
+- **Digest認証**(`AuthType Digest`): nonce管理・質問応答方式が
+  Basic認証と実装の性質が全く異なり、行単位の値抽出に留める設計とは
+  相容れないため非対応。検出時は`tracing::warn!`で明示的にログ警告を
+  出し、黙って無視はしない。
+- **`<Directory>`の完全なアクセス制御構文**(`Order`・
+  `Require all granted`等の評価順序): 単純な許可/拒否リストの保持に
+  留めた(実際の優先順位判定・CIDR照合ロジックは未実装)。
+- **RewriteCond/Nginx `if`の変数**: 上記3変数以外(`%{REMOTE_ADDR}`・
+  `%{HTTPS}`・`%{TIME_*}`等、接続情報やサーバー内部状態に依存する
+  もの)は対象外。
+- **実際の配線は未実施**: `basic_auth`(認証チャレンジ送出・htpasswd
+  照合)・`tls_cert`(TLSリスナーへの反映)・`access_control`
+  (リクエスト時のIP判定)はいずれも値の保持のみで、
+  `handlers/web_vhost.rs`側のディスパッチ処理への実際の統合は今回の
+  スコープ外として残した(次回の実装対象)。
+
+**検証**: `cargo build -p open-web-server-gateway`成功。新規単体テスト
+(Apache/Nginx双方、RewriteCond・Digest検出・Basic認証・SSL証明書パス・
+IP許可/拒否リストの各ディレクティブにつき最低1件ずつ)を追加、既存
+テストは変更なしでgreen。コミットは未実施(ユーザーが内容確認後に判断)。
+
 ### 2026-08-05 iOS版ソース一式を新規作成(ユーザー指示「固定IPを持たない
 PCやiPhoneやAndroidスマホやタブレットで通常のURLとDDNS無料ドメインでも
 簡単運用可能に」、iPhone対応が唯一の未着手プラットフォームだったため着手)

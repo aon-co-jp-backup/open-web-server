@@ -1750,13 +1750,18 @@ mod tests {
                         pattern: r"^/old\.html$".to_string(),
                         substitution: "/new.html".to_string(),
                         redirect: false,
+                        conditions: vec![],
                     },
                     rewrite::RewriteRule {
                         pattern: r"^/legacy/(.*)$".to_string(),
                         substitution: "/modern/$1".to_string(),
                         redirect: true,
+                        conditions: vec![],
                     },
                 ],
+                basic_auth: None,
+                tls_cert: None,
+                access_control: None,
             })
             .await;
 

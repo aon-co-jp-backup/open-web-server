@@ -100,10 +100,85 @@ pub struct WebVhostConfig {
     /// 互換)。
     #[serde(default)]
     pub rewrite_rules: Vec<crate::rewrite::RewriteRule>,
+    /// Basic認証設定(2026-08-05追加、既定`None`=既存動作と完全後方
+    /// 互換。`BasicAuthConfig`のdoc参照)。
+    #[serde(default)]
+    pub basic_auth: Option<BasicAuthConfig>,
+    /// TLS証明書パス設定(2026-08-05追加、既定`None`。`TlsCertConfig`の
+    /// doc参照)。
+    #[serde(default)]
+    pub tls_cert: Option<TlsCertConfig>,
+    /// 基本的なIP許可/拒否リスト(2026-08-05追加、既定`None`。
+    /// `AccessControlConfig`のdoc参照)。
+    #[serde(default)]
+    pub access_control: Option<AccessControlConfig>,
 }
 
 fn default_php_enabled() -> bool {
     true
+}
+
+/// Basic認証設定(2026-08-05追加、ユーザー指示によるvhostフル構文対応の
+/// スコープ拡張——Apacheの`AuthType Basic`+`AuthUserFile`、Nginxの
+/// `auth_basic`+`auth_basic_user_file`から読み取る)。
+///
+/// **正直な開示**: 現時点ではパースして値を保持するのみで、実際の
+/// リクエスト処理(`WWW-Authenticate`チャレンジの送出・`user_file`
+/// (`htpasswd`形式)の読み込み・照合)への配線はまだ行っていない——
+/// `handlers/web_vhost.rs::dispatch`側での認証チェック統合は次回の
+/// 実装対象として残す(config_importのスコープはあくまで設定の抽出)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BasicAuthConfig {
+    /// `AuthName`/`auth_basic`の引数(認証ダイアログに表示されるレルム名)。
+    pub realm: String,
+    /// `AuthUserFile`/`auth_basic_user_file`が指すパスワードファイルの
+    /// パス(`htpasswd`形式を想定、中身の検証は行わない)。
+    pub user_file: PathBuf,
+}
+
+/// TLS証明書パス設定(2026-08-05追加、Apacheの`SSLCertificateFile`/
+/// `SSLCertificateKeyFile`、Nginxの`ssl_certificate`/`ssl_certificate_key`
+/// から読み取る)。
+///
+/// **正直な開示**: 実際のTLS終端(`open-web-server-wire::
+/// TenantCertResolver`)への配線は、このモジュールのスコープでは行って
+/// いない——ここではvhost設定として証明書パスを保持するだけであり、
+/// 実際に`open-web-server`自身のTLSリスナーへ反映するには、別途
+/// `POST /admin/tenants/:host/tls`(ファイルパス版)または
+/// `upsert_from_files`経由でこのパスを読み込ませる配線が必要
+/// (既存実装がある場合はそちらへ繋ぐ、というユーザー指示に従い、今回は
+/// 保持のみに留める——過剰な想像で「自動的にTLSへ反映される」とは
+/// 主張しない)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TlsCertConfig {
+    /// 証明書(チェーン)ファイルのパス。
+    pub cert_path: PathBuf,
+    /// 秘密鍵ファイルのパス(Apache/Nginxいずれも通常は証明書と鍵が
+    /// 別ディレクティブ/別ファイルのため`Option`——鍵ディレクティブが
+    /// 見つからないまま証明書だけ見つかった場合も、正直にその状態を
+    /// 表現できるようにする)。
+    #[serde(default)]
+    pub key_path: Option<PathBuf>,
+}
+
+/// 基本的なIPアドレス許可/拒否リスト(2026-08-05追加)。
+///
+/// **正直な開示・スコープ**: Apacheの`<Directory>`ブロックが持つ
+/// `Allow`/`Deny`/`Order`/`Require`の完全な評価順序・複雑な組み合わせ
+/// (`Require all granted`等の`mod_authz_core`構文、Nginxの`deny`/`allow`
+/// の複数行にわたる評価順序)は実装しない——単純に「許可リスト」
+/// (`allow`)と「拒否リスト」(`deny`)の2つのIP/CIDR文字列集合を保持
+/// するだけの、値の抽出に留めた最小実装。実際のアクセス制御ロジック
+/// (どちらを優先するか、CIDR判定等)への配線もこのモジュールのスコープ
+/// 外(値の保持のみ)。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccessControlConfig {
+    /// 許可するIPアドレス/CIDR文字列の一覧(例: `"192.168.1.0/24"`)。
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// 拒否するIPアドレス/CIDR文字列の一覧。
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
 /// `web_vhosts.toml`の直列化用ラッパー。
@@ -269,6 +344,9 @@ mod tests {
                 compat_mode: CompatMode::default(),
                 php_mode: PhpMode::default(),
                 rewrite_rules: Vec::new(),
+                basic_auth: None,
+                tls_cert: None,
+                access_control: None,
             })
             .await;
 
@@ -311,6 +389,9 @@ mod tests {
                 compat_mode: CompatMode::default(),
                 php_mode: PhpMode::default(),
                 rewrite_rules: Vec::new(),
+                basic_auth: None,
+                tls_cert: None,
+                access_control: None,
             })
             .await;
 
@@ -337,6 +418,9 @@ mod tests {
                 compat_mode: CompatMode::default(),
                 php_mode: PhpMode::default(),
                 rewrite_rules: Vec::new(),
+                basic_auth: None,
+                tls_cert: None,
+                access_control: None,
             })
             .await;
 
@@ -382,6 +466,9 @@ mod legacy_tests {
             compat_mode: CompatMode::default(),
             php_mode: PhpMode::default(),
             rewrite_rules: Vec::new(),
+            basic_auth: None,
+            tls_cert: None,
+            access_control: None,
         }
     }
 
