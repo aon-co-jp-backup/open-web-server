@@ -221,6 +221,19 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             let domain = p.trim_start_matches("/admin/ddns/domains/").to_string();
             handlers::free_domain::remove_domain(state, &req, &domain).await
         }
+        // 自社ドメイン(aon.co.jp/runo.tokyo等)配下への無料サブドメイン
+        // 発行〜自動更新(`custom_dns.rs`参照、2026-08-05配線。`custom_domain`
+        // feature無効時は503を返す)。
+        (Method::POST, "/admin/custom-dns/setup") => {
+            handlers::custom_dns::setup(state, req).await
+        }
+        (Method::GET, "/admin/custom-dns/domains") => {
+            handlers::custom_dns::list_domains(state, &req).await
+        }
+        (Method::DELETE, p) if p.starts_with("/admin/custom-dns/domains/") => {
+            let fqdn = p.trim_start_matches("/admin/custom-dns/domains/").to_string();
+            handlers::custom_dns::remove_domain(state, &req, &fqdn).await
+        }
         // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
         // prefixマッチより先に評価する必要がある(先に評価されると
         // `:host`が`"foo.example.com/tls"`ごと拾われてしまうため)。
@@ -531,6 +544,14 @@ pub async fn run() -> anyhow::Result<()> {
     state.free_domains.seed_from_env().await;
     #[cfg(feature = "ddns")]
     free_domain::spawn_if_configured(state.free_domains.clone(), state.power_profile.clone());
+
+    // 自社ドメイン(aon.co.jp/runo.tokyo等)配下への無料サブドメイン発行の
+    // 自動更新ループ(`custom_dns` feature時のみ、`ddns`とは独立した
+    // feature)。レジストリが空でも、後から`/admin/custom-dns/setup`で
+    // 追加登録される可能性があるため常に起動しておく(`free_domain`と
+    // 同じ設計)。
+    #[cfg(feature = "custom_domain")]
+    custom_dns::spawn_if_configured(state.custom_domains.clone(), state.power_profile.clone());
 
     // 組み込みSFTPサーバー(`sftp` feature時のみ、`OPEN_WEB_SERVER_SFTP_BIND`
     // 未設定なら何もしない)。
@@ -1339,6 +1360,98 @@ mod tests {
             .method(Method::DELETE)
             .uri("/admin/ddns/domains/alpha")
             .header("x-admin-token", "test-ddns-domains-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(del_missing_req).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// 自社ドメイン(`custom_dns`)管理APIの実HTTP経由の一気通貫検証
+    /// (2026-08-05配線、`ddns_domains_list_and_delete_work_over_real_http`
+    /// と同型)。実DNSプロバイダAPIへは一切接続しない(資格情報未設定の
+    /// まま`base_domain`検証・容量/一覧/削除ロジックのみを検証する範囲に
+    /// 意図的に絞った——実プロバイダ接続込みのE2Eは、実際のValue-Domain/
+    /// ConoHa資格情報が無いこの環境では検証不可能なため、次回実資格情報が
+    /// 用意できた際の課題として残す)。
+    #[tokio::test]
+    async fn custom_dns_domains_list_and_delete_work_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-custom-dns-secret");
+
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        state.custom_domains.register("aon.co.jp".to_string(), "alpha".to_string()).await.unwrap();
+        state.custom_domains.register("runo.tokyo".to_string(), "beta".to_string()).await.unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn connect(addr: std::net::SocketAddr) -> hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            sender
+        }
+
+        // 認証無しでは拒否される。
+        let mut sender = connect(addr).await;
+        let unauth_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/custom-dns/domains")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(unauth_req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+
+        // 一覧に2件+残り枠18件が反映される。
+        let mut sender = connect(addr).await;
+        let list_req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/custom-dns/domains")
+            .header("x-admin-token", "test-custom-dns-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let list_resp = sender.send_request(list_req).await.unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body_bytes = http_body_util::BodyExt::collect(list_resp.into_body()).await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["count"], serde_json::json!(2));
+        assert_eq!(body["capacity"], serde_json::json!(crate::custom_dns::MAX_CUSTOM_DOMAINS));
+        assert_eq!(body["remaining_capacity"], serde_json::json!(crate::custom_dns::MAX_CUSTOM_DOMAINS - 2));
+
+        // 非対応ベースドメインの新規登録は400(実プロバイダへは到達しない)。
+        let mut sender = connect(addr).await;
+        let bad_setup_req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/custom-dns/setup")
+            .header("x-admin-token", "test-custom-dns-secret")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(
+                serde_json::json!({"base_domain": "example.com", "subdomain": "x"}).to_string(),
+            )))
+            .unwrap();
+        assert_eq!(sender.send_request(bad_setup_req).await.unwrap().status(), StatusCode::BAD_REQUEST);
+
+        // 削除後、一覧から1件消え、残り枠も1件増える。
+        let mut sender = connect(addr).await;
+        let del_req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/admin/custom-dns/domains/alpha.aon.co.jp")
+            .header("x-admin-token", "test-custom-dns-secret")
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        assert_eq!(sender.send_request(del_req).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(state.custom_domains.len().await, 1);
+
+        // 存在しないドメインの削除は404。
+        let mut sender = connect(addr).await;
+        let del_missing_req = Request::builder()
+            .method(Method::DELETE)
+            .uri("/admin/custom-dns/domains/alpha.aon.co.jp")
+            .header("x-admin-token", "test-custom-dns-secret")
             .body(http_body_util::Full::new(bytes::Bytes::new()))
             .unwrap();
         assert_eq!(sender.send_request(del_missing_req).await.unwrap().status(), StatusCode::NOT_FOUND);

@@ -5,6 +5,7 @@ use open_web_server_wire::{AccelBackend, TenantCertResolver};
 
 use crate::access_log::{AccessLogConfig, AccessLogger};
 use crate::acme::ChallengeStore;
+use crate::custom_dns::CustomDomainRegistry;
 use crate::domain_watchdog::WatchdogState;
 use crate::free_domain::DomainRegistry;
 use crate::keyring::{GuardianConfig, KeyGuardian};
@@ -51,6 +52,11 @@ pub struct AppState {
     /// 無料DDNS(DuckDNS)ドメインの動的レジストリ(最大`MAX_DUCKDNS_DOMAINS`
     /// 件、`free_domain`参照)。
     pub free_domains: Arc<DomainRegistry>,
+    /// 自社ドメイン(`aon.co.jp`/`runo.tokyo`等)配下への無料サブドメイン
+    /// 発行の動的レジストリ(最大`custom_dns::MAX_CUSTOM_DOMAINS`件、
+    /// `custom_dns`参照。`free_domains`〈DuckDNS〉とは独立した設定空間、
+    /// 2026-08-05配線)。
+    pub custom_domains: Arc<CustomDomainRegistry>,
     /// 構造化アクセスログ(JSON Lines + サイズローテーション、`access_log`
     /// 参照)。`OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら`None`(既定無効、
     /// 既存の`tracing`ベースのリクエストログとは独立して並存する)。
@@ -142,6 +148,7 @@ impl AppState {
         let redirects = Arc::new(RedirectRegistry::new());
         let php_pool = Arc::new(PhpServerPool::from_env());
         let free_domains = Arc::new(DomainRegistry::new());
+        let custom_domains = Arc::new(CustomDomainRegistry::new());
         let access_logger = AccessLogConfig::from_env().map(|cfg| Arc::new(AccessLogger::new(cfg)));
         let accel_backend = accel_backend_from_env();
         tracing::info!(?accel_backend, "payload accelerator backend resolved from OPEN_WEB_SERVER_ACCEL_BACKEND");
@@ -166,6 +173,7 @@ impl AppState {
             redirects,
             php_pool,
             free_domains,
+            custom_domains,
             access_logger,
             accel_backend,
             power_profile,

@@ -1,5 +1,6 @@
 #[cfg(feature = "admin-2fa")]
 pub mod admin_login;
+pub mod custom_dns;
 #[cfg(feature = "disaster_email_backup")]
 pub mod disaster_email_backup;
 pub mod free_domain;
