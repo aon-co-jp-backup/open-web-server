@@ -68,6 +68,43 @@ jobs:
           name: open-web-server-windows-x86_64
           path: open-web-server-windows-x86_64.zip
 
+  build-macos:
+    name: macOS (x86_64 + aarch64-apple-darwin)
+    runs-on: macos-latest
+    # 正直な開示(2026-08-06追加): このジョブがmacos-latestランナー上で
+    # 実際に成功するかは、開発環境がWindows機のため一度も実行確認できて
+    # いない。失敗してもLinux/Windowsのリリース自体はブロックしない
+    # (`continue-on-error: true`)。次回タグpush時のCI実行ログで初めて
+    # 実際の動作を確認できる。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout RS-SmartTCP (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - name: Add Apple Silicon target
+        run: rustup target add aarch64-apple-darwin
+      - name: Build (x86_64-apple-darwin, ネイティブランナーアーキ)
+        run: cargo build --release --bin open-web-server
+      - name: Build (aarch64-apple-darwin)
+        run: cargo build --release --target aarch64-apple-darwin --bin open-web-server
+      - name: Package
+        run: |
+          mkdir -p dist-x86_64 dist-aarch64
+          cp target/release/open-web-server dist-x86_64/open-web-server
+          cp install-macos.sh dist-x86_64/install-macos.sh
+          cp uninstall-macos.sh dist-x86_64/uninstall-macos.sh
+          tar -czf open-web-server-macos-x86_64.tar.gz -C dist-x86_64 open-web-server install-macos.sh uninstall-macos.sh
+          cp target/aarch64-apple-darwin/release/open-web-server dist-aarch64/open-web-server
+          cp install-macos.sh dist-aarch64/install-macos.sh
+          cp uninstall-macos.sh dist-aarch64/uninstall-macos.sh
+          tar -czf open-web-server-macos-aarch64.tar.gz -C dist-aarch64 open-web-server install-macos.sh uninstall-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-web-server-macos
+          path: |
+            open-web-server-macos-x86_64.tar.gz
+            open-web-server-macos-aarch64.tar.gz
+
   build-android:
     name: Android (APK, デバッグビルド, ARM64/x86_64)
     runs-on: ubuntu-latest
@@ -128,12 +165,12 @@ jobs:
 
   release:
     name: GitHub Releaseへ添付
-    needs: [build-linux, build-windows, build-android]
+    needs: [build-linux, build-windows, build-android, build-macos]
     runs-on: ubuntu-latest
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' }}
     steps:
       - uses: actions/download-artifact@v4
-      - name: List downloaded artifacts (Android job may have failed, see build-android logs)
+      - name: List downloaded artifacts (Android/macOS jobs may have failed, see their logs)
         run: find . -maxdepth 2
       - uses: softprops/action-gh-release@v2
         with:
@@ -141,4 +178,6 @@ jobs:
             open-web-server-linux-x86_64/open-web-server-linux-x86_64.tar.gz
             open-web-server-windows-x86_64/open-web-server-windows-x86_64.zip
             open-web-server-android-debug/open-web-server-android-debug.apk
+            open-web-server-macos/open-web-server-macos-x86_64.tar.gz
+            open-web-server-macos/open-web-server-macos-aarch64.tar.gz
           fail_on_unmatched_files: false

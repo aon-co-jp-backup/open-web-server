@@ -22,6 +22,7 @@ mod app_proxy;
 mod compression;
 mod config_import;
 mod custom_dns;
+mod custom_dns_ipv6_autoupdate;
 #[cfg(feature = "ddns")]
 mod ddns;
 mod domain_watchdog;
@@ -220,6 +221,29 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         (Method::DELETE, p) if p.starts_with("/admin/ddns/domains/") => {
             let domain = p.trim_start_matches("/admin/ddns/domains/").to_string();
             handlers::free_domain::remove_domain(state, &req, &domain).await
+        }
+        // v6プラス(MAP-E)環境向けIPv6(AAAA)自動更新の有効化(バリュー
+        // ドメイン管理の`aon.co.jp`向け、`custom_dns_ipv6_autoupdate`参照、
+        // 2026-08-06新設)。上記DuckDNS(IPv4)系エンドポイントとは独立した
+        // 設定空間。
+        (Method::POST, "/admin/custom-domain/setup-ipv6-auto-update") => {
+            handlers::custom_dns_ipv6::setup_ipv6_auto_update(state, req).await
+        }
+        (Method::GET, "/admin/custom-domain/ipv6-auto-update") => {
+            handlers::custom_dns_ipv6::list_ipv6_auto_update(state, &req).await
+        }
+        (Method::DELETE, p) if p.starts_with("/admin/custom-domain/ipv6-auto-update/") => {
+            // パス形式: /admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain
+            let rest = p.trim_start_matches("/admin/custom-domain/ipv6-auto-update/");
+            match rest.split_once('/') {
+                Some((base_domain, subdomain)) => {
+                    handlers::custom_dns_ipv6::remove_ipv6_auto_update(state, &req, base_domain, subdomain).await
+                }
+                None => text_response(
+                    StatusCode::BAD_REQUEST,
+                    "expected path '/admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain'",
+                ),
+            }
         }
         // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
         // prefixマッチより先に評価する必要がある(先に評価されると
@@ -531,6 +555,11 @@ pub async fn run() -> anyhow::Result<()> {
     state.free_domains.seed_from_env().await;
     #[cfg(feature = "ddns")]
     free_domain::spawn_if_configured(state.free_domains.clone(), state.power_profile.clone());
+
+    // v6プラス(MAP-E)環境向けIPv6(AAAA)自動更新ループ(`custom_domain`
+    // feature時のみ実際に動作、`custom_dns_ipv6_autoupdate`参照)。
+    // レジストリが空でも常に起動しておく(`free_domain`と同じ設計)。
+    custom_dns_ipv6_autoupdate::spawn_if_configured(state.ipv6_auto_update.clone(), state.power_profile.clone());
 
     // 組み込みSFTPサーバー(`sftp` feature時のみ、`OPEN_WEB_SERVER_SFTP_BIND`
     // 未設定なら何もしない)。

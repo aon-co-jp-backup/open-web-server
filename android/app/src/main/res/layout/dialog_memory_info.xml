@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MemoryInfoButton用ダイアログ(2026-08-06新設)。実メモリ/仮想メモリ
+  (スワップ)/合計の3種類、それぞれテキスト+円グラフ(PieChartView)を
+  縦に並べる。スマホ/タブレット共通の単一レイアウト(ScrollView内なので
+  幅の違いは自然に吸収される)。
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- 実メモリ -->
+        <TextView
+            android:id="@+id/memoryRealTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:text="@string/memory_real_title" />
+
+        <tokyo.runo.openwebserver.PieChartView
+            android:id="@+id/memoryRealPieChart"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/memoryRealText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="12dp"
+            android:background="#33888888" />
+
+        <!-- 仮想メモリ(スワップ) -->
+        <TextView
+            android:id="@+id/memoryVirtualTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:text="@string/memory_virtual_title" />
+
+        <tokyo.runo.openwebserver.PieChartView
+            android:id="@+id/memoryVirtualPieChart"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/memoryVirtualText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="12dp"
+            android:background="#33888888" />
+
+        <!-- 合計 -->
+        <TextView
+            android:id="@+id/memoryTotalTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textStyle="bold"
+            android:text="@string/memory_total_title" />
+
+        <tokyo.runo.openwebserver.PieChartView
+            android:id="@+id/memoryTotalPieChart"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/memoryTotalText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp" />
+
+    </LinearLayout>
+</ScrollView>

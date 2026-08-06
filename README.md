@@ -196,6 +196,39 @@ match (method, path.as_str()) {
 これを忘れると Idempotency-Key 必須化(§0 のゼロロス保証の要)が効かない
 エンドポイントを作ってしまいます。
 
+## macOS向けインストール(2026-08-06追加)
+
+Linux(`install.sh`、systemdサービス登録)・Windows(`install.ps1`)に続き、
+`install-macos.sh`(launchd用plistを`~/Library/LaunchAgents/`へ配置する
+ユーザーレベルサービス登録)を追加した。
+
+**正直な開示**: この開発環境はWindows機であり、実際のmacOS環境での
+ビルド・`launchctl`実行・動作確認は一切行っていない。検証はシェル構文
+検証(`bash -n`相当)・plistのXML構文検証に留まる。launchdのplist書式・
+`launchctl bootstrap`/`load`の使い分けは2026年時点(macOS Ventura〜
+Sequoia世代)の日英Web検索で確認したが、実機での動作は未検証。
+80/443番のような特権ポートを使いたい場合は`/Library/LaunchDaemons/`への
+システムレベル配置+sudoが必要になるが、今回は未対応(次回の課題)。
+
+```
+curl -fsSL https://github.com/aon-co-jp/open-web-server/releases/latest/download/open-web-server-macos-x86_64.tar.gz | tar xz
+./install-macos.sh
+# plist内の環境変数(OPEN_WEB_SERVER_DOMAINS_FILE等)を編集後:
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/jp.co.aon.open-web-server.plist
+```
+
+対になる`uninstall-macos.sh`も用意した。
+
+**クロスコンパイルについて**: `cargo build --target x86_64-apple-darwin`/
+`aarch64-apple-darwin`は、Appleのプロプライエタリなツールチェーン
+(Xcode Command Line Tools、リンカ`ld64`等)を必要とし、Windows環境からは
+通常クロスコンパイルできない。この開発環境で実際に試すことも意味が薄い
+と判断し、`.github/workflows/release.yml`に`build-macos`ジョブ
+(`macos-latest`ランナー)を追加してCI側でビルドする方針にした
+(`continue-on-error: true`で他OSのリリースはブロックしない)。**このジョブ
+が実際に動作するかは次回タグpush時のCI実行で確認する必要がある**——
+現時点では未検証。
+
 ## 自己ホスト構成の方針(2026-07-21策定、2026-07-22完了・DONE)
 
 `runo.tokyo/open-web-server`(紹介ページ)は当初nginxの`alias`による

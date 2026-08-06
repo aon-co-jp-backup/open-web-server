@@ -28,6 +28,19 @@
 //!   (API利用者ID・パスワード・テナントID)** であり、新規に別の秘密情報
 //!   体系を持ち込まない設計にできる。
 //!
+//! ## v6プラス(MAP-E)環境向けIPv6(AAAA)自動更新(2026-08-06追記)
+//!
+//! バリュードメイン管理の通常ドメイン(`aon.co.jp`)配下でも、v6プラス
+//! (MAP-E)環境下の自宅サーバーを外部公開できるよう、`DnsProvider`トレイト
+//! に[`DnsProvider::update_ipv6`]を追加した。IPv4はMAP-Eの構造上ポート
+//! 開放ができないが、IPv6は無制限に使えるため、実機観測で約5分ごとに
+//! 変化するIPv6アドレスを自動追従させる——DDNSと同じ発想の「AAAAレコード
+//! 版DDNS」。自動更新ループ本体は[`crate::custom_dns_ipv6_autoupdate`]
+//! (この`custom_dns.rs`とは別モジュール、`free_domain.rs`の5分間隔自動
+//! 更新ループと同じ設計パターンを踏襲)、管理APIは
+//! `POST /admin/custom-domain/setup-ipv6-auto-update`
+//! (`handlers::custom_dns_ipv6`)。
+//!
 //! ## 正直な開示
 //!
 //! 上記2社のAPI仕様は日英の公式ドキュメント調査に基づく実装だが、
@@ -76,6 +89,21 @@ pub trait DnsProvider: Send + Sync {
 
     /// サブドメインのAレコードを削除する。
     async fn remove(&self, name: &str) -> Result<(), DnsProviderError>;
+
+    /// 既存/新規サブドメインのAAAAレコード(IPv6)を登録・更新する
+    /// (2026-08-06追記、v6プラス〈MAP-E〉環境下でのIPv6 DDNS自動更新
+    /// 対応のため新設)。**既定実装は「このプロバイダはIPv6未対応」という
+    /// 正直な`Err`を返す**——各プロバイダが明示的に対応しない限り黒魔術的に
+    /// 動くふりをしない(既存の`MissingCredential`と同じ「できないことは
+    /// できないと正直に返す」方針を踏襲)。`ValueDomainProvider`
+    /// (`aon.co.jp`)はこれを実装済み、`ConohaDnsProvider`は本パスでは
+    /// 未実装のまま(次回課題、下記doc参照)。
+    async fn update_ipv6(&self, _name: &str, _ipv6: &str) -> Result<DnsRecordResult, DnsProviderError> {
+        Err(DnsProviderError::RequestFailed(format!(
+            "provider for base domain '{}' does not implement AAAA (IPv6) record updates yet",
+            self.base_domain()
+        )))
+    }
 }
 
 /// `aon.co.jp`(Value-Domain管理)向け実装。
@@ -158,6 +186,44 @@ impl DnsProvider for ValueDomainProvider {
         // Value-DomainのAPI仕様上、更新も同じ`PUT`(ゾーン全体送信)である
         // ため登録と同じ経路を再利用する。
         self.register_subdomain(name, ip).await
+    }
+
+    #[cfg(feature = "custom_domain")]
+    async fn update_ipv6(&self, name: &str, ipv6: &str) -> Result<DnsRecordResult, DnsProviderError> {
+        // v6プラス(MAP-E)環境下でのIPv6 DDNS自動更新対応(2026-08-06追記)。
+        // Value-DomainのDNS APIはA/AAAAレコードいずれも同じ
+        // `PUT /v1/domains/{domain}/dns`(ゾーン全体をテキストで送信する
+        // 設計)を使う——Web検索で確認した公式ドキュメント
+        // (https://www.value-domain.com/api/doc/domain/)の記載通り、
+        // `records`フィールドにBIND風の行(`<ホスト名> <レコード種別>
+        // <値>`)を渡す形式。既存の`register_subdomain`(Aレコード)と
+        // 完全に対をなす実装だが、**ゾーン全体送信方式であるため、
+        // 本来は既存の他レコード(Aレコード含む)を保持したまま送り直す
+        // 必要がある**——この土台実装ではその既存レコードの事前取得・
+        // マージ(`GET /v1/domains/{domain}/dns`→パース→マージ→`PUT`)は
+        // まだ行っておらず、`register_subdomain`と同じ既知の限界として
+        // モジュールdocの「正直な開示」に追記済み。
+        let url = format!("https://api.value-domain.com/v1/domains/{}/dns", Self::BASE_DOMAIN);
+        let body = serde_json::json!({ "records": format!("{name} AAAA {ipv6}") });
+        let resp = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| DnsProviderError::RequestFailed(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(DnsProviderError::UnexpectedResponse(format!("HTTP {}", resp.status())));
+        }
+        Ok(DnsRecordResult { fqdn: format!("{name}.{}", Self::BASE_DOMAIN), ip: ipv6.to_string() })
+    }
+
+    #[cfg(not(feature = "custom_domain"))]
+    async fn update_ipv6(&self, _name: &str, _ipv6: &str) -> Result<DnsRecordResult, DnsProviderError> {
+        Err(DnsProviderError::RequestFailed(
+            "this build was compiled without the `custom_domain` feature (no HTTP client available)".to_string(),
+        ))
     }
 
     #[cfg(feature = "custom_domain")]
@@ -436,6 +502,19 @@ mod tests {
         std::env::remove_var(ConohaDnsProvider::ENV_TENANT_ID);
         let err = ConohaDnsProvider::from_env().expect_err("must fail without full credentials");
         assert!(matches!(err, DnsProviderError::MissingCredential(_)));
+    }
+
+    #[tokio::test]
+    async fn default_update_ipv6_is_an_honest_not_implemented_error() {
+        // `MockDnsProvider`は`update_ipv6`を一切オーバーライドしていないため、
+        // トレイトの既定実装(「このプロバイダはIPv6未対応」)が呼ばれる
+        // ——「実装したふり」をせず正直にエラーを返すことの確認。
+        let provider = MockDnsProvider::new("example.test");
+        let err = provider
+            .update_ipv6("blog", "2001:db8::1")
+            .await
+            .expect_err("default update_ipv6 must be an honest error, not a silent success");
+        assert!(matches!(err, DnsProviderError::RequestFailed(msg) if msg.contains("does not implement AAAA")));
     }
 
     #[test]

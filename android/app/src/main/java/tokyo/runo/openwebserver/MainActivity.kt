@@ -234,6 +234,8 @@ class MainActivity : AppCompatActivity() {
         val ddnsSetupButton = findViewById<Button>(R.id.ddnsSetupButton)
         val hardwareInfoButton = findViewById<Button>(R.id.hardwareInfoButton)
         val externalStorageButton = findViewById<Button>(R.id.externalStorageButton)
+        val btnMemoryInfo = findViewById<Button>(R.id.btnMemoryInfo)
+        val btnDiskInfo = findViewById<Button>(R.id.btnDiskInfo)
 
         hardwareInfoButton.setOnClickListener {
             showHardwareInfoDialog()
@@ -241,6 +243,14 @@ class MainActivity : AppCompatActivity() {
 
         externalStorageButton.setOnClickListener {
             showExternalStorageDialog()
+        }
+
+        btnMemoryInfo.setOnClickListener {
+            showMemoryInfoDialog()
+        }
+
+        btnDiskInfo.setOnClickListener {
+            showDiskInfoDialog()
         }
 
         statusText.text =
@@ -757,6 +767,80 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "保存しました(次回サーバー起動から反映)", Toast.LENGTH_LONG).show()
             }
             .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
+    /**
+     * メモリ情報ダイアログ(2026-08-06新設)。`MemoryInfoButton.collect()`が
+     * 実メモリ/仮想メモリ(スワップ)/合計をそれぞれ算出し、
+     * `dialog_memory_info.xml`のテキスト+`PieChartView`3つへ反映する。
+     * スワップ非対応端末でも`virtual`がnullになるだけでクラッシュしない。
+     */
+    private fun showMemoryInfoDialog() {
+        val view = android.view.LayoutInflater.from(this)
+            .inflate(R.layout.dialog_memory_info, null)
+
+        val result = MemoryInfoButton.collect(this)
+
+        val realPie = view.findViewById<PieChartView>(R.id.memoryRealPieChart)
+        val realText = view.findViewById<TextView>(R.id.memoryRealText)
+        realPie.setUsage(result.real.usedRatio)
+        realText.text =
+            "使用中: ${MemoryInfoButton.formatBytes(result.real.used)} / " +
+                "空き: ${MemoryInfoButton.formatBytes(result.real.avail)} / " +
+                "総量: ${MemoryInfoButton.formatBytes(result.real.total)}"
+
+        val virtualPie = view.findViewById<PieChartView>(R.id.memoryVirtualPieChart)
+        val virtualText = view.findViewById<TextView>(R.id.memoryVirtualText)
+        val virtual = result.virtual
+        if (virtual != null) {
+            virtualPie.setUsage(virtual.usedRatio)
+            virtualText.text =
+                "使用中: ${MemoryInfoButton.formatBytes(virtual.used)} / " +
+                    "空き: ${MemoryInfoButton.formatBytes(virtual.avail)} / " +
+                    "総量: ${MemoryInfoButton.formatBytes(virtual.total)}"
+        } else {
+            virtualPie.setUsage(0f)
+            virtualText.text = getString(R.string.memory_swap_unavailable)
+        }
+
+        val totalPie = view.findViewById<PieChartView>(R.id.memoryTotalPieChart)
+        val totalText = view.findViewById<TextView>(R.id.memoryTotalText)
+        totalPie.setUsage(result.total.usedRatio)
+        totalText.text =
+            "使用中: ${MemoryInfoButton.formatBytes(result.total.used)} / " +
+                "空き: ${MemoryInfoButton.formatBytes(result.total.avail)} / " +
+                "総量: ${MemoryInfoButton.formatBytes(result.total.total)}"
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.memory_info_dialog_title)
+            .setView(view)
+            .setPositiveButton(R.string.close_button, null)
+            .show()
+    }
+
+    /**
+     * ディスク情報ダイアログ(2026-08-06新設)。`DiskInfoButton.collect()`が
+     * `StatFs`(root不要)で内部ストレージの使用状況を取得する。
+     */
+    private fun showDiskInfoDialog() {
+        val view = android.view.LayoutInflater.from(this)
+            .inflate(R.layout.dialog_disk_info, null)
+
+        val stats = DiskInfoButton.collect()
+
+        val pie = view.findViewById<PieChartView>(R.id.diskPieChart)
+        val text = view.findViewById<TextView>(R.id.diskText)
+        pie.setUsage(stats.usedRatio)
+        text.text =
+            "使用中: ${MemoryInfoButton.formatBytes(stats.used)} / " +
+                "空き: ${MemoryInfoButton.formatBytes(stats.avail)} / " +
+                "総量: ${MemoryInfoButton.formatBytes(stats.total)}"
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.disk_info_dialog_title)
+            .setView(view)
+            .setPositiveButton(R.string.close_button, null)
             .show()
     }
 

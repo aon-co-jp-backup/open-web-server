@@ -70,6 +70,10 @@ pub struct DomainUpdateStatus {
     pub ok: bool,
     /// 反映を試みたグローバルIP(取得できなかった場合は`None`)。
     pub ip: Option<String>,
+    /// 反映を試みたグローバルIPv6(2026-08-06追加。IPv6が取得できない
+    /// 環境・DuckDNS側がIPv6更新を含まなかった場合は`None`——IPv4の
+    /// 更新自体には影響しない、正直なフォールバック挙動)。
+    pub ipv6: Option<String>,
     /// DuckDNS APIの生レスポンス(失敗時の原因調査用)。
     pub raw_response: String,
     /// Unixエポック秒。
@@ -103,11 +107,18 @@ impl DomainRegistry {
     /// 更新試行結果を記録する(`ddns` feature配下・即時疎通確認の両方から
     /// 呼ばれる)。
     #[cfg_attr(not(feature = "ddns"), allow(dead_code))]
-    pub async fn record_update_result(&self, domain: &str, ok: bool, ip: Option<String>, raw_response: String) {
+    pub async fn record_update_result(
+        &self,
+        domain: &str,
+        ok: bool,
+        ip: Option<String>,
+        ipv6: Option<String>,
+        raw_response: String,
+    ) {
         let mut guard = self.last_update.write().await;
         guard.insert(
             domain.to_string(),
-            DomainUpdateStatus { ok, ip, raw_response, checked_at_unix: now_unix() },
+            DomainUpdateStatus { ok, ip, ipv6, raw_response, checked_at_unix: now_unix() },
         );
     }
 
@@ -214,6 +225,7 @@ mod net {
 
     const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
     const IP_ECHO_URL: &str = "https://api.ipify.org";
+    const IPV6_ECHO_URL: &str = "https://api6.ipify.org";
     const DUCKDNS_UPDATE_BASE: &str = "https://www.duckdns.org/update";
 
     /// DuckDNS更新APIの結果。レスポンスボディは`"OK"`または`"KO"`(+改行でIP)。
@@ -223,12 +235,21 @@ mod net {
     }
 
     /// DuckDNSの更新APIを1回叩く。`ip`を省略するとDuckDNS側がリクエスト元の
-    /// IPを自動検知して使う(DuckDNSの公式挙動)。
+    /// IPを自動検知して使う(DuckDNSの公式挙動)。`ipv6`(2026-08-06追加)を
+    /// 指定すると、公式Update API仕様(https://www.duckdns.org/spec.jsp)に
+    /// ある`ipv6`パラメータでAAAAレコードも同時に更新できる——`ip`(A)と
+    /// `ipv6`(AAAA)は独立したパラメータであり、どちらか一方だけを送っても
+    /// 他方には影響しない(**正直な開示**: このセッションではWeb検索
+    /// ツールが使えなかったため、`https://www.duckdns.org/update?domains=
+    /// ...&token=...&ip=...&ipv6=...`という`ipv6`パラメータの存在は、
+    /// DuckDNS公式ドキュメント〈spec.jsp〉に関する既知の一般的なDuckDNS
+    /// API仕様知識に基づく実装であり、今回の実接続確認は行っていない)。
     pub async fn update_duckdns(
         client: &reqwest::Client,
         domain: &str,
         token: &str,
         ip: Option<&str>,
+        ipv6: Option<&str>,
     ) -> Result<DuckDnsUpdateResult, reqwest::Error> {
         let mut url = format!(
             "{DUCKDNS_UPDATE_BASE}?domains={}&token={}",
@@ -239,6 +260,10 @@ mod net {
             url.push_str("&ip=");
             url.push_str(&urlencoding_lite(ip));
         }
+        if let Some(ipv6) = ipv6 {
+            url.push_str("&ipv6=");
+            url.push_str(&urlencoding_lite(ipv6));
+        }
         let resp = client.get(&url).send().await?;
         let body = resp.text().await?;
         let ok = body.trim_start().starts_with("OK");
@@ -247,6 +272,19 @@ mod net {
 
     async fn fetch_current_ip(client: &reqwest::Client) -> Result<String, reqwest::Error> {
         let text = client.get(IP_ECHO_URL).send().await?.text().await?;
+        Ok(text.trim().to_string())
+    }
+
+    /// このマシンの現在のグローバルIPv6アドレスを、IPv6専用の外部echo
+    /// サービス(`https://api6.ipify.org`)から取得する(既存
+    /// `custom_dns_ipv6_autoupdate::fetch_current_global_ipv6`と同じ設計
+    /// パターン——OSのインターフェース一覧から直接取得する方式ではなく、
+    /// 「実際にインターネットから到達可能なアドレス」を確実に得るための
+    /// echoサービス方式を採用)。IPv4のみの環境・経路では接続自体が失敗
+    /// する(意図的なフォールバック——呼び出し元はこれを「IPv6は使えない
+    /// 環境」として扱い、IPv4側の処理には一切影響させない)。
+    async fn fetch_current_ipv6(client: &reqwest::Client) -> Result<String, reqwest::Error> {
+        let text = client.get(IPV6_ECHO_URL).send().await?.text().await?;
         Ok(text.trim().to_string())
     }
 
@@ -271,44 +309,68 @@ mod net {
     ) {
         let client = reqwest::Client::new();
         let mut last_ip: Option<String> = None;
+        let mut last_ipv6: Option<String> = None;
         loop {
             let domains = registry.snapshot().await;
             if !domains.is_empty() {
+                // IPv6は取得できない環境(IPv4のみの接続等)では単純に
+                // スキップし、既存のIPv4処理は継続する——正直なフォール
+                // バック挙動(ユーザー指示、2026-08-06)。
+                let current_ipv6: Option<String> = match fetch_current_ipv6(&client).await {
+                    Ok(ipv6) => Some(ipv6),
+                    Err(e) => {
+                        tracing::debug!("DuckDNS: failed to fetch current IPv6 (skipping IPv6 update, IPv4 unaffected): {e}");
+                        None
+                    }
+                };
+                let ipv6_changed = current_ipv6.is_some() && current_ipv6 != last_ipv6;
+
                 match fetch_current_ip(&client).await {
                     Ok(ip) => {
-                        if last_ip.as_deref() != Some(ip.as_str()) {
+                        let ip_changed = last_ip.as_deref() != Some(ip.as_str());
+                        if ip_changed || ipv6_changed {
                             tracing::info!(
-                                "DuckDNS: detected IP change (was {:?}, now {ip}), updating {} domain(s)",
+                                "DuckDNS: detected IP change (was {:?}, now {ip}, ipv6={:?}), updating {} domain(s)",
                                 last_ip,
+                                current_ipv6,
                                 domains.len()
                             );
                             let mut all_ok = true;
+                            let mut ipv6_all_ok = current_ipv6.is_some();
                             for (domain, token) in &domains {
-                                match update_duckdns(&client, domain, token, Some(&ip)).await {
+                                match update_duckdns(&client, domain, token, Some(&ip), current_ipv6.as_deref()).await {
                                     Ok(result) if result.ok => {
-                                        tracing::info!("DuckDNS: update succeeded ({domain}.duckdns.org -> {ip})");
+                                        tracing::info!(
+                                            "DuckDNS: update succeeded ({domain}.duckdns.org -> {ip}{})",
+                                            current_ipv6.as_deref().map(|v6| format!(", ipv6={v6}")).unwrap_or_default()
+                                        );
                                         registry
-                                            .record_update_result(domain, true, Some(ip.clone()), result.raw_body)
+                                            .record_update_result(domain, true, Some(ip.clone()), current_ipv6.clone(), result.raw_body)
                                             .await;
                                     }
                                     Ok(result) => {
                                         all_ok = false;
+                                        ipv6_all_ok = false;
                                         tracing::warn!("DuckDNS: update for '{domain}' responded with failure body: {}", result.raw_body);
                                         registry
-                                            .record_update_result(domain, false, Some(ip.clone()), result.raw_body)
+                                            .record_update_result(domain, false, Some(ip.clone()), current_ipv6.clone(), result.raw_body)
                                             .await;
                                     }
                                     Err(e) => {
                                         all_ok = false;
+                                        ipv6_all_ok = false;
                                         tracing::warn!("DuckDNS: update request for '{domain}' failed: {e}");
                                         registry
-                                            .record_update_result(domain, false, Some(ip.clone()), e.to_string())
+                                            .record_update_result(domain, false, Some(ip.clone()), current_ipv6.clone(), e.to_string())
                                             .await;
                                     }
                                 }
                             }
                             if all_ok {
                                 last_ip = Some(ip);
+                            }
+                            if ipv6_all_ok {
+                                last_ipv6 = current_ipv6;
                             }
                         }
                     }

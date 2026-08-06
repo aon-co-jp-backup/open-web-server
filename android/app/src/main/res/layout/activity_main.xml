@@ -73,6 +73,24 @@
         android:layout_marginTop="8dp"
         android:text="@string/external_storage_button" />
 
+    <!--
+      MemoryInfoButton/DiskInfoButton(2026-08-06新設)。既存ボタン群と
+      同じスタイル・配置感で追加する。
+    -->
+    <Button
+        android:id="@+id/btnMemoryInfo"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/memory_info_button" />
+
+    <Button
+        android:id="@+id/btnDiskInfo"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/disk_info_button" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"

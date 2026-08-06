@@ -42,6 +42,15 @@ cd open-web-server
 .\install.ps1</code></pre>
   </div>
   <div class="card">
+    <h3>🍎 macOS(Intel / Apple Silicon)</h3>
+    <p>launchd(LaunchAgent)によるユーザーレベルサービス登録に対応。
+    <strong>正直な開示: この開発環境(Windows機)では実機での動作確認ができておらず、
+    シェル構文・plistのXML構文検証のみ済んでいます。</strong></p>
+    <pre><code>curl -fsSL https://github.com/aon-co-jp/open-web-server/releases/latest/download/open-web-server-macos-x86_64.tar.gz | tar xz
+./install-macos.sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/jp.co.aon.open-web-server.plist</code></pre>
+  </div>
+  <div class="card">
     <h3>📱 Android(スマホ・タブレット)</h3>
     <p>ARM64(arm64-v8a)/x86_64両ABI対応。起動時に<strong>省メモリ版・省電力版・通常版・常時電源接続版</strong>の
     4電源プロファイルから選択でき、選択に応じてホーム画面アイコンの表示も切り替わります。</p>

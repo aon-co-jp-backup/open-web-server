@@ -6,6 +6,10 @@
          スリープを防ぐために必要。省電力/通常プロファイルでは取得しない
          (PowerProfile.kt参照)。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 回線非依存(WiFi限定ではない)のグローバルIPv6アドレス取得
+         ([NetworkIpv6]、2026-08-06新設)に使う`ConnectivityManager.
+         getLinkProperties()`が要求する通常権限(実行時許可は不要)。 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- ACTION_POWER_DISCONNECTED/CONNECTEDはprotected broadcastのため、
          マニフェスト側の権限宣言は不要(コード側でreceiverを動的登録
          するのみ、2026-07-24追加)。 -->

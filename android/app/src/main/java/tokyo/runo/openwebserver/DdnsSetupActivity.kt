@@ -54,11 +54,15 @@ class DdnsSetupActivity : AppCompatActivity() {
     private lateinit var registerResultText: TextView
     private lateinit var pollStatusText: TextView
     private lateinit var domainListContainer: LinearLayout
+    private lateinit var currentIpv6Text: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_ddns_setup)
         title = getString(R.string.ddns_setup_title)
+
+        currentIpv6Text = findViewById(R.id.currentIpv6Text)
+        refreshCurrentIpv6Display()
 
         adminTokenInput = findViewById(R.id.adminTokenInput)
         subdomainInput = findViewById(R.id.subdomainInput)
@@ -93,6 +97,26 @@ class DdnsSetupActivity : AppCompatActivity() {
         registerButton.setOnClickListener { onRegisterClicked() }
 
         startPolling()
+    }
+
+    /**
+     * この端末が現在持っているグローバルIPv6アドレスを表示する
+     * (2026-08-06追加)。[NetworkIpv6]は`ConnectivityManager.
+     * getLinkProperties()`を使うため、WiFi接続時に限らずモバイルデータ
+     * 回線接続時でも同じロジックで検出できる(回線非依存)——v6プラス
+     * (MAP-E)環境等でこの端末をサーバー化する際、実際にDuckDNS/AAAA
+     * レコードへ反映されるはずのアドレスをユーザー自身が視認できるように
+     * するための、あくまで確認用の表示。
+     */
+    private fun refreshCurrentIpv6Display() {
+        val ipv6 = NetworkIpv6.currentGlobalIpv6(this)
+        val transport = NetworkIpv6.currentTransportSummary(this)
+        currentIpv6Text.text = if (ipv6 != null) {
+            "この端末の現在のグローバルIPv6([$transport]経由): $ipv6"
+        } else {
+            "この端末の現在のグローバルIPv6([$transport]経由): 取得できませんでした" +
+                "(IPv6非対応の回線、またはリンクローカルのみの可能性があります)"
+        }
     }
 
     private fun onRegisterClicked() {
@@ -136,6 +160,7 @@ class DdnsSetupActivity : AppCompatActivity() {
         pollJob?.cancel()
         pollJob = CoroutineScope(Dispatchers.Main).launch {
             while (isActive) {
+                refreshCurrentIpv6Display()
                 val adminToken = adminTokenInput.text.toString().trim()
                 if (adminToken.isNotEmpty()) {
                     refreshDomainList(adminToken)
@@ -172,9 +197,10 @@ class DdnsSetupActivity : AppCompatActivity() {
             row.setPadding(0, 12, 0, 12)
 
             val infoText = TextView(this)
+            val ipv6Suffix = entry.lastUpdateIpv6?.let { " / IPv6(AAAA): $it" } ?: ""
             val statusLine = when {
                 entry.lastUpdateOk == null -> "まだ更新試行なし"
-                entry.lastUpdateOk -> "OK (IP: ${entry.lastUpdateIp ?: "不明"}, ${timeFormat.format(Date(entry.lastUpdateAtUnix!! * 1000))})"
+                entry.lastUpdateOk -> "OK (IP: ${entry.lastUpdateIp ?: "不明"}$ipv6Suffix, ${timeFormat.format(Date(entry.lastUpdateAtUnix!! * 1000))})"
                 else -> "失敗 (${timeFormat.format(Date(entry.lastUpdateAtUnix!! * 1000))})"
             }
             infoText.text = "${entry.fullHostname}\n直近の更新: $statusLine"
@@ -218,6 +244,7 @@ class DdnsApiClient(private val port: Int) {
         val fullHostname: String,
         val lastUpdateOk: Boolean?,
         val lastUpdateIp: String?,
+        val lastUpdateIpv6: String?,
         val lastUpdateAtUnix: Long?,
     )
 
@@ -291,6 +318,7 @@ class DdnsApiClient(private val port: Int) {
                             fullHostname = item.optString("full_hostname"),
                             lastUpdateOk = lastUpdate?.optBoolean("ok"),
                             lastUpdateIp = lastUpdate?.optString("ip")?.takeIf { it.isNotEmpty() && it != "null" },
+                            lastUpdateIpv6 = lastUpdate?.optString("ipv6")?.takeIf { it.isNotEmpty() && it != "null" },
                             lastUpdateAtUnix = lastUpdate?.optLong("checked_at_unix"),
                         )
                     )

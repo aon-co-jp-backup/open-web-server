@@ -50,4 +50,16 @@
     <string name="external_storage_path_hint">マウントパス(例: /mnt/media_rw/XXXX-XXXX、自動検知された候補を選ぶと自動入力されます)</string>
     <string name="external_storage_enable_checkbox">有効化する</string>
     <string name="external_storage_save_button">保存</string>
+
+    <!-- MemoryInfoButton/DiskInfoButton(2026-08-06新設) -->
+    <string name="memory_info_button">🧠 メモリ情報を表示</string>
+    <string name="memory_info_dialog_title">メモリ使用状況</string>
+    <string name="memory_real_title">実メモリ (RAM)</string>
+    <string name="memory_virtual_title">仮想メモリ (スワップ)</string>
+    <string name="memory_total_title">合計(実メモリ+仮想メモリ)</string>
+    <string name="memory_swap_unavailable">この端末ではスワップ情報を取得できませんでした(/proc/meminfoの読み取り失敗、またはスワップ未設定の可能性があります)。</string>
+    <string name="disk_info_button">💾 ディスク情報を表示</string>
+    <string name="disk_info_dialog_title">ディスク使用状況</string>
+    <string name="disk_info_title">内部ストレージ (Environment.getDataDirectory)</string>
+    <string name="close_button">閉じる</string>
 </resources>

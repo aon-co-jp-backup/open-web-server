@@ -2,6 +2,7 @@
 pub mod admin_login;
 #[cfg(feature = "disaster_email_backup")]
 pub mod disaster_email_backup;
+pub mod custom_dns_ipv6;
 pub mod free_domain;
 pub mod items;
 pub mod keys;

@@ -94,13 +94,17 @@ pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> 
         }
 
         let client = reqwest::Client::new();
-        match crate::free_domain::update_duckdns(&client, &payload.domain, &payload.token, None)
+        // 即時疎通確認では、IPv4更新確認のみを目的とするため`ip`/`ipv6`いずれも
+        // 明示指定しない(DuckDNS側がリクエスト元IPを自動検知する既定挙動に委ねる)。
+        // IPv6(AAAA)の反映確認自体は5分間隔の自動更新ループ側で行う
+        // (`net::run_loop`、実際に取得できたIPv6を明示的に送る設計はそちら)。
+        match crate::free_domain::update_duckdns(&client, &payload.domain, &payload.token, None, None)
             .await
         {
             Ok(result) => {
                 state
                     .free_domains
-                    .record_update_result(&payload.domain, result.ok, None, result.raw_body.clone())
+                    .record_update_result(&payload.domain, result.ok, None, None, result.raw_body.clone())
                     .await;
                 let full_hostname = format!("{}.duckdns.org", payload.domain);
                 let registered_count = state.free_domains.len().await;

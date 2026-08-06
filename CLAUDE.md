@@ -611,6 +611,211 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-06(続き2) macOS対応を新規追加(ユーザー指示「将来的にはMacも対応で」、open-easy-webと同時着手)
+
+Linux(`install.sh`、systemdサービス登録)・Windows(`install.ps1`)に続き、
+macOS向けの`install-macos.sh`/`uninstall-macos.sh`を新規作成した。
+
+1. **`install-macos.sh`/`uninstall-macos.sh`(新規)**: `launchd`用plist
+   (`jp.co.aon.open-web-server.plist`)を`~/Library/LaunchAgents/`へ配置
+   するユーザーレベルサービス登録方式(open-easy-web側と同じ設計、
+   日英Web検索で2026年時点〈macOS Ventura〜Sequoia世代〉の`launchd`
+   plist書式・`launchctl bootstrap`/`load`の使い分けを確認済み。Apple
+   が`load`/`unload`を将来的に非推奨とする方向性を示していることから、
+   案内は`bootstrap`/`bootout`を主とし`load`/`unload`はフォールバック
+   として残した)。80/443番等の特権ポートを使う構成
+   (`/Library/LaunchDaemons/`へのシステムレベル配置+sudo)は今回未対応と
+   正直に明記。
+2. **既存Linux systemdユニット相当の環境変数を引き渡し可能**: plist内の
+   `EnvironmentVariables`辞書に`OPEN_WEB_SERVER_BIND`(既定値設定済み)・
+   `OPEN_WEB_SERVER_DOMAINS_FILE`/`_WEB_VHOSTS_FILE`/`_DDNS_UPDATE_URL`等
+   (コメントアウト、ユーザーが有効化)を、`install.sh`のsystemdユニットと
+   同じ変数名で用意した。
+3. **README.md(ルート、日本語)にmacOS向けインストール手順を追記**。
+   `site/index.html`(紹介ページ)の「ダウンロード・インストール」節にも
+   macOSカードを追加(Linux/Windows/Androidと並列)。
+4. **`.github/workflows/release.yml`に`build-macos`ジョブを追加**
+   (`macos-latest`ランナー、`x86_64-apple-darwin`+`aarch64-apple-darwin`
+   の両アーキ向けにビルド、既存の`build-android`と同じ
+   `continue-on-error: true`で他OSのリリースをブロックしない設計)。
+5. **正直な制約の明記(誇張しない)**: この開発環境はWindows機であり、
+   (a) 実際のmacOS環境でのビルド・`launchctl bootstrap`実行・動作確認は
+   一切行っていない、(b) `cargo build --target x86_64-apple-darwin`/
+   `aarch64-apple-darwin`はAppleのプロプライエタリなツールチェーン
+   (Xcode Command Line Tools)を要し、Windows環境では通常クロス
+   コンパイル不可能——本リポジトリは`open-web-server-wire`が
+   `RS-SmartTCP`へのsibling path依存を持つため、CIジョブにも既存の
+   `build-linux`/`build-windows`と同じ`git clone`手順を追加した、
+   (c) 検証は`bash -n install-macos.sh`相当のシェル構文検証と、
+   plist部分をPython `xml.dom.minidom`で解析するXML構文検証のみに
+   留まる、(d) `build-macos`ジョブが実際にCI上で成功するかは次回タグ
+   push時の実行結果でしか確認できない。
+6. **コミットは作成していない**(ユーザーが内容確認後に判断する方針の
+   ため)。
+- 次にすべきこと: (1) 次回タグpush時に`build-macos`ジョブの実行結果を
+  確認(特に`RS-SmartTCP`のsibling checkoutがmacOSランナー上でも
+  成功するか)、(2) 実macOS環境での`install-macos.sh`実行・
+  `launchctl bootstrap`後の実際の起動・ドメイン設定確認、
+  (3) 80/443番等の特権ポートを使いたい場合の`/Library/LaunchDaemons/`
+  システムレベル対応(今回は未対応)。
+
+### 2026-08-06(続き) v6プラス(MAP-E)環境向けIPv6(AAAA)自動更新をバリュードメイン管理ドメイン(aon.co.jp)に実装
+
+**背景**: バリュードメイン管理の通常ドメイン(`aon.co.jp`等)でも、v6プラス
+(MAP-E)環境下の自宅サーバーを外部公開できるようにする指示。IPv4はMAP-Eの
+構造上ポート開放ができないが、IPv6は無制限に使える一方、実機観測で約5分
+ごとに変化するため、DDNSと同じ発想でAAAAレコードを自動更新する仕組みが
+必要という要件。
+
+**バリュードメインAPI仕様の裏取り(日英Web検索)**: 公式ドキュメント
+(https://www.value-domain.com/api/doc/domain/)およびAPI活用記事
+(https://www.value-domain.com/media/api-dns/)を検索し、DNSレコード変更が
+`PUT https://api.value-domain.com/v1/domains/{domain}/dns`へ`ns_type`/
+`records`/`ttl`をJSONで送る**ゾーン全体送信方式**であることを再確認した
+(既存の`custom_dns.rs`モジュールdocが2026-07-24時点で記載していた内容と
+一致)。`records`フィールドはBIND風の行(`<ホスト名> <レコード種別> <値>`)
+形式で、A/AAAAいずれも同じエンドポイント・同じ形式を使う。既存レコードを
+保持したまま送り直す必要がある(部分更新APIではない)点も確認済み——
+この制約は既存のAレコード実装(`register_subdomain`)と同じ既知の限界
+として、今回のAAAA実装にも引き続き明記した(事前のGETによるマージは
+今回も未実装のまま、次回課題)。
+
+**実装**:
+1. `crates/open-web-server-gateway/src/custom_dns.rs` — `DnsProvider`
+   トレイトに`update_ipv6(name, ipv6)`を追加。既定実装は「このプロバイダは
+   IPv6未対応」という正直な`Err`(黒魔術的に動くふりをしない)。
+   `ValueDomainProvider`(`aon.co.jp`)のみこれを実装(`PUT`で`"{name}
+   AAAA {ipv6}"`を送信、既存の`register_subdomain`〈Aレコード〉と対をなす
+   実装)。`ConohaDnsProvider`(`runo.tokyo`等)は今回未実装のまま
+   (トレイトの既定実装がそのまま使われる)——既存のAレコード更新機能
+   (`register_subdomain`/`update_ip`/`remove`)はいずれも無変更で維持。
+2. 新規`crates/open-web-server-gateway/src/custom_dns_ipv6_autoupdate.rs`
+   — `free_domain.rs`(DuckDNS/IPv4)と同じ設計パターン(`RwLock<HashMap>`
+   レジストリ、`MAX_IPV6_AUTO_UPDATE_ENTRIES=20`件までの容量制限、90秒
+   間隔のバックグラウンドループ、`power_profile::effective_poll_interval`
+   経由での省電力/常時電源プロファイル連動)。IPv6アドレス取得は外部echo
+   サービス(`https://api6.ipify.org`)方式を採用——OSのインターフェース
+   一覧から直接取得する方式ではなく、v6プラス/MAP-E環境下では「実際に
+   インターネットから到達可能なアドレス」を確実に得るため。現状
+   `aon.co.jp`(Value-Domain)のみ対応、他ベースドメインを指定すると
+   `UnsupportedBaseDomain`エラーで正直に拒否する。
+3. 新規管理API`POST /admin/custom-domain/setup-ipv6-auto-update`
+   (`{"domain": "aon.co.jp", "subdomain": "home"}`)、
+   `GET /admin/custom-domain/ipv6-auto-update`(一覧+直近更新結果)、
+   `DELETE /admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain`
+   (`crates/open-web-server-gateway/src/handlers/custom_dns_ipv6.rs`、
+   既存の`x-admin-token`/`KeyGuardian`認証〈`check_admin_auth`〉を再利用、
+   `free_domain.rs`の管理APIと同じパターン)。`lib.rs`のルーター
+   (`run()`内`dispatch()`)に配線、`state.rs`の`AppState`に
+   `ipv6_auto_update: Arc<Ipv6AutoUpdateRegistry>`フィールドを追加。
+
+**テスト**: `custom_dns.rs`に単体テスト1件(`MockDnsProvider`が
+`update_ipv6`をオーバーライドしない場合、既定実装の正直な`Err`が返る
+ことの確認)。`custom_dns_ipv6_autoupdate.rs`に単体テスト7件
+(容量制限・未サポートベースドメインの拒否・登録/一覧/削除・更新結果の
+反映・`ValueDomainProvider`資格情報未設定時の正直な`MissingCredential`)、
+うち2件はモックHTTPサーバー(`wiremock`、既存の`free_domain.rs`テストと
+同じライブラリ)でechoサービスのレスポンスパースを検証する`custom_domain`
+feature限定テスト。**正直な開示(このタスクの制約)**: 実バリュードメイン
+アカウント・実APIキーはこのタスクでは一切提供されておらず、実接続の検証
+は不可能——モックHTTPサーバーでのロジック検証(リクエスト内容の妥当性・
+レスポンス処理)に留まる。テストコード中のコメントにもこの制約を明記した。
+
+**検証結果**: `cargo build -p open-web-server-gateway`(デフォルト機能)・
+`cargo build --workspace`いずれも新規warning無しで成功(既存のdead_code
+警告のみ残置)。`cargo test -p open-web-server-gateway`(デフォルト機能)
+は**199件全green**(既存187件+今回の新規12件、リグレッション無し)。
+`cargo test -p open-web-server-gateway --features custom_domain custom_dns`
+でモックHTTPサーバー経由のテストを含む12件全greenを個別に確認。
+
+**git commitは作成していない**(ユーザー指示、内容確認後の判断待ち)。
+
+- 次にすべきこと: (1) 実バリュードメインアカウント・実APIキーが用意でき
+  次第の実接続E2E検証、(2) `PUT`前の既存レコード取得+マージ(ゾーン全体
+  送信方式の構造的な限界、Aレコード実装と共通の既知課題)、(3)
+  `ConohaDnsProvider`(`runo.tokyo`等)へのAAAA対応拡張、(4) Android版UI
+  からこの管理APIを呼ぶ設定画面の追加(現状はAPI単体のみ、DuckDNS版の
+  `DdnsSetupActivity`と同様のUIが無い)。
+
+### 2026-08-06 Android版: MemoryInfoButton(実メモリ・仮想メモリ・合計の3円グラフ)・DiskInfoButtonを実装、実機タップで検証完了
+
+ユーザー指示により、メモリ使用状況(実メモリ・仮想メモリ・合計の3種類)・
+ディスク使用状況を円グラフで表示するボタンを追加した。着手時点で
+`PieChartView.kt`・`MemoryInfoButton.kt`・`DiskInfoButton.kt`・
+`dialog_memory_info.xml`・`dialog_disk_info.xml`・`activity_main.xml`
+(スマホ/タブレット両方)・`strings.xml`・`MainActivity.kt`への配線までが
+既に実装済み(同日の並行作業と見られる)だったため、内容を精査した上で
+そのまま採用し、ビルド確認・実機検証・本HANDOFF追記を担当した。
+
+**実装内容(既存コードの確認結果)**:
+1. `PieChartView.kt`(新規カスタムView): 外部グラフライブラリに依存せず
+   `Canvas.drawArc`のみで「使用中/空き」2色の円グラフを描画する汎用View。
+   `setUsage(ratio: Float)`で0.0〜1.0にクランプ(0除算・異常値でクラッシュ
+   しない防御込み)。メモリ用途・ディスク用途の両方から共通利用。
+2. `MemoryInfoButton.kt`(ロジック層、object): 実メモリは
+   `ActivityManager.getMemoryInfo()`(`totalMem`/`availMem`)、仮想メモリ
+   (スワップ)は`/proc/meminfo`の`SwapTotal`/`SwapFree`を実際にパースして
+   取得。スワップが存在しない機種・`/proc/meminfo`読み取り失敗のいずれも
+   `virtual: null`として正直に呼び出し側へ伝え、クラッシュしない設計
+   (「取得できなかった」ことを隠さず`memory_swap_unavailable`文言で
+   表示)。合計は実メモリ+仮想メモリの単純合算(スワップ取得不可時は
+   実メモリの値をそのまま合計として扱う、0扱いで誤魔化さない)。
+3. `DiskInfoButton.kt`(ロジック層、object): `android.os.StatFs`
+   (標準API、root不要)で`Environment.getDataDirectory()`(内部ストレージ)
+   の総容量・使用量・空き容量を取得。
+4. `dialog_memory_info.xml`/`dialog_disk_info.xml`(新規レイアウト):
+   `ScrollView`内に「タイトル+`PieChartView`+テキスト」を実メモリ/
+   仮想メモリ/合計の3セット(メモリ側)、1セット(ディスク側)で縦に配置。
+5. `MainActivity.kt`: `btnMemoryInfo`/`btnDiskInfo`ボタンの
+   `findViewById`+クリックリスナー、`showMemoryInfoDialog()`/
+   `showDiskInfoDialog()`(`AlertDialog`+`LayoutInflater`でカスタムViewを
+   注入、`PieChartView.setUsage()`とテキスト整形を行う)を実装済みと確認。
+6. `activity_main.xml`(スマホ/タブレット両レイアウト)・`strings.xml`
+   (`memory_info_button`/`disk_info_button`等)にも既に反映済みと確認。
+
+**ビルド確認**: `gradle :app:assembleDebug`(`--console=plain`)で
+**BUILD SUCCESSFUL**(既存jniLibs同梱のまま、新規コンパイルエラー無し、
+実行時は`UP-TO-DATE`——既に同一内容でビルド済みだったことを確認)。
+
+**実機検証(型チェックのみで完了と報告しない、既存運用ルール徹底)**:
+adb接続中の実機(`ZY22J7RFND`)へ`adb install -r`でインストールし、
+実際にタップ操作で検証した(スクリーンショットで確認、検証後に
+デバイス上の一時ファイルは削除済み)。
+1. `ProfileSelectActivity`(LAUNCHER)を起動→「この組み合わせで起動」
+   (通常モード)をタップ→`MainActivity`に遷移し、新規ボタン
+   「🧠 メモリ情報を表示」「💾 ディスク情報を表示」が実際に表示される
+   ことを確認。
+2. 「🧠 メモリ情報を表示」を実タップ→ダイアログが表示され、**実機の
+   実際の値**(実メモリ: 使用中2.13GB/空き1.26GB/総量3.39GB、
+   仮想メモリ〈スワップ〉: 使用中1.37GB/空き849.4MB/総量2.20GB、
+   合計: 使用中3.51GB/空き2.09GB/総量5.59GB)とともに、3つの円グラフ
+   (赤=使用中/灰=空き)がそれぞれ異なる使用率で正しく描画されている
+   ことを確認——この実機はスワップが有効な機種であり、
+   `memory_swap_unavailable`分岐(スワップ非対応機種向け)は今回の
+   実機では発生条件に当たらなかった(コードレビューでロジックの
+   健全性は確認済み、実機での「スワップ無し」パス自体は今回未検証)。
+3. ダイアログを閉じ、「💾 ディスク情報を表示」を実タップ→ダイアログが
+   表示され、実機の実際の値(内部ストレージ: 使用中27.14GB/
+   空き84.43GB/総量111.56GB)とともに円グラフが正しい使用率で描画
+   されていることを確認。
+
+**正直な開示・未検証事項**: (1) スワップが存在しない機種での
+`memory_swap_unavailable`表示分岐は、今回実機がスワップ有効機種だった
+ため実地確認していない(ロジック上はnull分岐でクラッシュしないことを
+コードレビューで確認済み)。(2) 外付けストレージ(`ExternalStorageConfig`
+で設定した外部マウントパス)のディスク情報表示は今回のスコープに
+含まれておらず、`DiskInfoButton`は内部ストレージ(`Environment.
+getDataDirectory()`)のみを対象とする——将来外部ストレージのディスク
+使用状況も表示したい場合は別途拡張が必要(コード内docにこの限定は
+明記されていない、次回の課題として本エントリに記録)。(3) タブレット
+レイアウト(`layout-sw600dp`)側でのボタン表示・タップ動作は
+`activity_main.xml`の記述確認に留め、実タブレット機での実タップは
+未実施(この検証環境の実機はスマホのため)。
+
+- 次にすべきこと: (1) スワップ非搭載機種での`memory_swap_unavailable`
+  表示の実地確認、(2) 外付けストレージのディスク使用状況表示への対応
+  検討、(3) タブレット実機での実タップ確認。
+
 ### 2026-08-05(続き2) Android版: 外部ストレージデバイスの自動検知+選択式ダイアログを追加(open-easy-web側の移植元がroot化方式を先行実装、今回はopen-web-server本家側の拡張)
 
 **経緯**: `android/`の外付けHDDroot化機能(2026-08-04実装)はopen-easy-web側
