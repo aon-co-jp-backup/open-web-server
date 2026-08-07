@@ -12,6 +12,29 @@ param(
     [int]$Port = 80
 )
 
+# WireGuardクライアント自体が未インストールの場合の案内(2026-08-06追加、
+# ユーザー指示「未対応の場合、案内→ユーザー確認の上で公式サイトへ誘導」)。
+# 設計判断の詳細はdetect-wireguard-bind.shのコメント参照(同じ方針:
+# 確認なしの自動ダウンロード・インストールはしない)。
+$wgInstalled = (Get-Command wg.exe -ErrorAction SilentlyContinue) -or
+    (Test-Path "$env:ProgramFiles\WireGuard\wireguard.exe") -or
+    (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match "WireGuard" })
+
+if (-not $wgInstalled) {
+    Write-Host "WireGuardクライアントが見つかりませんでした。"
+    Write-Host "(ロリポップ!固定IPアクセス等のWireGuard型固定IPサービスを使うには WireGuardクライアントのインストールが必要です)"
+    Write-Host ""
+    $reply = Read-Host "公式サイト(https://www.wireguard.com/install/)をブラウザで開きますか? [y/N]"
+    if ($reply -match '^[yY]') {
+        Start-Process "https://www.wireguard.com/install/"
+    } else {
+        Write-Host "スキップしました。手動でインストールする場合は https://www.wireguard.com/install/ を参照してください。"
+    }
+    Write-Host ""
+    Write-Host "WireGuardインストール後、このスクリプトを再実行してください。"
+    exit 1
+}
+
 $candidates = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match "WireGuard" -or $_.Name -match "wg" }
 
 if ($InterfaceAlias -eq "") {

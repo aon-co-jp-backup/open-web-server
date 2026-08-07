@@ -53,12 +53,43 @@ fi
 IFACE="${1:-wg0}"
 PORT="${2:-80}"
 
-if command -v wg >/dev/null 2>&1; then
-  if ! wg show "$IFACE" >/dev/null 2>&1; then
-    echo "エラー: WireGuardインターフェース '$IFACE' が見つかりません。" >&2
-    echo "'wg show' で現在アクティブなインターフェース一覧を確認してください。" >&2
-    exit 1
-  fi
+# WireGuardクライアント自体が未インストールの場合の案内(2026-08-06追加、
+# ユーザー指示「未対応の場合、案内→ユーザー確認の上で公式サイトへ誘導」)。
+# **設計判断(正直な理由)**: VPNクライアントのような通信・システム設定に
+# 関わるソフトウェアを、確認なしに自動ダウンロード・インストールすることは
+# しない(このエコシステムの既存方針「サーバーサイド/スクリプトから
+# 任意のコマンドを無断実行しない」を踏襲)。あくまで案内し、ユーザー自身の
+# 明示的な同意を得てから公式サイトをブラウザで開く。
+if ! command -v wg >/dev/null 2>&1; then
+  echo "WireGuardクライアントが見つかりませんでした。"
+  echo "(ロリポップ!固定IPアクセス等のWireGuard型固定IPサービスを使うには"
+  echo " WireGuardクライアントのインストールが必要です)"
+  echo
+  read -r -p "公式サイト(https://www.wireguard.com/install/)をブラウザで開きますか? [y/N] " reply
+  case "$reply" in
+    [yY]|[yY][eE][sS])
+      if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "https://www.wireguard.com/install/" >/dev/null 2>&1 &
+      elif command -v open >/dev/null 2>&1; then
+        open "https://www.wireguard.com/install/"
+      else
+        echo "ブラウザを自動起動できませんでした。手動で開いてください:"
+        echo "  https://www.wireguard.com/install/"
+      fi
+      ;;
+    *)
+      echo "スキップしました。手動でインストールする場合は https://www.wireguard.com/install/ を参照してください。"
+      ;;
+  esac
+  echo
+  echo "WireGuardインストール後、このスクリプトを再実行してください。"
+  exit 1
+fi
+
+if ! wg show "$IFACE" >/dev/null 2>&1; then
+  echo "エラー: WireGuardインターフェース '$IFACE' が見つかりません。" >&2
+  echo "'wg show' で現在アクティブなインターフェース一覧を確認してください。" >&2
+  exit 1
 fi
 
 IP=""
