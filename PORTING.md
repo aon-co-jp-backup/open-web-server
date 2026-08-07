@@ -62,8 +62,18 @@ open-web-server/
 │   ├── open-web-server-ledger/   ← 冪等WAL + 3ホップコミット + PostgreSQL WAL実装(postgres_wal)
 │   └── open-web-server-gateway/  ← Poem製ゲートウェイ(実行バイナリ)
 ├── docs/                        ← architecture.md / integration.md
+├── scripts/                     ← detect-wireguard-bind.sh/.ps1(2026-08-06新設、
+│                                   ロリポップ!固定IPアクセス等のWireGuard型
+│                                   固定IPサービス向けバインドIP検出ヘルパー)
 └── PORTING.md                   ← 本ファイル
 ```
+
+**正直な開示**: 上記ファイル一覧は2026-07-20時点のスナップショットのまま
+更新が追いついておらず、`android/`(Android版クライアント)・`site/`
+(紹介ページ)・`install*.sh`/`install*.ps1`/`install-macos.sh`等の
+インストーラー群は含まれていない(実際にはこれらも本番運用に必要な
+構成要素)。移設時は本ファイルの一覧だけでなく`git ls-files`等で実際の
+リポジトリ構成を確認することを推奨する。
 
 丸ごと移設する場合はフォルダごとコピーして `cargo test --workspace`
 (2026-07-20時点で84テストが通れば移設成功)。以下はライブラリとして個別に使う場合。
