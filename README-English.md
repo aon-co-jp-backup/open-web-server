@@ -38,6 +38,17 @@ cause double-charging or silent data loss.
 
 ---
 
+## Recent updates (2026-08-07)
+
+- Fixed a real Android tablet layout bug (`sw600dp`): the inner
+  `LinearLayout` in `layout-sw600dp/activity_main.xml` combined
+  `maxWidth="720dp"` with `layout_width="match_parent"`, which Android
+  ignores (`maxWidth` only applies when `layout_width="wrap_content"`).
+  Found via cross-repo audit after the sibling repo `RS-Sync` fixed and
+  verified the same pattern on a real device; changed to `wrap_content`
+  here too. Honest gap: not re-verified on an actual device/emulator in
+  this repo.
+
 ## Why open-web-server Exists
 
 Typical billing/payment paths in web servers carry these residual risks:

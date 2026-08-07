@@ -29,6 +29,16 @@ open-web-server は、3Dオンラインゲームのアイテム課金や、ク�
 > (nginx停止)は残作業。詳細・次回着手事項は`CLAUDE.md`のHANDOFF
 > チェックポイント参照。
 
+## 最近の更新(2026-08-07)
+
+- Androidタブレット向けレイアウト(`sw600dp`)の実バグを修正:
+  `layout-sw600dp/activity_main.xml`の内側`LinearLayout`が
+  `layout_width="match_parent"`のまま`maxWidth="720dp"`を指定しており
+  機能していなかった(`maxWidth`は`layout_width="wrap_content"`時のみ
+  有効というAndroid仕様)。姉妹リポジトリ`RS-Sync`で同一パターンが実機
+  検証済みで修正された際の横展開確認で発見・修正。正直な開示: 本
+  リポジトリ側では実機/エミュレータでの再確認は未実施。
+
 ## なぜ open-web-server が必要か
 
 一般的な Webサーバーの課金/決済処理には、次のようなリスクが残ります。

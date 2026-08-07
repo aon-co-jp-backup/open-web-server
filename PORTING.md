@@ -16,6 +16,18 @@
 > (この節自体も更新のたび古くなるため、都度そちらを正とする)。
 > 最終更新: 2026-07-20
 
+## -1. 最近の更新(2026-08-07) / Recent update
+
+Androidタブレット向けレイアウト(`layout-sw600dp/activity_main.xml`)の
+`maxWidth`が`layout_width="match_parent"`と組み合わさって機能していない
+実バグを修正(`wrap_content`へ変更)。移設先でも同じパターンが他の
+`layout-sw600dp`ファイルに残っていないか確認すること。
+
+*English*: Fixed a real bug where `maxWidth` on the tablet layout had no
+effect because it was combined with `layout_width="match_parent"`
+(changed to `wrap_content`). Check other `layout-sw600dp` files for the
+same pattern when porting.
+
 ## 0. セキュリティ監査: 非公開エンドポイントの認証漏れ(2026-07-30追加、重要)
 
 `aruaru-server`側で「`/admin/*`の大半が無認証だった」という重大な
