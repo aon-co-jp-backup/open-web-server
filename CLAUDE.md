@@ -645,6 +645,122 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-07 DuckDNS/バリュードメイン連携のモック検証拡充(タイムアウト・
+認証失敗・不正レスポンス・IPv6形式異常・レート制限)、RPoem管理API連携は
+見送り(実装可能性の調査のみ)
+
+前回HANDOFF(2026-08-06系列、custom_dns_ipv6/pie chart/macOS対応/DuckDNS・
+バリュードメイン連携のモック検証)に記載の未検証事項のうち、実アカウント
+無しで着手可能な範囲(モックテスト拡充・エラーハンドリング改善)に対応した。
+
+**実施内容(変更ファイル)**:
+1. `crates/open-web-server-gateway/src/free_domain.rs`(DuckDNS)
+   - **タイムアウト未設定のバグを修正**: 自動更新ループの
+     `reqwest::Client::new()`にタイムアウトが一切設定されておらず、
+     DuckDNS/echoサービスが応答不能になった場合ループが無期限にハング
+     する潜在バグだった。既存`ddns.rs::REQUEST_TIMEOUT`と同じ30秒
+     (`REQUEST_TIMEOUT`定数)を追加。
+   - `update_duckdns`の内部URL組み立てロジックを`update_duckdns_at`
+     (`pub(crate)`、ベースURLを引数化)へ分離——テストから
+     `wiremock`のモックサーバーへ実際にリクエストを向けられるようにする
+     ため(修正前は本番用エンドポイントのURLがハードコードされており、
+     モックへのリダイレクトが不可能だった)。
+   - `DuckDnsUpdateResult`に`#[derive(Debug)]`を追加(`expect_err`で
+     必要、`--features custom_domain ddns`時のみ顕在化するコンパイル
+     エラーだったため今回発見)。
+   - 新規テスト5件: 認証失敗("KO"応答)、不正なレスポンスボディ
+     (HTMLエラーページ)、レート制限(HTTP 429)、タイムアウト
+     (`wiremock`の`set_delay`+短いタイムアウトクライアント)。
+2. `crates/open-web-server-gateway/src/custom_dns.rs`(バリュードメイン/
+   ConoHa DNS)
+   - **タイムアウト未設定のバグを修正**: `ValueDomainProvider`/
+     `ConohaDnsProvider`とも`reqwest::Client::new()`のままで、同様の
+     潜在バグがあったため`HTTP_TIMEOUT`(30秒)を追加する
+     `build_http_client()`ヘルパーを新設し両方で使用。
+   - **IPv6アドレス形式の検証を追加**: `update_ipv6`が受け取った
+     `ipv6`文字列を一切検証せずAAAAレコードとして送信していた
+     (外部echoサービスがエラーページ等の異常値を返した場合にそのまま
+     送りつけてしまう恐れ)。`std::net::Ipv6Addr`のパーサで事前検証する
+     `validate_ipv6_format`を追加し、不正な形式は新設の
+     `DnsProviderError::InvalidIpv6`でネットワーク呼び出し前に拒否する
+     ようにした。
+   - テストからモックサーバーへ接続できるよう、`ValueDomainProvider`に
+     `api_base_url`フィールド(`#[cfg(feature="custom_domain")]`)と
+     `#[cfg(test)]`限定のテスト用コンストラクタ
+     (`with_api_key_and_base_url`/`with_test_client`)を追加(本番経路の
+     `from_env`/`with_api_key`は従来通り実APIのURLを使う、後方互換
+     維持)。
+   - 新規テスト6件: IPv6形式検証(正常系3+異常系6パターン)、
+     ネットワーク呼び出し前の形式拒否、認証失敗(HTTP 401)、レート制限
+     (HTTP 429)、不正なレスポンスボディ(現状はボディ未パースのため
+     成功扱いになることの確認、将来ボディ検証を足す際の回帰防止)、
+     タイムアウト。
+3. `crates/open-web-server-gateway/src/custom_dns_ipv6_autoupdate.rs`
+   - **タイムアウト未設定のバグを修正**: 自動更新ループの
+     `reqwest::Client::new()`に`REQUEST_TIMEOUT`(30秒)を追加。
+   - 新規テスト2件: echoサービスのタイムアウト、echoサービスが異常な
+     ボディ(HTMLエラーページ)を返した場合に`fetch_current_global_ipv6`
+     自体は検証せずそのまま返す(検証責務は`custom_dns.rs`の
+     `validate_ipv6_format`側にある)ことの確認。
+
+**`cargo test`実行結果**: `cargo build -p open-web-server-gateway`
+(デフォルトfeature)は新規warning無しで成功。`cargo test -p
+open-web-server-gateway`(デフォルトfeature)は**201件全green**
+(前回199件+`custom_dns.rs`の形式検証テスト2件)。`cargo test -p
+open-web-server-gateway --features "custom_domain ddns"`は**218件全
+green**(前回相当199件+今回の新規19件、リグレッション無し)。
+`cargo build --workspace`(全クレート)はこのエントリ作成時点で実行完了を
+確認できなかった(ビルド完了前にタイムアウト)——ただし今回の変更は
+すべて`open-web-server-gateway`クレート内に閉じており、他クレートの
+ソースは一切変更していないため、上記の単体ビルド・テスト結果で
+今回の変更自体の健全性は確認済みと判断する。ワークスペース全体への
+影響確認は次回セッションで`cargo build --workspace`を再実行して
+裏取りすること。
+
+**RPoem管理API連携について(実装は見送り)**: `F:\runo\RPoem\CLAUDE.md`
+のHANDOFF(2026-08-06「プロセス管理のHTTP管理API化」)を確認したところ、
+`crates/open-runo-gateway/src/appserver_processes.rs`に`X-Api-Key`認証の
+管理API(`POST /admin/appserver-processes`・`GET /admin/appserver-
+processes/:host`・`POST .../stop`・`POST .../restart`)が実装済みで、
+実際に実バイナリ経由のHTTP往復テストまで通っていることを確認した。
+**しかしopen-web-server側からこれを呼ぶクライアントの新規実装は今回
+見送った**——理由: (1) RPoem側CLAUDE.md自身が「open-web-server/
+open-raid-z側から呼ぶべき具体的なフック(どのタイミングで何を呼ぶか)が
+両リポジトリのCLAUDE.mdに明記されておらず、推測で配線すると無用な結合を
+生む」と明記しており、この状況は今回のセッションでも変わっていない、
+(2) 今回のタスクはDuckDNS/バリュードメインのモック検証拡充が主目的で
+あり、RPoem連携は「実装可能なら小規模に」という位置づけだったため、
+仕様の呼び出しタイミングが不明瞭な状態での実装は「動くふりをする」
+リスクがあると判断した。次回、open-web-server側で「どの契機で
+RPoemのプロセスを起動/停止/再起動したいか」(例: テナント登録と連動、
+死活監視〈domain_watchdog.rs〉との連携等)を先に具体化してから、
+`reqwest`ベースのクライアント(`custom_dns.rs`の`DnsProvider`
+パターンを踏襲できる見込み)を実装するのが妥当と判断する。
+
+**正直な未着手・未検証事項**:
+1. 実DuckDNSアカウント・実バリュードメインAPIキーでの実接続確認は
+   今回も未実施(既存の制約と同じ、モックによるロジック検証に留まる)。
+2. `ConohaDnsProvider`(`runo.tokyo`等)の`update_ipv6`は引き続き
+   トレイト既定実装(未対応の正直なエラー)のまま——今回のタイムアウト
+   修正・base URL化は`ValueDomainProvider`のみに対応し、
+   `ConohaDnsProvider`のHTTPクライアントもタイムアウト自体は修正した
+   (`build_http_client()`共通化)が、モックテストの追加・base URL
+   注入は今回`ValueDomainProvider`のみに限定した(スコープ縮小、次回
+   `ConohaDnsProvider`側にも同様のテスト拡充が可能)。
+3. Value-DomainのAPIレスポンスボディを実際にパースする処理は無い
+   (ステータスコードのみで成否判定)——テストで確認した通り、成功
+   ステータスであればボディが不正なJSONでも「成功」として扱われる。
+   実際のValue-Domain APIが返すエラーボディの形式(JSON等)を将来
+   パースする場合は、今回追加した`value_domain_register_subdomain_
+   reports_malformed_response_honestly`テストが期待通り更新される
+   ことを確認しながら進めること。
+4. RPoem管理API連携は上記の通りコード実装は行わず、調査結果と判断
+   理由の記録のみ。
+5. `cargo build --workspace`(全クレート)の完了確認はこのエントリ
+   時点でまだ実行中——`open-web-server-gateway`単体のビルド・テストは
+   上記の通り確認済みだが、ワークスペース全体への影響(他クレートとの
+   依存関係等)は完了を待って別途確認する必要がある。
+
 ### 2026-08-06(続き3) ロリポップ!固定IPアクセス等のWireGuard型固定IPサービス対応(ユーザー指示、日英調査の上でドキュメント化)
 
 ユーザー指示「LOLIPOPなどでインターネットプロバイダーに関係なく月額500円

@@ -227,8 +227,16 @@ mod net {
     const IP_ECHO_URL: &str = "https://api.ipify.org";
     const IPV6_ECHO_URL: &str = "https://api6.ipify.org";
     const DUCKDNS_UPDATE_BASE: &str = "https://www.duckdns.org/update";
+    /// HTTPリクエストのタイムアウト(2026-08-07追記、既存の`ddns.rs`と同じ
+    /// 値・同じ設計。**修正前は`reqwest::Client::new()`のままタイムアウト
+    /// 未設定だった**——外部echoサービス/DuckDNS更新APIが応答不能になった
+    /// 場合、5分間隔の自動更新ループがハング(タスクが無期限にブロック)
+    /// する既存の潜在バグだったため、既存の`ddns.rs::REQUEST_TIMEOUT`と
+    /// 同じ30秒に修正した。
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// DuckDNS更新APIの結果。レスポンスボディは`"OK"`または`"KO"`(+改行でIP)。
+    #[derive(Debug)]
     pub struct DuckDnsUpdateResult {
         pub ok: bool,
         pub raw_body: String,
@@ -251,8 +259,23 @@ mod net {
         ip: Option<&str>,
         ipv6: Option<&str>,
     ) -> Result<DuckDnsUpdateResult, reqwest::Error> {
+        update_duckdns_at(client, DUCKDNS_UPDATE_BASE, domain, token, ip, ipv6).await
+    }
+
+    /// [`update_duckdns`]の本体。更新エンドポイントのベースURLを引数で
+    /// 受け取れるようにしたのは、テストから実DuckDNSサービスへ接続せず
+    /// `wiremock`のモックサーバーへ向けるため(2026-08-07追記)。本番経路は
+    /// 常に[`DUCKDNS_UPDATE_BASE`]を渡す`update_duckdns`経由でのみ呼ばれる。
+    pub(crate) async fn update_duckdns_at(
+        client: &reqwest::Client,
+        base_url: &str,
+        domain: &str,
+        token: &str,
+        ip: Option<&str>,
+        ipv6: Option<&str>,
+    ) -> Result<DuckDnsUpdateResult, reqwest::Error> {
         let mut url = format!(
-            "{DUCKDNS_UPDATE_BASE}?domains={}&token={}",
+            "{base_url}?domains={}&token={}",
             urlencoding_lite(domain),
             urlencoding_lite(token)
         );
@@ -307,7 +330,10 @@ mod net {
         registry: Arc<DomainRegistry>,
         power_profile: Arc<crate::power_profile::PowerProfileRegistry>,
     ) {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let mut last_ip: Option<String> = None;
         let mut last_ipv6: Option<String> = None;
         loop {
@@ -477,5 +503,119 @@ mod tests {
         let resp = client.get(&url).send().await.unwrap();
         let body = resp.text().await.unwrap();
         assert!(body.trim_start().starts_with("OK"));
+    }
+
+    // --- 2026-08-07追記: モック検証の拡充(認証失敗・不正レスポンス・
+    // レート制限・タイムアウト、ユーザー指示によるHANDOFF記載の
+    // 未検証事項への対応) ---
+
+    #[cfg(feature = "ddns")]
+    #[tokio::test]
+    async fn update_duckdns_reports_ko_on_authentication_failure() {
+        // DuckDNSは不正なtoken/domainの組み合わせに対してもHTTP 200を
+        // 返し、ボディで"KO"を返す仕様(公式spec.jsp記載の既知挙動)。
+        // ステータスコードだけを見ていると認証失敗を検知できない
+        // ため、ボディ内容での判定ロジックが正しく機能することを確認する。
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/update"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("KO"))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let base_url = format!("{}/update", mock_server.uri());
+        let result = net::update_duckdns_at(
+            &client,
+            &base_url,
+            "test",
+            "invalid-token",
+            Some("1.2.3.4"),
+            None,
+        )
+        .await
+        .expect("HTTP request itself must succeed even when DuckDNS rejects the token");
+        assert!(!result.ok, "KO response body must be treated as a failed update");
+        assert_eq!(result.raw_body, "KO");
+    }
+
+    #[cfg(feature = "ddns")]
+    #[tokio::test]
+    async fn update_duckdns_reports_failure_on_malformed_response_body() {
+        // 想定外(空文字列・HTMLエラーページ等)のボディが返ってきても
+        // パニックせず、「OK」で始まらない=失敗として安全側に倒れることを
+        // 確認する(不正なHTTPレスポンス形式に対する防御)。
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/update"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("<html><body>Unexpected Error</body></html>"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let base_url = format!("{}/update", mock_server.uri());
+        let result = net::update_duckdns_at(&client, &base_url, "test", "abc", Some("1.2.3.4"), None)
+            .await
+            .expect("HTTP request succeeds even though the body is garbage");
+        assert!(!result.ok, "non-OK/garbage body must not be mistaken for success");
+    }
+
+    #[cfg(feature = "ddns")]
+    #[tokio::test]
+    async fn update_duckdns_surfaces_error_on_rate_limit_status() {
+        // レート制限(HTTP 429)を返された場合でも、レスポンス自体は
+        // (エラーではなく)受信できるためbody判定に落ちる——ステータス
+        // コードで早期に失敗と分かるケースでも`ok=false`になることを
+        // 確認する(ボディが"OK"で始まらない限りは安全側に倒れる設計)。
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/update"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(429).set_body_string("Too Many Requests"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let base_url = format!("{}/update", mock_server.uri());
+        let result = net::update_duckdns_at(&client, &base_url, "test", "abc", Some("1.2.3.4"), None)
+            .await
+            .expect("a 429 response is still a successful HTTP round-trip, not a transport error");
+        assert!(!result.ok, "HTTP 429 body must not be treated as a successful update");
+    }
+
+    #[cfg(feature = "ddns")]
+    #[tokio::test]
+    async fn update_duckdns_returns_err_on_timeout() {
+        // 接続はできるがレスポンスが極端に遅い(≒応答不能)相手に対して、
+        // クライアント側のタイムアウト設定が無いと無期限にハングする
+        // (2026-08-07修正前の潜在バグ)。ここでは`update_duckdns`
+        // 自体は呼び出し元が渡した`reqwest::Client`のタイムアウト設定を
+        // そのまま使うため、意図的に極端に短いタイムアウトを持つ
+        // クライアントを渡し、タイムアウトエラーが正しく`Err`として
+        // 伝播することを確認する。
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/update"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("OK")
+                    .set_delay(std::time::Duration::from_secs(5)),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let base_url = format!("{}/update", mock_server.uri());
+        let err = net::update_duckdns_at(&client, &base_url, "test", "abc", Some("1.2.3.4"), None)
+            .await
+            .expect_err("must time out, not hang forever");
+        assert!(err.is_timeout(), "expected a timeout error, got: {err}");
     }
 }

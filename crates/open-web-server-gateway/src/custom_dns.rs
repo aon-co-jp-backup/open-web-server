@@ -55,6 +55,22 @@
 
 use async_trait::async_trait;
 
+/// DNSプロバイダAPIへのHTTPリクエストのタイムアウト(2026-08-07追記)。
+/// **修正前は各プロバイダが`reqwest::Client::new()`のままタイムアウト
+/// 未設定だった**——DNS APIが応答不能になった場合、管理APIリクエスト
+/// ハンドラや自動更新ループが無期限にブロックする潜在バグだったため、
+/// `ddns.rs::REQUEST_TIMEOUT`/`free_domain.rs`と同じ30秒に統一した。
+#[cfg(feature = "custom_domain")]
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(feature = "custom_domain")]
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DnsProviderError {
     #[error("required credential is not configured: {0}")]
@@ -63,6 +79,23 @@ pub enum DnsProviderError {
     RequestFailed(String),
     #[error("DNS provider API returned an unexpected response: {0}")]
     UnexpectedResponse(String),
+    #[error("'{0}' is not a valid IPv6 address")]
+    InvalidIpv6(String),
+}
+
+/// IPv6アドレス文字列の形式を検証する(2026-08-07追記)。
+///
+/// **背景(正直な開示)**: `update_ipv6`はこれまでIPv6アドレス文字列の
+/// 形式を一切検証せずそのままDNSプロバイダAPIへ送信していた。外部echo
+/// サービス(`api6.ipify.org`)がメンテナンス画面やエラーページ(HTML等)を
+/// 返した場合、そのゴミ文字列をそのまま「AAAAレコードの値」としてDNS
+/// プロバイダへ送りつけてしまう恐れがあった。`std::net::Ipv6Addr`の
+/// パーサ(標準ライブラリ、RFC準拠)で事前に検証し、不正な形式であれば
+/// ネットワーク呼び出し自体を行わずに正直な`InvalidIpv6`エラーを返す。
+fn validate_ipv6_format(ipv6: &str) -> Result<(), DnsProviderError> {
+    ipv6.parse::<std::net::Ipv6Addr>()
+        .map(|_| ())
+        .map_err(|_| DnsProviderError::InvalidIpv6(ipv6.to_string()))
 }
 
 /// 登録結果(発行したサブドメインのFQDN・反映したIPを含む)。
@@ -112,6 +145,13 @@ pub struct ValueDomainProvider {
     api_key: String,
     #[allow(dead_code)]
     base_domain: String,
+    /// APIのベースURL(通常は`https://api.value-domain.com/v1`)。
+    /// 2026-08-07追記: テストから実サービスへ接続せず`wiremock`のモック
+    /// サーバーへ向けられるよう、フィールド化してテスト専用コンストラクタ
+    /// (`with_api_key_and_base_url`、`#[cfg(test)]`限定)から差し替え可能に
+    /// した。本番経路(`from_env`/`with_api_key`)は常に実APIのURLを使う。
+    #[cfg(feature = "custom_domain")]
+    api_base_url: String,
     #[cfg(feature = "custom_domain")]
     client: reqwest::Client,
 }
@@ -119,6 +159,8 @@ pub struct ValueDomainProvider {
 impl ValueDomainProvider {
     pub const BASE_DOMAIN: &'static str = "aon.co.jp";
     pub const ENV_API_KEY: &str = "OPEN_EASY_WEB_VALUE_DOMAIN_API_KEY";
+    #[cfg(feature = "custom_domain")]
+    const DEFAULT_API_BASE_URL: &'static str = "https://api.value-domain.com/v1";
 
     /// 環境変数からAPIキーを読み込んで構築する。未設定なら
     /// `MissingCredential`を返す(実キーの代行取得・ハードコードは
@@ -137,8 +179,31 @@ impl ValueDomainProvider {
             api_key,
             base_domain: Self::BASE_DOMAIN.to_string(),
             #[cfg(feature = "custom_domain")]
-            client: reqwest::Client::new(),
+            api_base_url: Self::DEFAULT_API_BASE_URL.to_string(),
+            #[cfg(feature = "custom_domain")]
+            client: build_http_client(),
         }
+    }
+
+    /// テスト専用: APIベースURLを差し替えて構築する(`wiremock`のモック
+    /// サーバーへ向けるため、2026-08-07追記)。本番コードパスからは
+    /// 呼ばれない。
+    #[cfg(all(test, feature = "custom_domain"))]
+    fn with_api_key_and_base_url(api_key: String, api_base_url: String) -> Self {
+        Self {
+            api_key,
+            base_domain: Self::BASE_DOMAIN.to_string(),
+            api_base_url,
+            client: build_http_client(),
+        }
+    }
+
+    /// テスト専用: 内部HTTPクライアントを差し替える(短いタイムアウトを
+    /// 持つクライアントでのタイムアウト検証用、2026-08-07追記)。
+    #[cfg(all(test, feature = "custom_domain"))]
+    fn with_test_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     #[allow(dead_code)]
@@ -159,7 +224,7 @@ impl DnsProvider for ValueDomainProvider {
         // 既存レコードを取得(`GET /domains/{domain}/dns`)してからマージし
         // `PUT`し直す必要がある。今回はロジックの土台として`PUT`呼び出し
         // 自体を実装し、実運用でのゾーンマージは次段の課題として明記する。
-        let url = format!("https://api.value-domain.com/v1/domains/{}/dns", Self::BASE_DOMAIN);
+        let url = format!("{}/domains/{}/dns", self.api_base_url, Self::BASE_DOMAIN);
         let body = serde_json::json!({ "records": format!("{name} A {ip}") });
         let resp = self
             .client
@@ -203,7 +268,13 @@ impl DnsProvider for ValueDomainProvider {
         // マージ(`GET /v1/domains/{domain}/dns`→パース→マージ→`PUT`)は
         // まだ行っておらず、`register_subdomain`と同じ既知の限界として
         // モジュールdocの「正直な開示」に追記済み。
-        let url = format!("https://api.value-domain.com/v1/domains/{}/dns", Self::BASE_DOMAIN);
+        //
+        // 2026-08-07追記: ネットワーク呼び出し前に`ipv6`の形式を検証する
+        // (`validate_ipv6_format`)。外部echoサービスが異常なレスポンス
+        // (HTMLエラーページ等)を返した場合に、それをそのままAAAA値として
+        // 送りつけてしまう既知の潜在バグへの対処。
+        validate_ipv6_format(ipv6)?;
+        let url = format!("{}/domains/{}/dns", self.api_base_url, Self::BASE_DOMAIN);
         let body = serde_json::json!({ "records": format!("{name} AAAA {ipv6}") });
         let resp = self
             .client
@@ -228,7 +299,7 @@ impl DnsProvider for ValueDomainProvider {
 
     #[cfg(feature = "custom_domain")]
     async fn remove(&self, name: &str) -> Result<(), DnsProviderError> {
-        let url = format!("https://api.value-domain.com/v1/domains/{}/dns", Self::BASE_DOMAIN);
+        let url = format!("{}/domains/{}/dns", self.api_base_url, Self::BASE_DOMAIN);
         // 削除も「そのレコードを除いたゾーン全体を送り直す」設計になる
         // (Value-Domainのゾーン全体送信方式のため)。今回は空レコードを
         // 送る最小実装とし、実運用では既存ゾーンからの除外マージが必要。
@@ -314,7 +385,7 @@ impl ConohaDnsProvider {
             api_password,
             tenant_id,
             #[cfg(feature = "custom_domain")]
-            client: reqwest::Client::new(),
+            client: build_http_client(),
         })
     }
 
@@ -523,5 +594,141 @@ mod tests {
         assert!(ConohaDnsProvider::SUPPORTED_BASE_DOMAINS.contains(&"runo.tokyo"));
         assert!(ConohaDnsProvider::SUPPORTED_BASE_DOMAINS.contains(&"nasa.tokyo"));
         assert!(ConohaDnsProvider::SUPPORTED_BASE_DOMAINS.contains(&"icpo.tokyo"));
+    }
+
+    // --- 2026-08-07追記: モック検証の拡充(タイムアウト・認証失敗・
+    // 不正なHTTPレスポンス・IPv6アドレス形式異常・レート制限、ユーザー
+    // 指示によるHANDOFF記載の未検証事項への対応) ---
+
+    #[test]
+    fn validate_ipv6_format_accepts_well_formed_addresses() {
+        assert!(validate_ipv6_format("2001:db8::1").is_ok());
+        assert!(validate_ipv6_format("::1").is_ok());
+        assert!(validate_ipv6_format("fe80::1234:5678:9abc:def0").is_ok());
+    }
+
+    #[test]
+    fn validate_ipv6_format_rejects_malformed_addresses() {
+        // IPv4アドレス・空文字列・HTMLエラーページの断片・範囲外の桁数等、
+        // 「echoサービスが異常なレスポンスを返した」場合を想定した異常値。
+        for bad in [
+            "203.0.113.5",       // IPv4はIPv6として不正
+            "",                  // 空文字列
+            "not-an-ip",         // 全く形式が異なる
+            "2001:db8::zzzz",    // 16進数として不正な文字
+            "<html>error</html>",// echoサービスの異常レスポンス断片
+            "2001:db8:::1",      // "::"の重複は不正
+        ] {
+            let err = validate_ipv6_format(bad).expect_err(&format!("'{bad}' must be rejected"));
+            assert!(matches!(err, DnsProviderError::InvalidIpv6(v) if v == bad));
+        }
+    }
+
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn value_domain_update_ipv6_rejects_malformed_ipv6_without_network_call() {
+        // ネットワーク呼び出し前に形式検証が行われ、モックサーバーへは
+        // 一切リクエストが飛ばないことを確認する(mockを一切mountしない
+        // まま呼び出し、飛べばwiremockがpanicするのではなく単に0-hitで
+        // 通るため、ここでは代わりに戻り値のエラー種別で検証する)。
+        let provider = ValueDomainProvider::with_api_key_and_base_url(
+            "dummy-api-key".to_string(),
+            "http://127.0.0.1:1".to_string(), // 接続不可能なアドレス
+        );
+        let err = provider
+            .update_ipv6("home", "not-a-valid-ipv6")
+            .await
+            .expect_err("malformed IPv6 must be rejected before any network I/O");
+        assert!(matches!(err, DnsProviderError::InvalidIpv6(v) if v == "not-a-valid-ipv6"));
+    }
+
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn value_domain_register_subdomain_reports_auth_failure_honestly() {
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&mock_server)
+            .await;
+
+        let provider = ValueDomainProvider::with_api_key_and_base_url(
+            "wrong-api-key".to_string(),
+            mock_server.uri(),
+        );
+        let err = provider
+            .register_subdomain("home", "203.0.113.5")
+            .await
+            .expect_err("HTTP 401 must surface as an error, not a silent success");
+        assert!(matches!(err, DnsProviderError::UnexpectedResponse(msg) if msg.contains("401")));
+    }
+
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn value_domain_register_subdomain_reports_rate_limit_honestly() {
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .respond_with(wiremock::ResponseTemplate::new(429).set_body_string("Too Many Requests"))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            ValueDomainProvider::with_api_key_and_base_url("api-key".to_string(), mock_server.uri());
+        let err = provider
+            .register_subdomain("home", "203.0.113.5")
+            .await
+            .expect_err("HTTP 429 must surface as an error, not a silent success");
+        assert!(matches!(err, DnsProviderError::UnexpectedResponse(msg) if msg.contains("429")));
+    }
+
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn value_domain_register_subdomain_reports_malformed_response_honestly() {
+        // ステータスは成功(200)だが、ボディが期待するJSON形式ではない
+        // 場合でも、現在の実装はレスポンスボディをパースしていないため
+        // パニックしないことを確認する(将来ボディ検証を追加する際の
+        // リグレッション防止も兼ねる)。
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("{not valid json"))
+            .mount(&mock_server)
+            .await;
+
+        let provider =
+            ValueDomainProvider::with_api_key_and_base_url("api-key".to_string(), mock_server.uri());
+        let result = provider.register_subdomain("home", "203.0.113.5").await;
+        assert!(result.is_ok(), "a 2xx status must be treated as success even with an unparsed body");
+    }
+
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn value_domain_register_subdomain_returns_err_on_timeout() {
+        // モックサーバーの応答を意図的に大きく遅延させ、クライアント側の
+        // タイムアウト設定(`HTTP_TIMEOUT`)が無いと無期限にハングして
+        // しまう(2026-08-07修正前の潜在バグ)ことの回帰防止テスト。
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("{}")
+                    .set_delay(std::time::Duration::from_secs(5)),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let short_timeout_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let provider = ValueDomainProvider::with_api_key_and_base_url(
+            "api-key".to_string(),
+            mock_server.uri(),
+        )
+        .with_test_client(short_timeout_client);
+
+        let err = provider
+            .register_subdomain("home", "203.0.113.5")
+            .await
+            .expect_err("must time out, not hang forever");
+        assert!(matches!(err, DnsProviderError::RequestFailed(_)));
     }
 }

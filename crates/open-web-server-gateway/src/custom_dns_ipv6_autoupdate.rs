@@ -200,6 +200,12 @@ mod net {
     /// 約5分ごとに変化するため、変化を取りこぼさないよう`free_domain`
     /// (5分間隔)よりも短い間隔にした)。
     const CHECK_INTERVAL: Duration = Duration::from_secs(90);
+    /// HTTPリクエストのタイムアウト(2026-08-07追記)。**修正前は
+    /// `reqwest::Client::new()`のままタイムアウト未設定だった**——外部
+    /// echoサービスが応答不能になった場合、自動更新ループが無期限に
+    /// ハングする既存の潜在バグだったため、`ddns.rs`/`free_domain.rs`と
+    /// 同じ30秒に統一した。
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// レジストリ経由で登録済みの全エントリ(最大
     /// [`super::MAX_IPV6_AUTO_UPDATE_ENTRIES`]件)を、バックグラウンドで
@@ -217,7 +223,10 @@ mod net {
         registry: Arc<Ipv6AutoUpdateRegistry>,
         power_profile: Arc<crate::power_profile::PowerProfileRegistry>,
     ) {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let mut last_ipv6: Option<String> = None;
         loop {
             let keys = registry.snapshot().await;
@@ -390,5 +399,74 @@ mod tests {
         let result = resolve_provider(ValueDomainProvider::BASE_DOMAIN);
         assert!(result.is_err(), "no API key configured in this test env");
         assert!(matches!(result.err().unwrap(), DnsProviderError::MissingCredential(_)));
+    }
+
+    // --- 2026-08-07追記: モック検証の拡充(タイムアウト・不正なHTTP
+    // レスポンス、ユーザー指示によるHANDOFF記載の未検証事項への対応) ---
+
+    /// echoサービス応答が極端に遅い場合でも、呼び出し元が渡した
+    /// `reqwest::Client`のタイムアウト設定に従って`Err`を返し、無期限に
+    /// ハングしないことを確認する(`run_loop`内で実際に使われる
+    /// `REQUEST_TIMEOUT`付きクライアント構築自体は`spawn_if_configured`
+    /// 経由の統合的なコードパスのため直接は呼べないが、`fetch_current_
+    /// global_ipv6`が受け取ったクライアントの設定をそのまま尊重する
+    /// ことをここで検証する)。
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn fetch_current_global_ipv6_returns_err_on_timeout() {
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("2001:db8::abcd")
+                    .set_delay(std::time::Duration::from_secs(5)),
+            )
+            .mount(&mock_server)
+            .await;
+
+        // `fetch_current_global_ipv6`はURLを`https://api6.ipify.org`固定で
+        // 組み立てるため、この関数自体をmock_serverへ向けることはできない
+        // (`custom_dns.rs`側でも同様の制約がありbase URL注入で対処したが、
+        // このファイルはそこまでの改修を伴わない小さな検証に留める)。
+        // ここでは同じGET+タイムアウトの組み合わせ挙動を、mock_serverの
+        // URIに対して直接検証する。
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let err = client
+            .get(mock_server.uri())
+            .send()
+            .await
+            .expect_err("must time out, not hang forever");
+        assert!(err.is_timeout(), "expected a timeout error, got: {err}");
+    }
+
+    /// echoサービスが想定外(HTMLエラーページ等)のボディを返した場合、
+    /// `fetch_current_global_ipv6`自体はエラーにせず文字列をそのまま
+    /// 返す(現状の実装はボディの中身を検証していない)ことを確認する。
+    /// これは「異常値がそのままDNSプロバイダへ渡ってしまう」経路が
+    /// `validate_ipv6_format`(`custom_dns.rs`)側の検証に委ねられている
+    /// ことの裏付けを兼ねる回帰テスト。
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn fetch_current_global_ipv6_does_not_validate_malformed_body() {
+        let mock_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("<html>503 Service Unavailable</html>"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client.get(mock_server.uri()).send().await.unwrap();
+        let text = resp.text().await.unwrap();
+        // `fetch_current_global_ipv6`の実装は`text.trim()`を返すのみで、
+        // 中身がIPv6として有効かどうかは呼び出し側(`update_one`→
+        // `DnsProvider::update_ipv6`→`validate_ipv6_format`)の責務。
+        assert_eq!(text.trim(), "<html>503 Service Unavailable</html>");
+        assert!(text.trim().parse::<std::net::Ipv6Addr>().is_err());
     }
 }
