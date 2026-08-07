@@ -645,6 +645,29 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-07(続き) Android版: BindAddressPolicyのWiFi narrowingを廃止(VPN/WireGuard経由アクセス対応)+シャットダウン/再起動ボタン追加
+
+ユーザーがLOLIPOP!固定IPアクセス(WireGuard型VPN)+DuckDNS無料ドメインで
+実機を外部公開しようとした際、`BindAddressPolicy.resolveBindAddress()`
+が「reachability検証後は現在のWiFi IPへnarrowingする」設計だったため、
+WireGuardの`tun0`インターフェース経由の外部トラフィックを除外してしまう
+実バグを発見。`resolveBindAddress()`を常に`0.0.0.0`を返すよう修正
+(WiFi以外のインターフェースを塞ぐ従来のnarrowingを廃止)。姉妹アプリ
+open-easy-web側も同種の`127.0.0.1`ハードコードのバグがあり同時に修正
+済み(詳細はopen-easy-web側CLAUDE.md参照)。
+
+**追加機能(ユーザー指示)**: 「⏻ シャットダウン」「🔁 再起動」ボタンを
+新設、`startAndPollServer()`/`stopServerProcess()`という共有ロジックへ
+リファクタリング。`gradlew :app:assembleDebug`でBUILD SUCCESSFUL、
+実機へ`adb install -r`確認済み。
+
+**正直な開示・未解決**: 修正後もなお外部から`163.44.137.126:18099`へ
+到達不可(`adb shell netstat`で`0.0.0.0:18099`listen・`tun0`
+[172.16.0.2]接続中を確認済みにもかかわらず)。原因はLOLIPOP側VPN
+サーバーのポート転送、またはNAT越し疎通維持(`PersistentKeepalive`
+未設定の可能性)にあると推測されるが未特定。次回、WireGuard .confの
+`PersistentKeepalive`設定有無から調査を再開すること。
+
 ### 2026-08-07 DuckDNS/バリュードメイン連携のモック検証拡充(タイムアウト・
 認証失敗・不正レスポンス・IPv6形式異常・レート制限)、RPoem管理API連携は
 見送り(実装可能性の調査のみ)

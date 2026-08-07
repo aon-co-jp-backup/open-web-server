@@ -111,29 +111,24 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /** このプロセス起動で実際に使うべきbindアドレス(`host:port`)を返す。 */
+        /**
+         * このプロセス起動で実際に使うべきbindアドレス(`host:port`)を返す。
+         *
+         * 2026-08-07修正: 以前はreachability検証後にWiFi IPへ narrowing
+         * していたが、これはWireGuard等のVPN/固定IPトンネル(`tun0`)
+         * 経由での外部アクセスを妨げてしまう実バグだった(WiFi以外の
+         * インターフェースからの着信を除外してしまうため)。VPN/トンネル
+         * インターフェースを安全に判別する標準APIが無く、包括的な対応が
+         * 難しいため、常に`0.0.0.0`にバインドするよう変更した(=
+         * 全インターフェースからの着信を許可する。従来の「WiFi以外を
+         * 塞ぐ」という安全側の narrowing は行わない)。
+         */
         fun resolveBindAddress(context: Context, port: Int, log: StringBuilder): String {
-            if (!isVerified(context)) {
-                log.appendLine(
-                    "bind policy: first run (not yet reachability-verified) -> binding 0.0.0.0 " +
-                        "for initial LAN/external verification"
-                )
-                return "0.0.0.0:$port"
-            }
-            val wifiIp = currentWifiIpv4(context)
-            return if (wifiIp != null) {
-                log.appendLine(
-                    "bind policy: reachability already verified -> narrowing to current WiFi " +
-                        "IP $wifiIp (safer than 0.0.0.0, no longer exposed on other interfaces)"
-                )
-                "$wifiIp:$port"
-            } else {
-                log.appendLine(
-                    "bind policy: reachability verified but WiFi IP unavailable -> falling back " +
-                        "to 0.0.0.0 to avoid failing to listen at all"
-                )
-                "0.0.0.0:$port"
-            }
+            log.appendLine(
+                "bind policy: binding 0.0.0.0 (always, since 2026-08-07 fix) so that VPN/" +
+                    "tunnel interfaces (e.g. WireGuard tun0) remain reachable, not just WiFi"
+            )
+            return "0.0.0.0:$port"
         }
     }
 
@@ -229,6 +224,8 @@ class MainActivity : AppCompatActivity() {
         val statusText = findViewById<TextView>(R.id.statusText)
         val logText = findViewById<TextView>(R.id.logText)
         val startButton = findViewById<Button>(R.id.startButton)
+        val shutdownButton = findViewById<Button>(R.id.shutdownButton)
+        val restartButton = findViewById<Button>(R.id.restartButton)
         val openEasyWebButton = findViewById<Button>(R.id.openEasyWebButton)
         val changeProfileButton = findViewById<Button>(R.id.changeProfileButton)
         val ddnsSetupButton = findViewById<Button>(R.id.ddnsSetupButton)
@@ -259,41 +256,30 @@ class MainActivity : AppCompatActivity() {
         startButton.setOnClickListener {
             startButton.isEnabled = false
             CoroutineScope(Dispatchers.Main).launch {
-                val log = StringBuilder()
-                log.appendLine("profiles: ${currentProfiles.displayLabels().joinToString("+")} (${currentProfiles.toPrefValues().joinToString(",")})")
-                statusText.text = "[${profileDisplayTag(currentProfiles)}] starting..."
-                val startResult = withContext(Dispatchers.IO) { startServerProcess(log) }
-                if (!startResult) {
-                    statusText.text = "[${profileDisplayTag(currentProfiles)}] failed to start (see log)"
-                    logText.text = log.toString()
-                    startButton.isEnabled = true
-                    return@launch
-                }
-
-                applyProfilePowerBehavior(log)
-
-                // ネイティブプロセスがリスンし始めるまで少し待ってからヘルス
-                // チェックする(即座に叩くとACCEPT前でconnection refusedになり得る)。
-                val healthOk = withContext(Dispatchers.IO) { pollHealthz(log) }
-                statusText.text = if (healthOk) {
-                    "[${profileDisplayTag(currentProfiles)}] RUNNING: GET /healthz responded 200"
-                } else {
-                    "[${profileDisplayTag(currentProfiles)}] started, but /healthz did not respond (see log)"
-                }
-                logText.text = log.toString()
+                startAndPollServer(statusText, logText)
                 startButton.isEnabled = true
+            }
+        }
 
-                if (healthOk) {
-                    if (!BindAddressPolicy.isVerified(this@MainActivity)) {
-                        BindAddressPolicy.markVerified(this@MainActivity)
-                        log.appendLine(
-                            "bind policy: reachability verified via this run's /healthz success " +
-                                "-> next launch will narrow bind address to the current WiFi IP"
-                        )
-                        logText.text = log.toString()
-                    }
-                    startPeriodicHealthPoll(statusText)
-                }
+        shutdownButton.setOnClickListener {
+            val log = StringBuilder()
+            stopServerProcess(log)
+            statusText.text = "[${profileDisplayTag(currentProfiles)}] shut down"
+            logText.text = log.toString()
+            startButton.isEnabled = true
+        }
+
+        restartButton.setOnClickListener {
+            restartButton.isEnabled = false
+            startButton.isEnabled = false
+            CoroutineScope(Dispatchers.Main).launch {
+                val log = StringBuilder()
+                stopServerProcess(log)
+                statusText.text = "[${profileDisplayTag(currentProfiles)}] restarting..."
+                logText.text = log.toString()
+                startAndPollServer(statusText, logText, log)
+                startButton.isEnabled = true
+                restartButton.isEnabled = true
             }
         }
 
@@ -998,6 +984,69 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             log.appendLine("ERROR launching process: ${e}")
             false
+        }
+    }
+
+    /**
+     * サーバープロセスの起動〜`/healthz`疎通確認〜定期ポーリング開始まで
+     * を一気通貫で行う(Startボタン・再起動ボタンの両方から共有する
+     * ロジック、2026-08-07新設)。
+     */
+    private suspend fun startAndPollServer(
+        statusText: TextView,
+        logText: TextView,
+        existingLog: StringBuilder? = null
+    ) {
+        val log = existingLog ?: StringBuilder()
+        log.appendLine("profiles: ${currentProfiles.displayLabels().joinToString("+")} (${currentProfiles.toPrefValues().joinToString(",")})")
+        statusText.text = "[${profileDisplayTag(currentProfiles)}] starting..."
+        val startResult = withContext(Dispatchers.IO) { startServerProcess(log) }
+        if (!startResult) {
+            statusText.text = "[${profileDisplayTag(currentProfiles)}] failed to start (see log)"
+            logText.text = log.toString()
+            return
+        }
+
+        applyProfilePowerBehavior(log)
+
+        // ネイティブプロセスがリスンし始めるまで少し待ってからヘルス
+        // チェックする(即座に叩くとACCEPT前でconnection refusedになり得る)。
+        val healthOk = withContext(Dispatchers.IO) { pollHealthz(log) }
+        statusText.text = if (healthOk) {
+            "[${profileDisplayTag(currentProfiles)}] RUNNING: GET /healthz responded 200"
+        } else {
+            "[${profileDisplayTag(currentProfiles)}] started, but /healthz did not respond (see log)"
+        }
+        logText.text = log.toString()
+
+        if (healthOk) {
+            if (!BindAddressPolicy.isVerified(this@MainActivity)) {
+                BindAddressPolicy.markVerified(this@MainActivity)
+            }
+            startPeriodicHealthPoll(statusText)
+        }
+    }
+
+    /**
+     * サーバープロセスをシャットダウンする(シャットダウン/再起動ボタンの
+     * 両方から共有するロジック、2026-08-07新設)。定期ヘルスチェックの
+     * 停止・プロセス破棄・WakeLock解放を行う(`onDestroy()`と同じ後始末
+     * 内容だが、Activity自体は終了させない)。
+     */
+    private fun stopServerProcess(log: StringBuilder) {
+        healthPollJob?.cancel()
+        healthPollJob = null
+        val process = serverProcess
+        if (process != null) {
+            process.destroy()
+            log.appendLine("server process destroyed")
+        } else {
+            log.appendLine("server process was not running")
+        }
+        serverProcess = null
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+            log.appendLine("wake lock released")
         }
     }
 
