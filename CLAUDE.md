@@ -645,6 +645,58 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-06(続き3) ロリポップ!固定IPアクセス等のWireGuard型固定IPサービス対応(ユーザー指示、日英調査の上でドキュメント化)
+
+ユーザー指示「LOLIPOPなどでインターネットプロバイダーに関係なく月額500円
+程度で固定IPを取得出来るサービスを使うには、ルーターに設定かな?PCや
+スマホに設定かな?その設定方法にも対応しないとね」への対応。
+
+**調査結果(日英でGoogle検索)**: 「[ロリポップ!固定IPアクセス
+byGMOペパボ](https://vpn.lolipop.jp/)」は2025年3月リリースのVPN型固定IP
+サービス、月額539円(税込)。ISPのIPアドレス割り当てとは独立に固定IP
+アドレスを取得できる。**VPNプロトコルはWireGuard**、設定は「WireGuard
+アプリへライセンスの設定ファイル(.conf)を追加するだけ」
+([公式サポートサイト](https://support.vpn.lolipop.jp/))。
+
+**設定箇所は2パターン(ユーザーの理解通り)**:
+1. **ルーター側**: TP-Link等、WireGuardクライアント機能を持つ
+   ルーター(公式ガイド: [TP-Link WireGuard VPNの設定方法（ルーター）](https://www.tp-link.com/jp/support/faq/3772/))であれば、
+   ルーター管理画面でWireGuard設定ファイルを読み込むだけで**配下の
+   全端末**が固定IPの恩恵を受けられる。対応機種かはファームウェア
+   次第(ユーザーのTP-Link AX6600的な型番は、ルーター管理画面の
+   「詳細設定→VPN→WireGuard」項目の有無で個別確認が必要)。
+2. **PC/スマホ単体**: ルーター非対応、または特定の1台だけを固定IP
+   配下に置きたい場合は、そのデバイス自体にWireGuardクライアント
+   (公式アプリ、Windows/macOS/iOS/Android対応)をインストールし、
+   設定ファイルを読み込む。
+
+**open-web-server側の実装方針(重要な設計判断)**: **open-web-server
+自体はこのサービス専用のコードを一切必要としない**——`OPEN_WEB_SERVER_
+BIND`環境変数は任意のIPアドレスへbindできる設計であり、特定の
+ネットワークインターフェースに関する知識を持たない(2026-07-23の
+RS-LinkFusion実機検証で確認済みの既存設計方針と全く同じ構図)。
+必要なのは「WireGuardが割り当てたインターフェースIPを検出して
+`OPEN_WEB_SERVER_BIND`に渡す」ことだけ——この検出作業を自動化する
+ヘルパーを新規実装した:
+
+- `scripts/detect-wireguard-bind.sh`(Linux/macOS): `wg show`+`ip`/
+  `ifconfig`でWireGuardインターフェースのIPv4アドレスを検出し、
+  `OPEN_WEB_SERVER_BIND`の設定例を出力。
+- `scripts/detect-wireguard-bind.ps1`(Windows): `Get-NetAdapter`+
+  `Get-NetIPAddress`で同様の検出を行うPowerShell版。
+
+**正直な開示・未検証**: このマシンには実際のロリポップ!固定IP
+アクセス契約が無いため、実際のWireGuard接続・実際の固定IP経由での
+外部到達性は未検証。両スクリプトは「WireGuardインターフェースが
+存在すればそのIPを検出する」という汎用ロジックのみで、ロリポップ
+固有のAPIには一切依存しない設計のため、同じ仕組みでMuuMuu VPN等
+他のWireGuard型固定IPサービスにも汎用的に使えるはずだが、これも
+未検証。
+- 次にすべきこと: (1) 実際にロリポップ!固定IPアクセス(またはTP-Link
+  ルーターのWireGuardクライアント)を契約・設定できる環境で実地検証、
+  (2) `install.sh`/`install.ps1`への統合(固定IPサービス利用時の
+  案内・自動bind設定オプション)の検討。
+
 ### 2026-08-06(続き2) macOS対応を新規追加(ユーザー指示「将来的にはMacも対応で」、open-easy-webと同時着手)
 
 Linux(`install.sh`、systemdサービス登録)・Windows(`install.ps1`)に続き、

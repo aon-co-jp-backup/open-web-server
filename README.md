@@ -198,6 +198,30 @@ match (method, path.as_str()) {
 これを忘れると Idempotency-Key 必須化(§0 のゼロロス保証の要)が効かない
 エンドポイントを作ってしまいます。
 
+## 固定IP取得サービス(ロリポップ!固定IPアクセス等)経由での公開(2026-08-06追加)
+
+プロバイダのISP契約とは独立に、月額500円程度で固定IPを取得できる
+VPN型サービス([ロリポップ!固定IPアクセス](https://vpn.lolipop.jp/)等、
+WireGuardプロトコル採用)を使ってopen-web-serverを外部公開したい場合、
+**open-web-server自体に専用のコードは不要**——`OPEN_WEB_SERVER_BIND`が
+任意のIPへbindできる既存の設計をそのまま使える。
+
+1. WireGuardクライアントをセットアップする(2通り):
+   - **ルーター側**(WireGuard対応ルーターの場合、TP-Link等公式ガイド
+     参照): 配下の全端末が固定IPの恩恵を受けられる。
+   - **PC/スマホ単体**(ルーター非対応の場合): 該当デバイスへ
+     [WireGuard公式アプリ](https://www.wireguard.com/install/)を
+     インストールし設定ファイルを読み込む。
+2. `scripts/detect-wireguard-bind.sh`(Linux/macOS)または
+   `scripts/detect-wireguard-bind.ps1`(Windows)で、WireGuardが割り当てた
+   インターフェースIPを検出する。
+3. 検出したIPを`OPEN_WEB_SERVER_BIND`に指定して起動する
+   (例: `OPEN_WEB_SERVER_BIND=10.x.x.x:80 ./open-web-server`)。
+
+**正直な開示**: 実際の固定IPサービス契約が無いため、この手順自体の
+実地検証(実際に固定IP経由で外部到達できるか)は未実施。詳細は
+`CLAUDE.md`のHANDOFF参照。
+
 ## macOS向けインストール(2026-08-06追加)
 
 Linux(`install.sh`、systemdサービス登録)・Windows(`install.ps1`)に続き、
