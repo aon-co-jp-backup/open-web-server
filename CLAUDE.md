@@ -645,6 +645,17 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-07(続き2) rs-sync HANDOFFで発見したmaxWidth横展開バグを修正
+
+rs-syncの2026-08-07 HANDOFFで発見された「`layout-sw600dp/activity_main.xml`の
+内側`LinearLayout`が`layout_width="match_parent"`のまま`maxWidth="720dp"`を
+指定しており実際には機能しない」という同一パターンのバグが、本リポジトリの
+`android/app/src/main/res/layout-sw600dp/activity_main.xml`にも実在することを
+確認し、`layout_width`を`wrap_content`へ修正した(rs-sync側の実機検証済み
+修正パターンをそのまま適用)。**正直な開示**: 本リポジトリ側では実機/
+エミュレータでの見た目再確認は未実施(コード修正のみ)。
+- 次にすべきこと: 実機/エミュレータでの見た目再確認。
+
 ### 2026-08-07(続き) Android版: BindAddressPolicyのWiFi narrowingを廃止(VPN/WireGuard経由アクセス対応)+シャットダウン/再起動ボタン追加
 
 ユーザーがLOLIPOP!固定IPアクセス(WireGuard型VPN)+DuckDNS無料ドメインで
