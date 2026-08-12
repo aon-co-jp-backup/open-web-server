@@ -1,4 +1,4 @@
-# open-web-server インストールスクリプト(Windows / Windows Server 共通)。
+﻿# open-web-server インストールスクリプト(Windows / Windows Server 共通)。
 #
 # 使い方(管理者権限のPowerShellで):
 #   Invoke-WebRequest -Uri "https://github.com/aon-co-jp/open-web-server/releases/latest/download/open-web-server-windows-x86_64.zip" -OutFile open-web-server.zip
