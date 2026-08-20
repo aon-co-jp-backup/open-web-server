@@ -645,6 +645,64 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-20 「4層4重通信」「高性能DB」多言語(日英中台独露)最新動向調査
+
+ユーザー指示により、`world-lab`のコーディネータ再構築作業(RPoem+
+open-web-server統合、4層4重通信の要否検討)への入力として、6言語で
+WebSearch調査を実施(コード変更なし、調査結果の記録のみ)。
+
+**(1) 通信層冗長化(MPTCP/QUIC/SD-WAN)**:
+- MPTCP: 現行アクティブ実装は`multipath-tcp/mptcp_net-next`
+  (410 stars、2026-08-13更新)。旧`multipath-tcp/mptcp`はdeprecated済み。
+  ルーター向け集約実装`OpenMPTCProuter`(2.4k stars、2026-08-03更新)も
+  活発。 https://github.com/multipath-tcp/mptcp_net-next
+  https://github.com/Ysurac/openmptcprouter
+- QUIC Multipath: IETF草案`draft-ietf-quic-multipath`が標準化進行中
+  (2026年時点で-21版まで進行)、公式ドラフトリポジトリ`quicwg/multipath`
+  は2026-05-14更新と活発。 https://datatracker.ietf.org/doc/html/draft-ietf-quic-multipath-21
+  https://github.com/quicwg/multipath
+  実装例として`aioquicMP`(Python)・`quic_multipath`(Picoquic/Quiche)等の
+  実験的リポジトリを確認。中国語圏ではAlibabaのXLINK(短編動画向け
+  マルチパス伝送、機械学習ベース輻輳制御)の言及あり(一次ソース未確認、
+  技術ブログ経由の情報)。
+- 日本語圏: gihyo.jp・zenn.dev記事で「HTTP/3が2026年にグローバルWeb
+  トラフィックの約35%」との言及。MP-QUICは中国の動画配信サービスで
+  実験運用中、との情報(zenn.dev、一次ソース未確認)。
+- ドイツ語圏・繁体字圏: SD-WANが銀行・証券会社向けの実運用技術として
+  明確に位置づけられている記事多数(it-finanzmagazin.de、secrss.com等)。
+  繁体字記事(secrss.com、証券業界向け)は「MPLS専線が金融機関の標準、
+  SD-WANはミリ秒単位の障害検知で会話継続のシームレス切替を実現」と明記。
+- ロシア語圏: 学術寄りの情報のみ(MPTCPのRFC解説、QUIC論文)。実務事例は
+  見当たらなかった。
+
+**(2) 高性能DB**:
+- 分散SQL御三家(CockroachDB/TiDB/YugabyteDB)は2026年時点でも継続的に
+  比較記事が出ており、いずれもRaftベースのレプリケーション+ACID
+  トランザクションで、金融機関のデータ主権規制(地域内マルチサイト
+  構成推奨)に対応する方向で進化中(pingcap.com、cloudrps.com等)。
+  CockroachDBはPebbleエンジン+Raft、TiDBはTiKV/TiFlash分離アーキ、
+  YugabyteDBはDocDB+PostgreSQLワイヤプロトコル互換。
+- 分散データベース市場規模は2025年89.1億ドル→2026年99.6億ドル
+  (CAGR 11.8%、gii.co.jp記事)、銀行・フィンテック向け需要が成長要因。
+- ドイツ語・ロシア語・繁体字での「高性能DB」単独検索は今回実施していない
+  (通信層側の調査を優先したため)。次回調査時の補完対象。
+
+**(3) 過去の判断「MPTCPは業界主流ではない」の再評価**:
+今回の調査でもこの判断は概ね妥当と再確認。特に繁体字圏(証券業界向け
+secrss.com記事)・ドイツ語圏(it-finanzmagazin.de)双方で、金融機関は
+SD-WAN(ネットワークインフラ層でのマルチWAN集約・ミリ秒単位フェイル
+オーバー)を標準として運用しており、MPTCPはSD-WANと**併用**される
+補完技術という位置づけが多数派(LinkedIn記事・SMOAD Networks記事等、
+"SD-WAN + MPTCP"を組み合わせる論調)。QUIC Multipathは2026年時点でも
+IETF標準化"進行中"(-21版、まだRFC化されていない)であり、実運用は
+限定的(中国動画配信サービスでの実験運用が主な事例)。したがって
+アプリ層(open-web-server自身)でのMPTCP的集約実装は、SD-WAN層が既に
+存在する環境では冗長・二重投資になりやすく、「次善策」という従来の
+位置づけを変更する必要はない、という評価。ただしQUIC自体(HTTP/3基盤、
+2026年にWebトラフィックの約35%)の採用は既に主流化しているため、
+通信層四重化の1経路として「QUIC(非マルチパス版)」を含めることの
+妥当性は引き続き高い。
+
 ### 2026-08-19 自己アップデート機構+インストーラー(.iss)の実装確認・配線修正
 
 ユーザー指示「自己アップデート機構実装+インストーラー作成」への対応中、
