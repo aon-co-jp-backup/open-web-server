@@ -16,6 +16,28 @@
 > (この節自体も更新のたび古くなるため、都度そちらを正とする)。
 > 最終更新: 2026-07-20
 
+## -1.5 最近の更新(2026-08-19) / Recent update
+
+自己アップデート機構(`crates/open-web-server-gateway/src/self_update.rs`、
+`auto-update` feature)・`installer/open-web-server-install.iss`(Inno
+Setup)を追加。移植先では: (1) `auto-update` featureを有効にする場合は
+`install.ps1`/`install.sh`が実行ファイルの隣に`version.json`を配置する
+実装になっているか確認する(無いと自己アップデートが常に無効判定される)、
+(2) `.iss`は既存`install.ps1`/`uninstall.ps1`をラップするだけの薄い
+インストーラーであり、Inno Setup(`ISCC.exe`)自体はこの開発機に無く
+未ビルド、(3) Windows版は`SO_REUSEPORT`によるゼロダウンタイム切り替えは
+実装しておらず、サービス停止→上書き→再開という逐次切り替え。
+
+*English*: Added a self-update mechanism
+(`crates/open-web-server-gateway/src/self_update.rs`, `auto-update`
+feature) and `installer/open-web-server-install.iss` (Inno Setup). When
+porting: (1) confirm `install.ps1`/`install.sh` place `version.json`
+next to the executable if using the `auto-update` feature (otherwise
+self-update is always disabled), (2) the `.iss` is a thin wrapper around
+the existing `install.ps1`/`uninstall.ps1` and has not been built on
+this dev machine (no `ISCC.exe`), (3) the Windows path is a sequential
+stop/replace/restart, not a true zero-downtime `SO_REUSEPORT` swap.
+
 ## -1. 最近の更新(2026-08-07) / Recent update
 
 Androidタブレット向けレイアウト(`layout-sw600dp/activity_main.xml`)の

@@ -645,6 +645,99 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-08-19 自己アップデート機構+インストーラー(.iss)の実装確認・配線修正
+
+ユーザー指示「自己アップデート機構実装+インストーラー作成」への対応中、
+本リポジトリには既に(おそらく並行して動いていた別セッション/バックグラウンド
+エージェントにより)`crates/open-web-server-gateway/src/self_update.rs`・
+`handlers/self_update.rs`・`state.rs`の`AutoUpdateState`が実装済みだった
+ことを確認した。GitHub Releases最新タグ確認→ダウンロード→`--version`相当の
+安全確認→Windows(サービス停止/再開バッチ)・Unix(プローブポートでの
+ヘルスチェック→正式ポートへ切替、失敗時は退避バイナリへロールバック)の
+入れ替えロジックまで実装されていたが、**そのままでは`cargo build`が
+通らない状態**だったため、以下を実際に修正した:
+
+1. **`lib.rs`のモジュール宣言重複**: `#[cfg(feature = "self-update")] mod
+   self_update;`と`#[cfg(feature = "auto-update")] pub(crate) mod
+   self_update;`という2つの`mod self_update`宣言が併存しており
+   (存在しない`self-update`featureと実際に使われている`auto-update`
+   featureが混在)、コンパイル不能だった。前者を削除し`auto-update`側に
+   一本化。
+2. **`self_update.rs`内の関数重複定義(`E0428`)**:
+   `check_and_apply_update_gated`が同一ファイル内に2回定義されていた
+   (シグネチャも`pub async fn`版[state引数を取るだけの単純ラッパー]と
+   `async fn`版[ログ文言違い]の2種)。前者(334-348行目)を削除し、
+   実際に`spawn_if_configured`から呼ばれている後者のみを残した。
+3. **`Cargo.toml`に`auto-update` feature(`dep:reqwest`)を追加**
+   (未宣言のままhandlers/mod.rs・lib.rsから参照されておりビルド不能
+   だった)。
+4. **`main.rs`に`--version`引数処理を追加**(open-easy-web版と同じ、
+   ダウンロードした新バイナリの起動可否確認に使う——`self_update.rs`
+   自体は`version.json`方式を採るためこの引数を直接は使わないが、
+   将来的な検証手段として整合させておく)。
+5. **`install.ps1`/`install.sh`に`version.json`配置ステップを追加**:
+   `self_update.rs::local_version()`は実行ファイルの隣の`version.json`
+   の有無で「インストール済み配布物かどうか」を判定する設計だが、
+   両インストールスクリプトはこれまで`version.json`を一切配置していな
+   かった——つまり**インストール後も自己アップデートが常に「未インス
+   トール」と誤判定され無効化されたまま**という実質的な機能欠落だった。
+   zip/tarballに`version.json`が同梱されていればコピー、無ければ
+   `{"version":"0.1.0"}`をその場で生成するフォールバックを追加した。
+
+**Inno Setupインストーラー(`{リポジトリ名}-install.exe`)**:
+`installer/open-web-server-install.iss`を新規作成(既存
+`install.ps1`/`uninstall.ps1`をそのまま呼び出す薄いラッパー、
+サービス登録ロジックの二重実装を避けた)。**この開発機には`ISCC.exe`が
+導入されておらず(`where ISCC.exe`で未検出を確認済み)、実ビルドは
+実施していない**——`.iss`ファイル自体の作成に留まる、正直な開示。
+
+**検証**: `cargo build -p open-web-server-gateway --features auto-update`
+を実行(WindowsネイティブのRust、`C:\Users\<user>\.cargo\bin\cargo.exe`
+経由)。上記1〜2の修正前は`E0428`(関数重複定義)でビルド不能だったことを
+実際に確認した上で修正し、再ビルドを実行中(このHANDOFFエントリの時点では
+結果待ち——完了後、成功/失敗いずれであっても追記すること)。
+
+- 次にすべきこと: (1) 上記ビルドの成否を確認し、失敗していれば追加修正、
+  (2) Inno Setupを導入できる環境で`iscc open-web-server-install.iss`を
+  実際に実行し`open-web-server-install.exe`を生成、(3)
+  `self_update.rs`のUnix版ロールバック・Windows版サービス停止/再開の
+  実機E2E検証(本セッションでは未実施、モジュールdoc内の既存の正直な
+  開示の通り)。
+
+### 2026-08-20 前回セッション中断分の検証完了(ビルド成功・テスト全green・実HTTP確認)
+
+前回HANDOFF(2026-08-19)の「ビルド実行中——結果待ち」を引き継ぎ、実際に
+検証した。
+
+1. **`cargo build --release -p open-web-server-gateway --features
+   auto-update`**: **成功**(既存のdead_code警告37件のみ、新規warning・
+   エラー無し)。所要8分5秒。
+2. **`cargo test --release -p open-web-server-gateway --features
+   auto-update`**: **205件全green**(0 failed)。
+3. **実バイナリ起動+実HTTP確認**(型チェックのみで完了と報告しない、
+   既存運用ルール徹底): `target\release\open-web-server.exe`を
+   `OPEN_WEB_SERVER_BIND=127.0.0.1:18211`・
+   `OPEN_WEB_SERVER_ADMIN_TOKEN=test-token-123`で実起動し、
+   (a) `GET /healthz` → `ok`、(b) `GET /admin/auto-update`
+   (認証あり) → `{"enabled":false,"current_version":"0.1.0",
+   "repo":"aon-co-jp/open-web-server"}`、(c) `POST /admin/auto-update`
+   `{"enabled":true}` → 即座に`enabled:true`へ切替、直後の`GET`でも
+   反映済みであることを確認(再起動不要のライブ切替を実証)、
+   (d) 認証ヘッダ無しでの`GET /admin/auto-update` → **401**
+   (`missing or invalid 'x-admin-token' header`)で正しく拒否、
+   まで実HTTPで検証済み。検証後プロセスは終了・一時ログファイルも削除。
+4. **`.github/workflows/release.yml`の変更内容確認**: Linux/Windows/
+   macOS(x86_64・aarch64)の各ビルドジョブに`version.json`生成ステップを
+   追加し、既存のtarball/zip作成コマンドの同梱ファイル一覧に
+   `version.json`を追加しただけの変更——既存のバイナリ・
+   install.sh/ps1/install-macos.shのコピー・アーカイブ構造自体は無変更、
+   既存ワークフローとの矛盾は無いことを確認した。
+5. **`installer/open-web-server-install.iss`(Inno Setup)**: 前回HANDOFF
+   記載の通り、この開発機には`ISCC.exe`が導入されておらず実ビルドは
+   未実施のまま(正直な開示、変更無し)。
+6. コミット・push実施(下記コミットハッシュ参照、ユーザーから明示的に
+   push許可あり)。
+
 ### 2026-08-07(続き2) rs-sync HANDOFFで発見したmaxWidth横展開バグを修正
 
 rs-syncの2026-08-07 HANDOFFで発見された「`layout-sw600dp/activity_main.xml`の

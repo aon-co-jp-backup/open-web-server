@@ -42,6 +42,8 @@ mod rate_limit;
 mod redirects;
 mod rewrite;
 mod response;
+#[cfg(feature = "auto-update")]
+pub(crate) mod self_update;
 #[cfg(feature = "admin-2fa")]
 mod two_factor;
 #[cfg(feature = "sftp")]
@@ -135,6 +137,16 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
         }
         // ドメイン/URL死活監視+自動復旧の直近状態(2026-07-29追加、
         // `domain_watchdog`参照)。
+        // 自己アップデート機能の実行時有効/無効切替+状態確認(`auto-update`
+        // feature、2026-08-19新設、`self_update`参照)。
+        #[cfg(feature = "auto-update")]
+        (Method::GET, "/admin/auto-update") => {
+            handlers::self_update::get_auto_update(state, &req).await
+        }
+        #[cfg(feature = "auto-update")]
+        (Method::POST, "/admin/auto-update") => {
+            handlers::self_update::set_auto_update(state, req).await
+        }
         (Method::GET, "/admin/watchdog/status") => {
             handlers::watchdog::get_watchdog_status(state, &req).await
         }
@@ -565,6 +577,12 @@ pub async fn run() -> anyhow::Result<()> {
     // 未設定なら何もしない)。
     #[cfg(feature = "sftp")]
     sftp::spawn_if_configured();
+
+    // 自己アップデート機能(`auto-update` feature時のみ、既定オフ、
+    // `OPEN_WEB_SERVER_AUTO_UPDATE_ENABLED`または`/admin/auto-update`で
+    // 有効化、`self_update`参照)。
+    #[cfg(feature = "auto-update")]
+    self_update::spawn_if_configured(state.clone());
 
     // UPnP IGD自動ポート開放(`upnp` feature時のみ、
     // `OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true`未設定なら何もしない)。

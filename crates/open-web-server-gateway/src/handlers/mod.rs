@@ -8,6 +8,8 @@ pub mod items;
 pub mod keys;
 pub mod power_profile;
 pub mod redirects;
+#[cfg(feature = "auto-update")]
+pub mod self_update;
 pub mod sftp_info;
 pub mod state_query;
 pub mod tenants;

@@ -41,7 +41,11 @@ jobs:
           mkdir -p dist
           cp target/release/open-web-server dist/open-web-server
           cp install.sh dist/install.sh
-          tar -czf open-web-server-linux-x86_64.tar.gz -C dist open-web-server install.sh
+          # 自己アップデート機能(`self_update.rs`、`auto-update` feature)が
+          # インストール済み配布物かどうかを判定するために読む
+          # `version.json`。タグ名からvプレフィックスを外した値を書く。
+          echo "{\"version\": \"${GITHUB_REF_NAME#v}\"}" > dist/version.json
+          tar -czf open-web-server-linux-x86_64.tar.gz -C dist open-web-server install.sh version.json
       - uses: actions/upload-artifact@v4
         with:
           name: open-web-server-linux-x86_64
@@ -62,6 +66,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target/release/open-web-server.exe dist/
           Copy-Item install.ps1 dist/
+          "{`"version`": `"$($env:GITHUB_REF_NAME.TrimStart('v'))`"}" | Out-File -FilePath dist/version.json -Encoding utf8 -NoNewline
           Compress-Archive -Path dist/* -DestinationPath open-web-server-windows-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -93,11 +98,13 @@ jobs:
           cp target/release/open-web-server dist-x86_64/open-web-server
           cp install-macos.sh dist-x86_64/install-macos.sh
           cp uninstall-macos.sh dist-x86_64/uninstall-macos.sh
-          tar -czf open-web-server-macos-x86_64.tar.gz -C dist-x86_64 open-web-server install-macos.sh uninstall-macos.sh
+          echo "{\"version\": \"${GITHUB_REF_NAME#v}\"}" > dist-x86_64/version.json
+          tar -czf open-web-server-macos-x86_64.tar.gz -C dist-x86_64 open-web-server install-macos.sh uninstall-macos.sh version.json
           cp target/aarch64-apple-darwin/release/open-web-server dist-aarch64/open-web-server
           cp install-macos.sh dist-aarch64/install-macos.sh
           cp uninstall-macos.sh dist-aarch64/uninstall-macos.sh
-          tar -czf open-web-server-macos-aarch64.tar.gz -C dist-aarch64 open-web-server install-macos.sh uninstall-macos.sh
+          echo "{\"version\": \"${GITHUB_REF_NAME#v}\"}" > dist-aarch64/version.json
+          tar -czf open-web-server-macos-aarch64.tar.gz -C dist-aarch64 open-web-server install-macos.sh uninstall-macos.sh version.json
       - uses: actions/upload-artifact@v4
         with:
           name: open-web-server-macos

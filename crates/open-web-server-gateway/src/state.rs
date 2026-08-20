@@ -91,6 +91,38 @@ pub struct AppState {
     /// (`rate_limit`参照、2026-08-03新設)。`OPEN_WEB_SERVER_RATE_LIMIT_RPS`
     /// 未設定なら`None`(既定無効、既存動作を一切変えない)。
     pub rate_limiter: Option<Arc<crate::rate_limit::RateLimiter>>,
+    /// 自己アップデート機能の実行時有効/無効状態(`auto-update` feature、
+    /// 2026-08-19新設、`self_update`参照)。feature無効時もフィールド自体は
+    /// 常時保持する(既定オフ、`OPEN_WEB_SERVER_AUTO_UPDATE_ENABLED`で
+    /// 初期値を設定可能)——feature無効ビルドでは単に参照されないだけ。
+    pub auto_update: Arc<AutoUpdateState>,
+}
+
+/// 自己アップデート機能の実行時有効/無効フラグ(`auto-update` feature、
+/// 2026-08-19新設)。`AppState`が常時保持できるよう、feature gateの
+/// 掛かった`self_update`モジュール本体とは切り離してここに定義する
+/// (feature無効ビルドでも`AppState`の形が変わらないようにするため)。
+pub struct AutoUpdateState {
+    enabled: std::sync::atomic::AtomicBool,
+}
+
+impl AutoUpdateState {
+    /// `OPEN_WEB_SERVER_AUTO_UPDATE_ENABLED`環境変数から初期値を読む
+    /// (既定`false`、明示的なopt-inを要求する安全側)。
+    pub fn from_env() -> Self {
+        let enabled = std::env::var("OPEN_WEB_SERVER_AUTO_UPDATE_ENABLED")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+        Self { enabled: std::sync::atomic::AtomicBool::new(enabled) }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_enabled(&self, value: bool) {
+        self.enabled.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// `OPEN_WEB_SERVER_TLS_CERT_DIR`環境変数で指定されたディレクトリ
@@ -160,6 +192,7 @@ impl AppState {
             tracing::info!(?cfg, "request rate limiting enabled from OPEN_WEB_SERVER_RATE_LIMIT_RPS");
         }
         let rate_limiter = rate_limit_config.map(|cfg| Arc::new(crate::rate_limit::RateLimiter::new(cfg)));
+        let auto_update = Arc::new(AutoUpdateState::from_env());
 
         Ok(Self {
             ledger,
@@ -180,6 +213,7 @@ impl AppState {
             #[cfg(feature = "admin-2fa")]
             two_factor,
             rate_limiter,
+            auto_update,
         })
     }
 

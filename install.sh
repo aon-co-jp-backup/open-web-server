@@ -31,6 +31,17 @@ fi
 echo "==> バイナリを ${INSTALL_DIR}/open-web-server へ配置"
 install -m 755 "$BIN_SRC" "${INSTALL_DIR}/open-web-server"
 
+# 自己アップデート機能(src/self_update.rs、auto-update feature)は
+# 実行ファイルの隣の version.json で「インストール済み配布物かどうか」を
+# 判定する。同梱されていればコピー、無ければ既定値で生成する。
+VERSION_SRC="$(dirname "$0")/version.json"
+if [ -f "$VERSION_SRC" ]; then
+    install -m 644 "$VERSION_SRC" "${INSTALL_DIR}/version.json"
+else
+    echo '{"version":"0.1.0"}' > "${INSTALL_DIR}/version.json"
+    echo "==> version.json が同梱されていなかったため既定値(0.1.0)で生成しました"
+fi
+
 if [ ! -f "$SERVICE_FILE" ]; then
     echo "==> systemdサービスを作成(${SERVICE_FILE})"
     cat > "$SERVICE_FILE" << EOF
