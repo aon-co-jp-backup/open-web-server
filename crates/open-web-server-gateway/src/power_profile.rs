@@ -213,11 +213,66 @@ pub struct PowerProfileRegistry {
     current: RwLock<PowerProfileFlags>,
 }
 
+/// 起動時の初期プロファイルを指定する環境変数名。カンマ区切りで
+/// `pref_value`を並べる(例: `memory_saver,power_save`)。未設定・空文字列・
+/// `normal`は「通常」(全フラグfalse)を意味する。
+pub const POWER_PROFILE_ENV: &str = "OPEN_WEB_SERVER_POWER_PROFILE";
+
 impl PowerProfileRegistry {
     pub fn new() -> Self {
         Self {
             current: RwLock::new(PowerProfileFlags::default()),
         }
+    }
+
+    /// `OPEN_WEB_SERVER_POWER_PROFILE`から**起動時の初期プロファイル**を
+    /// 読み取って構築する(2026-08-24追加)。
+    ///
+    /// **背景**: これまで`PowerProfileRegistry`は常に「通常」で起動し、
+    /// 管理API(`POST /admin/power-profile`)でしか変更できなかった。
+    /// つまりインストーラーでプロファイルを選ばせても、その選択を
+    /// サービス起動時に反映する手段が存在しなかった(機能欠落)。
+    ///
+    /// **不正値の扱い(§0「黙殺禁止」)**: 未知の値が含まれる場合は
+    /// `tracing::warn!`で**実際の不正値を明示して**警告し、その項目のみを
+    /// 無視して残りを採用する(起動自体は継続する——プロファイル指定の
+    /// タイポでWebサーバーが起動しなくなる方が実害が大きいという判断)。
+    pub fn from_env() -> Self {
+        let raw = std::env::var(POWER_PROFILE_ENV).unwrap_or_default();
+        let flags = Self::parse_env_value(&raw);
+        if !flags.is_normal() {
+            tracing::info!(
+                profiles = ?flags.active_pref_values(),
+                "initial power profile applied from {POWER_PROFILE_ENV}"
+            );
+        }
+        Self {
+            current: RwLock::new(flags),
+        }
+    }
+
+    /// `from_env`の解析部分(テスト可能なように環境変数の読み取りと分離)。
+    /// 空白・空要素は無視し、不正値は警告の上スキップする。
+    pub fn parse_env_value(raw: &str) -> PowerProfileFlags {
+        let mut flags = PowerProfileFlags::default();
+        for token in raw.split(',') {
+            let token = token.trim();
+            if token.is_empty() || token == "normal" {
+                continue;
+            }
+            match PowerProfileFlag::from_pref_value(token) {
+                Some(PowerProfileFlag::MemorySaver) => flags.memory_saver = true,
+                Some(PowerProfileFlag::PowerSave) => flags.power_save = true,
+                Some(PowerProfileFlag::AlwaysOn) => flags.always_on = true,
+                None => {
+                    tracing::warn!(
+                        invalid_value = token,
+                        "unknown power profile value in {POWER_PROFILE_ENV}; ignoring this entry"
+                    );
+                }
+            }
+        }
+        flags
     }
 
     pub fn get(&self) -> PowerProfileFlags {
@@ -390,5 +445,48 @@ mod tests {
         // 組み合わせでも即座に反映される(再起動不要の既存性質の維持)。
         reg.set(PowerProfileFlags::from_pref_values(&["power_save", "memory_saver"]).unwrap());
         assert_eq!(effective_poll_interval(&reg, base), Duration::from_secs(900));
+    }
+
+    // --- 起動時の環境変数指定(2026-08-24追加) ---
+
+    #[test]
+    fn parse_env_value_empty_or_normal_is_normal() {
+        for raw in ["", "   ", "normal", " normal , ", ",,"] {
+            assert!(
+                PowerProfileRegistry::parse_env_value(raw).is_normal(),
+                "raw={raw:?} は通常であるべき"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_env_value_single_and_combined() {
+        let f = PowerProfileRegistry::parse_env_value("power_save");
+        assert!(f.power_save && !f.memory_saver && !f.always_on);
+
+        let f = PowerProfileRegistry::parse_env_value("memory_saver,power_save");
+        assert!(f.memory_saver && f.power_save && !f.always_on);
+
+        // 空白・順序違い・重複を許容する。
+        let f = PowerProfileRegistry::parse_env_value(" always_on , memory_saver , always_on ");
+        assert!(f.always_on && f.memory_saver && !f.power_save);
+    }
+
+    #[test]
+    fn parse_env_value_skips_unknown_but_keeps_valid_entries() {
+        // 不正値は無視しつつ、有効な指定は失わない(起動を止めない設計)。
+        let f = PowerProfileRegistry::parse_env_value("power_save,turbo_mode");
+        assert!(f.power_save);
+        assert!(!f.memory_saver && !f.always_on);
+
+        // 全部不正なら通常に落ちる。
+        assert!(PowerProfileRegistry::parse_env_value("nope,also_nope").is_normal());
+    }
+
+    #[test]
+    fn parse_env_value_round_trips_with_active_pref_values() {
+        let original = PowerProfileFlags::from_pref_values(&["memory_saver", "always_on"]).unwrap();
+        let raw = original.active_pref_values().join(",");
+        assert_eq!(PowerProfileRegistry::parse_env_value(&raw), original);
     }
 }

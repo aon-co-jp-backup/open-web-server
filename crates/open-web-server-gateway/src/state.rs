@@ -183,7 +183,9 @@ impl AppState {
         let access_logger = AccessLogConfig::from_env().map(|cfg| Arc::new(AccessLogger::new(cfg)));
         let accel_backend = accel_backend_from_env();
         tracing::info!(?accel_backend, "payload accelerator backend resolved from OPEN_WEB_SERVER_ACCEL_BACKEND");
-        let power_profile = Arc::new(PowerProfileRegistry::new());
+        // 起動時の初期プロファイルを環境変数から読む(2026-08-24。従来は
+        // 常に「通常」固定で、インストーラーでの選択を反映できなかった)。
+        let power_profile = Arc::new(PowerProfileRegistry::from_env());
         let watchdog = Arc::new(WatchdogState::new());
         #[cfg(feature = "admin-2fa")]
         let two_factor = Arc::new(crate::two_factor::TwoFactorStore::load_from_env());
