@@ -291,6 +291,12 @@ async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxB
             handlers::tenants::update_tenant(state, req, &host).await
         }
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
+        // 本番/デモ分離パターン(2026-08-24新設、ユーザー指示・
+        // open-easy-web等の姉妹アプリと同じ考え方): 読み取り専用の
+        // テナント/vhost一覧+ヘルスチェック要約を見せるだけの公開デモ
+        // ページ。認証不要・破壊的操作(POST/DELETE/PUT系の`/admin/*`)への
+        // 導線は一切含まない(`handlers::demo`のモジュールdoc参照)。
+        (Method::GET, "/demo") => handlers::demo::render(state).await,
         // 2026-07-29追記(ユーザー指示、RS-Sync側のスケジューラ無言停止
         // バグの横展開): DDNSバックグラウンドループのハートビート。
         // 認証不要(`/healthz`と同じ扱い、外部の死活監視ツールから

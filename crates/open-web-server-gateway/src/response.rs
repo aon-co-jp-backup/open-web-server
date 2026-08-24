@@ -23,6 +23,16 @@ pub fn text_response(status: StatusCode, body: impl Into<String>) -> Response<Bo
         .expect("static response is always well-formed")
 }
 
+/// 固定の HTML レスポンスを組み立てる(`/demo`のような読み取り専用の
+/// 紹介・可視化ページ向け、2026-08-24新設)。
+pub fn html_response(status: StatusCode, body: impl Into<String>) -> Response<BoxBody> {
+    Response::builder()
+        .status(status)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(Full::new(Bytes::from(body.into())))
+        .expect("static response is always well-formed")
+}
+
 /// 値を JSON にシリアライズしてレスポンスを組み立てる。
 pub fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<BoxBody> {
     match serde_json::to_vec(value) {
