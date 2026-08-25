@@ -1,5 +1,12 @@
 # open-web-server
 
+> 📌 **Update (2026-08-25): security audit fixed known `russh`/`h2`
+> vulnerabilities**. The embedded SFTP server (`sftp` feature, off by
+> default) depended on `russh`, which had two High (CVSS 7.5)
+> vulnerabilities — upgraded to 0.63.1, following the server API's
+> breaking changes, with a real SSH/SFTP client E2E test confirming no
+> regressions. Also fixed a `h2` DoS vulnerability. See [CLAUDE.md](CLAUDE.md).
+
 > 📌 Pending task (2026-08-06): a plan exists to incorporate Toshiba SBM / DeepSeek techniques. See [CLAUDE.md](CLAUDE.md) for details.
 
 > **Updated 2026-07-25**: The dev-policy file (`CLAUDE.md`) heading was

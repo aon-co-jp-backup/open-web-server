@@ -26,8 +26,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use russh::keys::key::{KeyPair, PublicKey};
-use russh::server::{Auth, Handler, Msg, Server as _, Session};
+// **2026-08-25更新**: `russh` 0.45→0.63へアップグレード
+// (RUSTSEC-2026-0153/0154、High 7.5——`russh-cryptovec`の未検査
+// アロケーション/成長処理を修正した安全なバージョンへの追従)。
+// 鍵型は`russh::keys::key::{KeyPair, PublicKey}`から`ssh_key`クレート
+// 由来の`russh::keys::{PrivateKey, PublicKey}`へ変わった
+// (`KeyPair::generate_ed25519()`は`PrivateKey::random(rng,
+// Algorithm::Ed25519)`に相当)。
+use russh::keys::{Algorithm, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
+use russh::server::{Auth, ChannelOpenHandle, Handler, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{
     Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
@@ -119,8 +126,14 @@ async fn run(
     allow_password: bool,
     password: Option<String>,
 ) -> anyhow::Result<()> {
-    let keypair = KeyPair::generate_ed25519()
-        .ok_or_else(|| anyhow::anyhow!("failed to generate SFTP host key (ed25519 keygen failed)"))?;
+    // `safe_rng()`の返り値(`impl CryptoRng`)は`Send`ではないため、
+    // `.await`をまたいで生かしたままにするとこの`async fn`全体が
+    // `Send`でなくなり`tokio::spawn`できなくなる。ブロックへ閉じ込めて
+    // 鍵生成が終わった時点で確実にdropさせる。
+    let keypair = {
+        let mut rng = russh::keys::key::safe_rng();
+        PrivateKey::random(&mut rng, Algorithm::Ed25519).map_err(|e| anyhow::anyhow!("failed to generate SFTP host key: {e}"))?
+    };
 
     let config = russh::server::Config {
         auth_rejection_time: std::time::Duration::from_secs(1),
@@ -168,49 +181,59 @@ struct SshSession {
     password: Arc<Option<String>>,
 }
 
-#[async_trait::async_trait]
+// **2026-08-25更新**: `russh` 0.63でHandlerトレイトのメソッドが
+// `async fn`から`fn(...) -> impl Future<Output = ...> + Send`
+// (RPITIT)へ変わったため、`#[async_trait::async_trait]`マクロは
+// 使わない(そのままではシグネチャが一致しない)。
 impl Handler for SshSession {
     type Error = russh::Error;
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        if self.authorized_keys.iter().any(|allowed| allowed == key) {
-            Ok(Auth::Accept)
+    fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        let accept = self.authorized_keys.iter().any(|allowed| allowed == key);
+        async move { Ok(if accept { Auth::Accept } else { Auth::Reject { proceed_with_methods: None, partial_success: false } }) }
+    }
+
+    fn auth_password(&mut self, _user: &str, provided: &str) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        let result = if !self.allow_password {
+            Auth::Reject { proceed_with_methods: None, partial_success: false }
         } else {
-            Ok(Auth::Reject { proceed_with_methods: None })
+            match self.password.as_ref() {
+                Some(expected) if subtle_eq(expected.as_bytes(), provided.as_bytes()) => Auth::Accept,
+                _ => Auth::Reject { proceed_with_methods: None, partial_success: false },
+            }
+        };
+        async move { Ok(result) }
+    }
+
+    // **正直な開示(2026-08-25)**: `channel_open_session`のシグネチャが
+    // `Result<bool, Error>`(受理/拒否をboolで返す)から`reply:
+    // ChannelOpenHandle`を明示的に`accept()`/`reject(reason)`する形へ
+    // 変わった(`reply`をdropしただけでも自動的に拒否されるという
+    // 挙動は、旧来「boolでfalseを返し忘れる」タイプの潜在バグを構造的に
+    // 防ぐ設計改善——今回のAPI変更は単なる型の付け替えではなく、
+    // 「うっかり受理し忘れて無言で拒否されるべきところを誤って通して
+    // しまう」事故を防ぐ安全側の変更だと判断した)。挙動自体
+    // (常にSFTPサブシステム用のチャネルとして受理する)は変えていない。
+    fn channel_open_session(&mut self, channel: Channel<Msg>, reply: ChannelOpenHandle, _session: &mut Session) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let root = self.root.as_ref().clone();
+        async move {
+            reply.accept().await;
+            let handler = SftpSubsystem::new(root);
+            let stream = channel.into_stream();
+            tokio::spawn(async move {
+                russh_sftp::server::run(stream, handler).await;
+            });
+            Ok(())
         }
     }
 
-    async fn auth_password(&mut self, _user: &str, provided: &str) -> Result<Auth, Self::Error> {
-        if !self.allow_password {
-            return Ok(Auth::Reject { proceed_with_methods: None });
+    fn subsystem_request(&mut self, channel_id: ChannelId, name: &str, session: &mut Session) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let is_sftp = name == "sftp";
+        let result = if is_sftp { session.channel_success(channel_id) } else { session.channel_failure(channel_id) };
+        async move {
+            result?;
+            Ok(())
         }
-        match self.password.as_ref() {
-            Some(expected) if subtle_eq(expected.as_bytes(), provided.as_bytes()) => Ok(Auth::Accept),
-            _ => Ok(Auth::Reject { proceed_with_methods: None }),
-        }
-    }
-
-    async fn channel_open_session(&mut self, channel: Channel<Msg>, _session: &mut Session) -> Result<bool, Self::Error> {
-        let handler = SftpSubsystem::new(self.root.as_ref().clone());
-        let stream = channel.into_stream();
-        tokio::spawn(async move {
-            russh_sftp::server::run(stream, handler).await;
-        });
-        Ok(true)
-    }
-
-    async fn subsystem_request(
-        &mut self,
-        channel_id: ChannelId,
-        name: &str,
-        session: &mut Session,
-    ) -> Result<(), Self::Error> {
-        if name == "sftp" {
-            session.channel_success(channel_id);
-        } else {
-            session.channel_failure(channel_id);
-        }
-        Ok(())
     }
 }
 
@@ -493,14 +516,17 @@ mod tests {
 
     /// クライアント側の`check_server_key`を「テストなので何でも信頼する」に
     /// する最小ハンドラ(本番コードはこれを一切使わない、`main.rs`の
-    /// `AcceptAnyCert`と同じ位置づけ)。
+    /// `AcceptAnyCert`と同じ位置づけ)。**2026-08-25更新**: `russh`
+    /// 0.63で`check_server_key`の引数が`&PublicKey`→
+    /// `&PublicKeyOrCertificate`へ、返り値が`async fn`→`impl
+    /// Future<...> + Send`へ変わった(open-english側`vps_agent.rs`の
+    /// 同種の修正と同じパターン)。
     struct AcceptAnyServerKey;
-    #[async_trait::async_trait]
     impl russh::client::Handler for AcceptAnyServerKey {
         type Error = russh::Error;
 
-        async fn check_server_key(&mut self, _server_public_key: &PublicKey) -> Result<bool, Self::Error> {
-            Ok(true)
+        fn check_server_key(&mut self, _server_public_key: &russh::keys::PublicKeyOrCertificate) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
+            async { Ok(true) }
         }
     }
 
@@ -520,10 +546,11 @@ mod tests {
         // 登録する(authorized_keysファイルのパース自体は
         // `load_authorized_keys`の別テストで既に検証済みのため、ここでは
         // 認証成功後のSFTP往復そのものに焦点を当てる)。
-        let client_keypair = KeyPair::generate_ed25519().expect("ed25519 keygen should succeed");
-        let client_public_key = client_keypair.clone_public_key().expect("public key extraction should succeed");
+        let mut rng = russh::keys::key::safe_rng();
+        let client_keypair = PrivateKey::random(&mut rng, Algorithm::Ed25519).expect("ed25519 keygen should succeed");
+        let client_public_key = client_keypair.public_key().clone();
 
-        let host_keypair = KeyPair::generate_ed25519().expect("ed25519 keygen should succeed");
+        let host_keypair = PrivateKey::random(&mut rng, Algorithm::Ed25519).expect("ed25519 keygen should succeed");
         let config = std::sync::Arc::new(russh::server::Config {
             auth_rejection_time: std::time::Duration::from_millis(50),
             keys: vec![host_keypair],
@@ -549,11 +576,11 @@ mod tests {
         let mut handle = russh::client::connect(client_config, addr, AcceptAnyServerKey)
             .await
             .expect("SSH client should connect to the loopback SFTP server");
-        let authenticated = handle
-            .authenticate_publickey("sftp-e2e-test-user", Arc::new(client_keypair))
+        let auth_result = handle
+            .authenticate_publickey("sftp-e2e-test-user", PrivateKeyWithHashAlg::new(Arc::new(client_keypair), None))
             .await
             .expect("publickey auth request should not error");
-        assert!(authenticated, "server should accept the authorized client public key");
+        assert!(matches!(auth_result, russh::client::AuthResult::Success), "server should accept the authorized client public key");
 
         // SFTPサブシステムを開き、クライアントセッションを確立する。
         let channel = handle.channel_open_session().await.unwrap();

@@ -5053,3 +5053,65 @@ RS-Git・RJSON・RS-Chiketto・RS-Blog・RS-EC。このリポジトリ自身の�
 ロジックを再利用すること(車輪の再発明を避ける)。
 - 次にすべきこと: このリポジトリの`install.sh`/`install.ps1`に上記3
   プロファイルの選択機能を追加する。
+
+## HANDOFF追記(2026-08-25) セキュリティ監査(cargo audit)で発見した
+## russh/h2脆弱性を修正(SFTPサーバーのAPI移行を完了)
+
+open-english側のユーザー指示「関連リポジトリのセキュリティ監査(依存
+関係・入力検証等)」+その後の追加指示「見送ったものも、書き換えを
+行なってセキュリティと利便性や実用性を両立させて」への対応(横断的な
+優先判断はopen-english/CLAUDE.md 2026-08-25エントリ参照)。
+
+1. **発見**: `russh`0.45.0/`russh-cryptovec`0.7.3にHigh(CVSS 7.5)の
+   脆弱性2件(「Unbounded 32-bit allocation」「Unchecked `CryptoVec`
+   allocation and growth handling」、RUSTSEC-2026-0153/0154)。
+   `crates/open-web-server-gateway/src/sftp.rs`(組み込みSFTPサーバー、
+   `sftp`feature、既定オフ)が使用。加えて`h2`(0.4.15、
+   RUSTSEC-2026-0258、DoS)。
+2. **`russh`0.45→0.63.1へアップグレード**(`sftp.rs`)。API変更点と
+   対応:
+   - `russh::keys::key::{KeyPair, PublicKey}`→`russh::keys::{PrivateKey,
+     PublicKey, PrivateKeyWithHashAlg, Algorithm}`(ssh_keyクレート
+     由来の型へ統合)。`KeyPair::generate_ed25519()`→
+     `PrivateKey::random(&mut rng, Algorithm::Ed25519)`
+     (`rng`は`russh::keys::key::safe_rng()`、**`Send`でないため
+     `.await`をまたがせず即座にdropするようブロックへ閉じ込めた**
+     ——`tokio::spawn`されるフューチャーが`Send`でなくなりビルドが
+     通らなくなる実際の落とし穴を踏んで発見・修正)。
+   - `server::Handler`トレイトの各メソッドが`async fn`から
+     `fn(...) -> impl Future<Output = ...> + Send`(RPITIT)へ変わった
+     ため`#[async_trait::async_trait]`を外し、`fn` + `async move {
+     ... }`の形へ書き換え。
+   - `channel_open_session`が`Result<bool, Error>`(受理/拒否を
+     boolで返す)から`reply: ChannelOpenHandle`を明示的に
+     `.accept().await`/`.reject(reason).await`する形へ変更
+     ——**これは単なる型の付け替えではなく、`reply`をdropしただけでも
+     自動的に拒否される設計への変更**(旧APIで「boolを返し忘れて
+     誤って通してしまう」種類の潜在バグを構造的に防ぐ、安全側への
+     改善と判断)。挙動自体(常にSFTPサブシステム用チャネルとして
+     受理)は変えていない。
+   - `Auth::Reject`に新フィールド`partial_success: bool`が必須化
+     (`false`を指定、既存の拒否挙動と同等)。
+   - `client::Handler::check_server_key`(テスト内の
+     `AcceptAnyServerKey`)も`&PublicKey`→
+     `&PublicKeyOrCertificate`、`authenticate_publickey`が
+     `Arc<KeyPair>`→`PrivateKeyWithHashAlg`引数・`bool`→
+     `AuthResult`(enum)返り値へ変更——open-english側`vps_agent.rs`と
+     同じ修正パターン。
+3. **`h2`を`cargo update -p h2`で0.4.19へ互換範囲内更新**(コード
+   変更不要)。
+4. **実機検証(型チェック・ビルド成功だけで完了と報告しない方針の
+   徹底)**: `cargo build --release -p open-web-server-gateway
+   --features sftp`成功。`cargo test --release -p
+   open-web-server-gateway --features sftp`で**209 passed / 0
+   failed**(既存の`sftp::tests`4件——`subtle_eq`の定数時間比較、
+   `resolve_within_root`のパストラバーサル拒否、環境変数未設定時の
+   no-op、そして**実SSH/SFTPクライアントがループバック上で公開鍵
+   認証→ディレクトリ作成→アップロード→一覧取得→ダウンロード→
+   削除まで一気通貫で成功する`real_sftp_client_roundtrip_over_
+   loopback`E2Eテスト**を含む——を含め、非回帰を確認)。
+5. **`cargo audit`最終結果**: 5件→**2件**(残るのは`rsa`クレートの
+   Marvin Attack、Medium 5.9、上流未修正のため対処不能)。
+- 次にすべきこと: (1) `rsa`クレートの上流修正状況を定期確認、
+  (2) このSFTP機能を実際に本番で有効化しているデプロイがあれば、
+  今回の修正版へのアップデートを案内する。

@@ -871,3 +871,44 @@ ExternalStorageConfig.kt`+`MainActivity.kt`の`startServerProcess()`
 起動元プロセス環境を継承しない前提で、全環境変数を`export`込みの
 1シェルコマンド文字列として組み立てる(`shellQuote()`によるシングル
 クォートエスケープ必須、コマンドインジェクション対策)。
+
+## russh 0.45→0.63系マイグレーションの移植ポイント(2026-08-25)
+
+`sftp.rs`(組み込みSFTPサーバー)を`russh`0.63.1へ上げた際の実体験
+(RUSTSEC-2026-0153/0154のHigh脆弱性修正)。同じ`russh`旧版を使う
+他リポジトリ(`aon-co-jp/open-english`の`vps_agent.rs`等)へ同種の
+アップグレードを移植する場合の要点:
+
+1. **鍵型が`russh::keys::key::{KeyPair, PublicKey}`から`ssh_key`
+   クレート由来の`russh::keys::{PrivateKey, PublicKey}`へ統合**
+   された。`KeyPair::generate_ed25519()`は
+   `PrivateKey::random(&mut rng, Algorithm::Ed25519)`
+   (`rng`は`russh::keys::key::safe_rng()`)に置き換える。
+2. **`safe_rng()`の返り値は`Send`ではない**——`.await`をまたいで
+   生かしたままにすると、それを含む`async fn`全体が`Send`でなくなり
+   `tokio::spawn`できずビルドが通らなくなる(実際に踏んだ落とし穴)。
+   鍵生成専用のブロックへ閉じ込めて即座にdropさせること。
+3. **`server::Handler`/`client::Handler`トレイトのメソッドが
+   `async fn`から`fn(...) -> impl Future<Output = ...> + Send`
+   (RPITIT)へ変わった**——`#[async_trait::async_trait]`マクロは
+   もう使えない(シグネチャが一致しなくなる)。`fn` + 本体を
+   `async move { ... }`で包む形へ書き換えること。
+4. **`server::Handler::channel_open_session`が`Result<bool, Error>`
+   から`reply: ChannelOpenHandle`を明示的に`.accept().await`/
+   `.reject(reason).await`する形へ変更**された。単なる型の
+   付け替えではなく、`reply`をdropしただけでも自動的に拒否される
+   設計への変更——旧APIの「boolを返し忘れて誤って通してしまう」
+   種類の潜在バグを構造的に防ぐ安全側の改善だと理解した上で移植先の
+   意味論を確認すること。
+5. **`client::Handler::check_server_key`が`&PublicKey`→
+   `&PublicKeyOrCertificate`、`authenticate_publickey`が
+   `Arc<KeyPair>`→`PrivateKeyWithHashAlg`引数・`bool`→
+   `AuthResult`(enum、`Success`/`Failure`)返り値へ変更**。
+6. **`Auth::Reject`に新フィールド`partial_success: bool`が必須化**
+   (通常の拒否では`false`を指定すればよい)。
+7. **移行の検証は「ビルドが通る」で終わらせないこと**: このリポジトリ
+   では既に実SSH/SFTPクライアントによるループバックE2Eテスト
+   (`real_sftp_client_roundtrip_over_loopback`)が用意されていたため、
+   これを実行して認証→ファイル操作の一気通貫が壊れていないことを
+   確認できた。同種のクライアント/サーバーコードを移植する場合、
+   型チェックが通っただけで「移行完了」と報告しないこと。
