@@ -46,7 +46,7 @@ OutputDir=.
 ; zip配布物〈`open-web-server-windows-x86_64.zip`〉を対象にしており
 ; インストーラーファイル名自体は関与しないが、利用者が一目でインストーラー
 ; と分かる名前にするという既存エコシステムの命名慣習を踏襲する)。
-OutputBaseFilename=open-web-server-install
+OutputBaseFilename=open-web-server-installer
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
 

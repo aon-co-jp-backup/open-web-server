@@ -1,5 +1,15 @@
 # open-web-server
 
+> 🎯 **aruaru-db × RPoem SET policy (2026-08-29)**: `aruaru-db`'s
+> `CLAUDE.md` opening note explains that aruaru-db only delivers "no
+> REST API needed, compatible with WunderGraph Cosmo's paid
+> Enterprise tier" when paired (SET) with RPoem — and warns against
+> building REST replacements aimlessly. This repo connects to
+> aruaru-db via dynamic tenant registration ("bunshin-no-jutsu") and
+> the 4-layer/4-redundant communication design; before proposing any
+> REST→GraphQL migration for its own admin API, always ask "does this
+> strengthen the aruaru-db+RPoem SET value?" first.
+
 > 📌 **Update (2026-08-25): security audit fixed known `russh`/`h2`
 > vulnerabilities**. The embedded SFTP server (`sftp` feature, off by
 > default) depended on `russh`, which had two High (CVSS 7.5)
