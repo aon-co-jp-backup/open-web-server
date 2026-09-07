@@ -81,7 +81,34 @@ pub(crate) struct PeerAddr(pub Option<SocketAddr>);
 ///
 /// `Idempotency-Key` ヘッダの必須化チェックはここでルーティングより先に行う
 /// (元 Poem 実装の `IdempotencyGuard` ミドルウェアと同等の位置づけ)。
-async fn dispatch(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+/// 実バグ修正(2026-09-07): `HEAD /demo`等、GET専用ルート(exact match
+/// `(Method::GET, "/path")`)へのHEADリクエストは、どの`match`アームにも
+/// 一致せず末尾のフォールバック(テナント/vhost解決)へ流れ、該当ホストに
+/// テナント登録が無ければ`404 Not Found`を返してしまっていた——監視
+/// ツール等がGETの代わりにHEADで疎通確認すると、実際には200を返すべき
+/// エンドポイントが誤って404に見える実害があった(RFC 9110 §9.3.2の
+/// 「サーバーはHEADに対してGETと同じヘッダーを返すべき」という原則にも
+/// 反する)。個々のGET専用ハンドラすべてにHEAD版を複製するのではなく、
+/// ここで一括して「HEADは内部的にGETとして処理し、応答ヘッダーは
+/// そのまま・ボディのみ空にして返す」という標準的な変換を行う。
+/// 既にHEADを独自に扱っているルート(静的ファイル配信・ACME等)がもし
+/// あった場合でも、ボディを空にするだけなので害はない。
+async fn dispatch(state: Arc<AppState>, mut req: Request<Incoming>) -> Response<BoxBody> {
+    let is_head = req.method() == Method::HEAD;
+    if is_head {
+        *req.method_mut() = Method::GET;
+    }
+    let resp = dispatch_inner(state, req).await;
+    if is_head {
+        let (mut parts, _body) = resp.into_parts();
+        parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        parts.headers.insert(hyper::header::CONTENT_LENGTH, hyper::header::HeaderValue::from_static("0"));
+        return Response::from_parts(parts, BoxBody::new(bytes::Bytes::new()));
+    }
+    resp
+}
+
+async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
     if let Err(resp) = middleware::idempotency::check(&req) {
         return resp;
     }
