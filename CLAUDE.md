@@ -658,6 +658,79 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-09-07 easy-web.duckdns.org を easy-web.tokyo の追加アクセス経路として登録(ユーザー指示、有料ドメイン更新費用を無料DuckDNSで代替する検討の一環)
+
+ユーザー指示「easy-web.tokyoは、easy-web.duckdns.orgに変更して運用して」
+への対応。**既存の`easy-web.tokyo`は一切変更・削除していない**——追加で
+`easy-web.duckdns.org`からも同じ内容へアクセスできるようにした(ユーザーが
+`AskUserQuestion`で「追加でduckdns.orgも使えるようにする(推奨)」を選択、
+完全移行〈TLS証明書再発行・大量の参照更新を伴う破壊的作業〉は選ばな
+かった)。
+
+1. **VPS実IP確認**: `curl -4 ifconfig.me` → `160.251.237.162`。
+2. **DuckDNS登録**: サブドメイン`easy-web`(`easy-web.tokyo`のように
+   ドット入りのサブドメイン名`easy-web.tokyo.duckdns.org`はDuckDNS側で
+   拒否〈`KO`〉されることを実際に確認済み——サブドメイン名は英数字と
+   ハイフンのみ許容)。`https://www.duckdns.org/update?domains=easy-web
+   &token=...&ip=160.251.237.162`→`OK`、`nslookup easy-web.duckdns.org`で
+   実際にVPSの実IPへ解決されることを確認。
+3. **5分間隔の自動更新systemdタイマー**(`duckdns-easy-web.timer`/
+   `.service`)を新設・有効化——open-english側の`open-english.duckdns.org`
+   と同じ設計(本番稼働中の`open-web-server`バイナリには`ddns`feature
+   が含まれていないため、独立したsystemdタイマーで直接DuckDNS更新APIを
+   叩く方式、本体には一切手を加えていない)。
+4. **`POST /admin/tenants`で`domains.toml`の`host = "easy-web.tokyo"`の
+   全22エントリ(ルート+`/open-redmine`・`/rs-git`・`/open-gitea`・
+   `/rs-sync`・各`/demo`系・`/rs-link-fusion`・`/open-raid-z`・
+   `/aruaru-db`・`/open-web-server`・`/ddns`・`/open-english`・`/v1`・
+   `/open-cg-cad`・`/open-kagaku`)を`host = "easy-web.duckdns.org"`で
+   複製登録**(既存の`easy-web.tokyo`エントリはそのまま、新規ホスト名
+   としての追加のみ)。管理API経由の登録は`domains.toml`へ即座に
+   永続化される(`TenantRegistry::persist`)ため、再起動後も維持される
+   ことを`grep -c`で確認済み(22件)。
+5. **実機検証(型チェックのみで完了と報告しない方針の徹底)**: VPS
+   ローカルから`Host: easy-web.duckdns.org`ヘッダ付きで`/`・
+   `/open-english/`・`/rs-sync/`がいずれも200を返すことを確認、さらに
+   **実際にこの開発機から`http://easy-web.duckdns.org/`・
+   `http://easy-web.duckdns.org/open-english/`へインターネット経由で
+   アクセスし、いずれも200を実証**(本物のDNS解決+実HTTP到達)。
+6. **正直な開示・スコープ外**: (a) HTTPS(TLS証明書)は今回未対応——
+   `easy-web.duckdns.org`向けの証明書取得(ACME)は行っていない、
+   現状は平文HTTPのみで到達可能。(b) 既存の`easy-web.tokyo`向けドキュメント・
+   リンク集(README等)を`easy-web.duckdns.org`へ置き換える作業は
+   行っていない(今回は追加アクセス経路の提供のみ、既存ドキュメントは
+   全て`easy-web.tokyo`のまま)。
+- 次にすべきこと: (1) 必要であれば`easy-web.duckdns.org`向けのLet's
+  Encrypt証明書を`POST /admin/tenants/:host/tls/acme`で取得しHTTPS化、
+  (2) ユーザーの意向次第で他の有料ドメイン(該当あれば)も同様に無料
+  DuckDNSサブドメインへ段階的に追加登録するか検討。
+
+### 2026-09-07(続き) easy-web.duckdns.orgの追加登録を取り消し(ユーザー指示「easy-web.tokyoは、DUCK DNSにはしないで、元のhttps://easy-web.tokyoに戻して」)
+
+上記エントリで追加した`easy-web.duckdns.org`向けの登録一式を、ユーザーの
+方針転換(有料ドメイン更新費用の節約は`https://easy-web.tokyo/<新パス>/`
+という**既存のパスベースの相乗り方式**で十分——`easy-web.tokyo`配下に
+`/open-english`・`/rs-sync`等が既に相乗りしている通り——という判断)に
+より全て取り消した。
+
+1. **`domains.toml`から`host = "easy-web.duckdns.org"`の全22エントリを
+   `DELETE /admin/tenants/easy-web.duckdns.org?path_prefix=...`で削除**
+   (ルートエントリ含む22回、`grep -c`で0件になったことを確認)。
+   `easy-web.tokyo`側のエントリは無変更のまま(`curl`で`/`・
+   `/open-english/`が引き続き200を返すことを確認)。
+2. **`duckdns-easy-web.timer`/`.service`を`systemctl disable --now`で
+   停止・ファイル削除**、登録用に作った一時スクリプト
+   (`/root/register-easyweb-duckdns.sh`・
+   `/root/deregister-easyweb-duckdns.sh`)も削除。
+3. **DuckDNS側の`easy-web`サブドメイン自体も
+   `https://www.duckdns.org/update?domains=easy-web&token=...&remove=true`
+   で登録解除**(`OK`応答を確認)。
+- 次にすべきこと: 特に無し。今後の新規プロジェクト公開は、有料ドメイン・
+  DuckDNS登録いずれも増やさず、`https://easy-web.tokyo/<新パス>/`という
+  既存のパスベース相乗り方式(`open-web-server`の`tenant_router`
+  `path_prefix`機能)で追加登録する方針。
+
+
 ### 2026-08-24 前回セッション中断分の検証完了 — `/demo`パス(open-easy-web由来の「本番/デモ分離」パターン対応)、ビルド・テスト・実HTTP確認まで完了
 
 前回セッションが中断していた未コミット作業(`crates/open-web-server-gateway/
