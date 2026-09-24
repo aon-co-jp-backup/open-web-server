@@ -658,6 +658,30 @@ disaster_email_backup`は**153件全green**(gateway 110件+ledger 22件
 
 ## HANDOFF (直近の自動巡回ログ、上が最新)
 
+### 2026-09-24 実障害: 全ドメインの証明書更新が失敗していた → 修正・全ドメイン更新済み
+
+- **症状**: 2026-09-24 03:07 の certbot-renew が「All renewals failed」。Let's Encrypt の応答は
+  `unauthorized ... /.well-known/acme-challenge/<token>: 404`。放置すると 2026-10-11 の runo.tokyo から
+  順に全サイトの HTTPS が切れる状態だった(realdata.pro のデプロイ作業中に発見)。
+- **原因**: certbot は webroot 方式(`/var/www/acme-webroot`)で認証ファイルを置く。前段が open-web-server に
+  切り替わった後、このディレクトリを配信する仕組みが無く、`challenge_response_handler` はインメモリの
+  `ChallengeStore` しか見ていなかった。加えて、certbot が更新しても `TLS_CERT_DIR`(`/root/open-web-server/tls-certs`)
+  へ反映する仕組みも無かった。
+- **対応**:
+  1. `acme.rs`: ストアに無いトークンは `OPEN_WEB_SERVER_ACME_WEBROOT`(未指定なら存在する場合に限り `/var/www/acme-webroot`)
+     から返すようにした。トークンは base64url 文字のみ、4KiB 以下(commit 4357340)。
+     VPS は `8596ec3`(VPS だけにある未 push のコミット)の上に cherry-pick して `9e4fd68` にし、ビルド・再起動した
+     (応答の停止は 0.14 秒)。元の実行ファイルは `/root/open-web-server/open-web-server.bak-20260924`。
+  2. certbot の deploy hook `/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`
+     (リポジトリの `scripts/certbot-deploy-hook-open-web-server.sh` と同じ内容)を追加した。更新された証明書を
+     `TLS_CERT_DIR` へコピーし、`POST /admin/tenants/<名前>/tls` で再起動なしに登録する。秘密鍵は 600 に揃える。
+  3. 既存 9 系統を更新し、realdata.pro を新規取得した。certbot の管理外だった fbi/icpo/nasa.tokyo(10/27 期限)は、
+     `www.` 付きで certbot 管理に移した。全 13 系統の期限は 2026-12-23。`certbot renew --dry-run` は全件成功。
+- **未整理**:
+  - VPS の `/root/open-web-server` は origin/main より 27 コミット遅れ、1 コミット(8596ec3)先行している。
+    8596ec3 は GitHub に未 push。
+  - `/root/open-web-server` の権限が 777 になっている(`/root` 自体は 550 なので、他ユーザーからは到達できない)。
+
 ### 2026-09-07 easy-web.duckdns.org を easy-web.tokyo の追加アクセス経路として登録(ユーザー指示、有料ドメイン更新費用を無料DuckDNSで代替する検討の一環)
 
 ユーザー指示「easy-web.tokyoは、easy-web.duckdns.orgに変更して運用して」
