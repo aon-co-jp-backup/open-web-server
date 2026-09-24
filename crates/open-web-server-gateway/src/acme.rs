@@ -67,13 +67,91 @@ pub async fn challenge_response_handler(store: &ChallengeStore, req: &Request<In
     if token.is_empty() {
         return not_found();
     }
-    match store.get(token) {
+    // 1) このプロセス自身のACMEクライアントが公開したもの、2) 無ければ
+    //    certbot等がwebroot方式で置いたファイル(下記`acme_webroot`)を返す。
+    let found = store
+        .get(token)
+        .or_else(|| acme_webroot().and_then(|root| read_webroot_token(&root, token)));
+    match found {
         Some(key_auth) => Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain")
             .body(BoxBody::from(key_auth))
             .expect("building a response from a fixed set of valid headers cannot fail"),
         None => not_found(),
+    }
+}
+
+/// certbot等の外部ACMEクライアントがwebroot方式(`--webroot -w <dir>`)で
+/// チャレンジファイルを置くディレクトリ(2026-09-24追加)。
+///
+/// 背景: 本番では全ドメインの証明書を certbot(webroot=`/var/www/acme-webroot`)で
+/// 更新していたが、前段が本プロセスへ切り替わった後、このディレクトリを配信する
+/// 仕組みが無く、`/.well-known/acme-challenge/*`が常に404になって**全ドメインの
+/// 更新が失敗**していた(2026-09-24 certbot-renew: "All renewals failed"、
+/// Let's Encryptの応答は`unauthorized ... 404`)。
+///
+/// `OPEN_WEB_SERVER_ACME_WEBROOT`で指定できる。未指定なら certbot の既定の運用に
+/// 合わせて`/var/www/acme-webroot`を、存在する場合に限り使う。
+fn acme_webroot() -> Option<std::path::PathBuf> {
+    match std::env::var_os("OPEN_WEB_SERVER_ACME_WEBROOT") {
+        Some(v) if !v.is_empty() => Some(std::path::PathBuf::from(v)),
+        _ => {
+            let default = std::path::PathBuf::from("/var/www/acme-webroot");
+            default.is_dir().then_some(default)
+        }
+    }
+}
+
+/// ACMEのトークンは base64url(英数字・`-`・`_`)のみ。それ以外(`..`や`/`を含む
+/// もの)はパストラバーサル対策として拒否する。
+fn is_valid_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 256
+        && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `<root>/.well-known/acme-challenge/<token>` の内容(key authorization)を返す。
+/// key authorization は数百バイト程度なので、4KiBを超えるファイルは読まない。
+fn read_webroot_token(root: &std::path::Path, token: &str) -> Option<String> {
+    if !is_valid_token(token) {
+        return None;
+    }
+    let path = root.join(".well-known").join("acme-challenge").join(token);
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let text = text.trim_end_matches(['\r', '\n']);
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+#[cfg(test)]
+mod webroot_tests {
+    use super::*;
+
+    #[test]
+    fn token_validation_blocks_traversal() {
+        assert!(is_valid_token("sxmz18fFNVhgpd0AdR-lx2l2PhdLLJ0xQZ9bLS3cBdM"));
+        for bad in ["", "..", "../etc/passwd", "a/b", "a\\b", "a.b", "a b", "%2e%2e"] {
+            assert!(!is_valid_token(bad), "{bad}");
+        }
+        assert!(!is_valid_token(&"a".repeat(257)));
+    }
+
+    #[test]
+    fn reads_certbot_webroot_file() {
+        let root = std::env::temp_dir().join(format!("ows-acme-webroot-test-{}", std::process::id()));
+        let dir = root.join(".well-known").join("acme-challenge");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tok_1-A"), "tok_1-A.thumbprint\n").unwrap();
+        std::fs::write(dir.join("big"), vec![b'x'; 5000]).unwrap();
+        assert_eq!(read_webroot_token(&root, "tok_1-A").as_deref(), Some("tok_1-A.thumbprint"));
+        assert_eq!(read_webroot_token(&root, "missing"), None);
+        assert_eq!(read_webroot_token(&root, "big"), None, "4KiB超は読まない");
+        assert_eq!(read_webroot_token(&root, "../../x"), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
 
