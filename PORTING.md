@@ -917,3 +917,13 @@ ExternalStorageConfig.kt`+`MainActivity.kt`の`startServerProcess()`
    これを実行して認証→ファイル操作の一気通貫が壊れていないことを
    確認できた。同種のクライアント/サーバーコードを移植する場合、
    型チェックが通っただけで「移行完了」と報告しないこと。
+
+## 11. open-web-server⇔RPoem「4層4重」連携の再検証(2026-09-30、破損なし)
+
+2026-08-04の実証(「9.」「10.」)から約2ヶ月後、ユーザーから現状の健全性を
+問われ`cargo test --workspace`をopen-web-server・RPoem双方で実行した。
+両方とも全テスト成功(open-web-server: `tenant_router`・`proxy`系を含む、
+RPoem: `ledger_fusion`のクロスリポジトリ統合テストを含む)。自動テストの
+範囲でリグレッションは無い。実バイナリ2プロセス同時起動の手動E2E手順
+(`RPoem/crates/open-runo-appserver/examples/e2e_stub_app.rs`)自体は今回
+未再実施。詳細はCLAUDE.mdの2026-09-30 HANDOFF参照。

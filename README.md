@@ -102,6 +102,7 @@ parsing/import, and redefining RPoem's unique value as the
 2026-08-03 HANDOFF entry (not yet started, next-priority candidates).
 
 16. **RPoem(Tomcat相当)との実接続E2E検証 + リバースプロキシの接続レース耐性 + Android版外付けHDD対応**(2026-08-04) — `open-runo-appserver::tenant_bridge::dispatcher_from_tenants`(`TenantRegistry`との橋渡し関数、以前は単体テストのみ)を、実際に2つの実バイナリ(open-web-server本体+RPoemの`ThreadedProxyServer`)を同時起動して初めてE2E検証した。その過程で見つかった「動的登録直後のバックエンドへの初回リクエストが一時的に502になる」レースに対し、`proxy.rs`へ接続失敗限定(到達後のエラー応答は対象外)の1回リトライを追加(実TCP接続での単体テスト2件で検証)。Android版には「💽 外付けHDDをストレージに使う(root)」機能を新設——root化端末でUSB外付けHDDへ`web_vhosts.toml`/TLS証明書/KeyGuardianキーストア等の実データを保存できる(`su -c id`でroot到達性を確認できない場合は内部ストレージへ黙ってフォールバックせず起動を拒否)。詳細は[PORTING.md §9・§10](PORTING.md#9-リバースプロキシの接続レース耐性2026-08-04追加)、[CLAUDE.md](CLAUDE.md)の同日HANDOFF参照。
+17. **open-web-server⇔RPoem「4層4重」連携の再検証**(2026-09-30) — 上記16.の実証から約2ヶ月後、現状の健全性が問われたため`cargo test --workspace`をopen-web-server・RPoem双方で実行し、自動テストの範囲でリグレッションが無いことを確認した(`tenant_router`・`proxy`・`ledger_fusion`を含む全テスト成功)。実バイナリ2プロセス同時起動の手動E2E手順自体は今回未再実施。詳細は[PORTING.md §11](PORTING.md#11-open-web-serverrpoem4層4重連携の再検証2026-09-30破損なし)参照。
 
 ## クイックスタート(5分で動かす)
 

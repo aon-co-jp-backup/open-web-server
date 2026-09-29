@@ -5225,3 +5225,22 @@ open-english側のユーザー指示「関連リポジトリのセキュリテ�
 - 次にすべきこと: (1) `rsa`クレートの上流修正状況を定期確認、
   (2) このSFTP機能を実際に本番で有効化しているデプロイがあれば、
   今回の修正版へのアップデートを案内する。
+
+## HANDOFF追記(2026-09-30) open-web-server⇔RPoem「4層4重」連携の再検証(RPoem側と同内容、破損なし)
+
+`aruaru-vpn`側セッション中、ユーザーから「`open-web-server`をApache、
+RPoemをTomcatのような多段Webサーバーとして機能させて」との指示を受け、
+2026-07-23〜08-04に実装・実証済みの構成(README「16.」・PORTING.md
+「9.・10.」参照)が現在も壊れていないかを`cargo test --workspace`で
+再検証した。
+
+- open-web-server: 全クレート・全テスト成功(`tenant_router`のテナント
+  動的登録・解決系、`proxy::tests::retries_once_and_recovers_from_a_transient_connect_failure`
+  等の接続レース耐性テストを含む)。
+- RPoem側も同時に`cargo test --workspace`で全テスト成功を確認
+  (`open-runo-router/tests/ledger_fusion.rs`のクロスリポジトリ統合
+  テストを含む、詳細はRPoem側`CLAUDE.md`の同日HANDOFF参照)。
+
+`examples/e2e_stub_app.rs`(RPoem側)を使った実バイナリ2プロセス同時起動
+の手動E2E手順自体は今回未実施。結論: 再開発は不要、既存実装は現時点
+(2026-09-30)でも壊れていない。
