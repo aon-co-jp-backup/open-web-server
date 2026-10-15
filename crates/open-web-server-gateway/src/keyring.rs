@@ -163,7 +163,7 @@ fn load_records_from_path(path: &Path) -> HashMap<String, KeyRecord> {
             return HashMap::new();
         }
     };
-    match serde_json::from_str(&raw) {
+    match sonic_rs::from_str(&raw) {
         Ok(records) => records,
         Err(e) => {
             tracing::warn!(error = %e, path = %path.display(), "KeyGuardian: failed to parse persisted key registry (corrupted?), starting empty");

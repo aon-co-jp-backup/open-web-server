@@ -162,7 +162,7 @@ impl FileAuditLog {
                 });
             }
             let record: AuditRecord =
-                serde_json::from_str(json).map_err(|_| AuditLogError::Malformed(line_no))?;
+                sonic_rs::from_str(json).map_err(|_| AuditLogError::Malformed(line_no))?;
             records.push(record);
         }
         Ok(records)

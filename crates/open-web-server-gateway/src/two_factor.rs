@@ -128,7 +128,7 @@ fn write_enrollments_atomically(path: &Path, enrollments: &HashMap<String, TotpE
 
 fn load_enrollments_from_path(path: &Path) -> HashMap<String, TotpEnrollment> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_json::from_str(&contents) {
+        Ok(contents) => match sonic_rs::from_str(&contents) {
             Ok(map) => map,
             Err(e) => {
                 tracing::warn!(error = %e, path = %path.display(), "TwoFactorStore: failed to parse persisted enrollments, starting empty");
