@@ -106,6 +106,6 @@ pub async fn read_json_body<T: DeserializeOwned>(
         }
     };
 
-    serde_json::from_slice(&bytes)
+    sonic_rs::from_slice(&bytes)
         .map_err(|e| text_response(StatusCode::BAD_REQUEST, format!("invalid JSON body: {e}")))
 }

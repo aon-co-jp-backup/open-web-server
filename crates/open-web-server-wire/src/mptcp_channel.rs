@@ -131,7 +131,7 @@ async fn read_one_mutation(
     let len = u32::from_le_bytes(len_buf) as usize;
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload).await?;
-    let req: MutationRequest = serde_json::from_slice(&payload)?;
+    let req: MutationRequest = sonic_rs::from_slice(&payload)?;
     Ok(req)
 }
 

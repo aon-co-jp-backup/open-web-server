@@ -442,7 +442,7 @@ mod client {
             let parsed: serde_json::Value = if bytes.is_empty() {
                 serde_json::Value::Null
             } else {
-                serde_json::from_slice(&bytes).map_err(|e| anyhow!("ACME response JSON parse failed: {e}"))?
+                sonic_rs::from_slice(&bytes).map_err(|e| anyhow!("ACME response JSON parse failed: {e}"))?
             };
 
             if !status.is_success() {

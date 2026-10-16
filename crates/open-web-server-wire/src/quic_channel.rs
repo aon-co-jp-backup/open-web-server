@@ -142,7 +142,7 @@ impl QuicServer {
         let (mut send, mut recv) = connection.accept_bi().await?;
 
         let data = recv.read_to_end(64 * 1024).await?;
-        let req: MutationRequest = serde_json::from_slice(&data)?;
+        let req: MutationRequest = sonic_rs::from_slice(&data)?;
 
         let ack = serde_json::to_vec(&req.idempotency_key.0)?;
         send.write_all(&ack).await?;
@@ -174,7 +174,7 @@ pub async fn send_mutation_over_quic(
     send.finish()?;
 
     let ack_bytes = recv.read_to_end(64 * 1024).await?;
-    let ack: String = serde_json::from_slice(&ack_bytes)?;
+    let ack: String = sonic_rs::from_slice(&ack_bytes)?;
 
     connection.close(0u32.into(), b"done");
     endpoint.wait_idle().await;

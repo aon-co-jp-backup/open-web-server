@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sonic-rs = "0.3"
 open-web-server-core = { path = "../open-web-server-core" }
 rs-smarttcp = { path = "../../../RS-SmartTCP" }
 tokio.workspace = true

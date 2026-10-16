@@ -225,7 +225,7 @@ fn decode_frame(
     }
 
     let plaintext = cipher.decrypt(ciphertext)?;
-    let req: MutationRequest = serde_json::from_slice(&plaintext)?;
+    let req: MutationRequest = sonic_rs::from_slice(&plaintext)?;
     Ok((seq, req))
 }
 

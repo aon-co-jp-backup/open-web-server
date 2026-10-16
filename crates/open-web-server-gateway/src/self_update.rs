@@ -97,7 +97,7 @@ fn local_version() -> Option<String> {
     struct V {
         version: String,
     }
-    serde_json::from_str::<V>(&text).ok().map(|v: V| v.version)
+    sonic_rs::from_str::<V>(&text).ok().map(|v: V| v.version)
 }
 
 async fn fetch_latest_release() -> anyhow::Result<LatestRelease> {
