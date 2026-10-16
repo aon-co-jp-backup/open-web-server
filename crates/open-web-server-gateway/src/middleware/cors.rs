@@ -80,7 +80,7 @@ pub fn handle_preflight(method: &Method, headers: &HeaderMap) -> Option<Response
     builder = apply_headers_to_builder(builder, &origin);
     Some(
         builder
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .body(crate::response::full_body(bytes::Bytes::new()))
             .expect("preflight response is always well-formed"),
     )
 }

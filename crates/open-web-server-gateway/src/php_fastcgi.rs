@@ -244,7 +244,7 @@ fn build_response_from_cgi_output(raw: &[u8]) -> Response<BoxBody> {
 
     builder
         .status(status)
-        .body(Full::new(Bytes::from(body_bytes.to_vec())))
+        .body(crate::response::full_body(Bytes::from(body_bytes.to_vec())))
         .unwrap_or_else(|e| {
             text_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -348,7 +348,7 @@ mod tests {
             .method("GET")
             .uri("/")
             .header("host", "fcgi-test.example")
-            .body(Full::new(Bytes::new()))
+            .body(crate::response::full_body(Bytes::new()))
             .unwrap();
         let resp = sender.send_request(req).await.unwrap();
         let status = resp.status();

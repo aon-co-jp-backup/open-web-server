@@ -103,7 +103,7 @@ async fn dispatch(state: Arc<AppState>, mut req: Request<Incoming>) -> Response<
         let (mut parts, _body) = resp.into_parts();
         parts.headers.remove(hyper::header::CONTENT_LENGTH);
         parts.headers.insert(hyper::header::CONTENT_LENGTH, hyper::header::HeaderValue::from_static("0"));
-        return Response::from_parts(parts, BoxBody::new(bytes::Bytes::new()));
+        return Response::from_parts(parts, crate::response::full_body(bytes::Bytes::new()));
     }
     resp
 }

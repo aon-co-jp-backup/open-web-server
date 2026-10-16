@@ -76,7 +76,7 @@ pub async fn challenge_response_handler(store: &ChallengeStore, req: &Request<In
         Some(key_auth) => Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain")
-            .body(BoxBody::from(key_auth))
+            .body(crate::response::full_body(bytes::Bytes::from(key_auth)))
             .expect("building a response from a fixed set of valid headers cannot fail"),
         None => not_found(),
     }
@@ -158,7 +158,7 @@ mod webroot_tests {
 fn not_found() -> Response<BoxBody> {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(BoxBody::from(String::new()))
+        .body(crate::response::full_body(bytes::Bytes::new()))
         .expect("building a response from a fixed set of valid headers cannot fail")
 }
 

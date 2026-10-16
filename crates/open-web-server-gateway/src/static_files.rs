@@ -76,7 +76,7 @@ pub fn serve(docroot: &Path, request_path: &str) -> Response<BoxBody> {
         Ok(bytes) => Response::builder()
             .status(StatusCode::OK)
             .header("content-type", guess_content_type(&canonical_candidate))
-            .body(Full::new(Bytes::from(bytes)))
+            .body(crate::response::full_body(Bytes::from(bytes)))
             .expect("static file response is always well-formed"),
         Err(_) => text_response(StatusCode::NOT_FOUND, "not found"),
     }
@@ -195,7 +195,16 @@ mod tests {
         // (絶対パス指定を拒否する分岐の実証)。
         let dir = make_docroot();
         let resp = serve(&dir, "/C:/Windows/System32/drivers/etc/hosts");
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Windowsでは`C:`がドライブ文字(`Component::Prefix`)として認識され403で弾かれる。
+        // Linuxでは`C:`は普通のファイル名の一部なので、docroot内に無く404になる。
+        // どちらのOSでも守りたいのは「docroot外の内容を返さない」こと(200にならない)。
+        // 2026-10-16: OS依存で失敗していたテストを、この不変条件に合わせて直した。
+        let status = resp.status();
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+            "must never serve content outside the docroot (got {status})"
+        );
+        assert_ne!(status, StatusCode::OK);
     }
 
     #[test]

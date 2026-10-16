@@ -168,7 +168,7 @@ pub fn build_redirect_response(rule: &RedirectRule, path_and_query: &str) -> Res
         .status(StatusCode::MOVED_PERMANENTLY)
         .header(hyper::header::LOCATION, location)
         .header("content-type", "text/plain; charset=utf-8")
-        .body(Full::new(bytes::Bytes::from_static(
+        .body(crate::response::full_body(bytes::Bytes::from_static(
             b"301 Moved Permanently",
         )))
         .expect("static redirect response is always well-formed")

@@ -164,13 +164,7 @@ pub async fn forward_to_stripped(
     match attempt {
         Ok(upstream_resp) => {
             let (parts, body) = upstream_resp.into_parts();
-            match BodyExt::collect(body).await {
-                Ok(collected) => Response::from_parts(parts, Full::new(collected.to_bytes())),
-                Err(e) => text_response(
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to read upstream response body: {e}"),
-                ),
-            }
+            Response::from_parts(parts, crate::response::stream_body(body))
         }
         Err(e) => text_response(
             StatusCode::BAD_GATEWAY,
@@ -279,6 +273,66 @@ mod tests {
 
         let resp = result.expect("should recover on retry");
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// ストリーミング転送の実証(2026-10-16): 上流が「最初の断片をすぐ送り、1.2秒待ってから
+    /// 残りを送る」応答を返すとき、プロキシ経路の本文(`stream_body`)は**最初の断片を、
+    /// 全体の完了を待たずに**受け取れる。本文を全部メモリに集めてから返す実装なら、最初の
+    /// 断片も約1.2秒後にしか届かないので、この差でストリーミングかどうかを区別できる。
+    #[tokio::test]
+    async fn proxy_body_is_streamed_not_buffered() {
+        use http_body_util::BodyExt;
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = tokio_listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            // chunked: ヘッダーと最初の断片をすぐ送り、待ってから残りと終端を送る
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nfirst\r\n")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            stream.write_all(b"6\r\nsecond\r\n0\r\n\r\n").await.unwrap();
+        });
+
+        let uri = format!("http://{addr}/");
+        let req = build(&uri);
+        let uri_for_retry = uri.clone();
+        let started = Instant::now();
+        let resp = request_with_one_retry_on_connect_failure(req, &|| Ok(build(&uri_for_retry)))
+            .await
+            .expect("upstream should respond");
+        let (_parts, body) = resp.into_parts();
+        // 本番のプロキシ経路と同じ変換を通す
+        let mut body = crate::response::stream_body(body);
+
+        // 最初の断片は、1.2秒の待ちを待たずに届く(= バッファせずに流している)
+        let first = body.frame().await.expect("first frame").expect("no error");
+        let first_at = started.elapsed();
+        assert_eq!(first.into_data().unwrap().as_ref(), b"first");
+        assert!(
+            first_at < Duration::from_millis(800),
+            "first chunk must arrive before the upstream finishes (got {first_at:?}); body is being buffered"
+        );
+
+        // 残りも最終的に届く(取りこぼしなし)
+        let mut rest = Vec::new();
+        while let Some(frame) = body.frame().await {
+            if let Ok(data) = frame.unwrap().into_data() {
+                rest.extend_from_slice(&data);
+            }
+        }
+        assert_eq!(rest, b"second");
+        assert!(started.elapsed() >= Duration::from_millis(1000), "the rest really was delayed upstream");
     }
 
     /// 到達後にエラー応答(サーバーがリクエストを処理し、その上で
