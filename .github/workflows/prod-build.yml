@@ -58,8 +58,8 @@ jobs:
           (cd dist && sha256sum open-web-server | tee open-web-server.sha256)
           # 要求するglibcシンボルの最大バージョンを記録する。
           objdump -T dist/open-web-server | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | tee dist/max-glibc.txt
-          # admin-2fa が実際に入っていることの確認(feature無しではこの文字列が無い)。
-          grep -c 'admin/login/request-otp' dist/open-web-server | tee dist/admin-2fa-marker-count.txt
+          # admin-2fa が実際に入っていることの確認(feature無しではこのログ文言が無い。ルートのパス文字列は最適化で連続文字列にならない)。
+          grep -c 'failed to send admin login OTP email' dist/open-web-server | tee dist/admin-2fa-marker-count.txt
           test "$(cat dist/admin-2fa-marker-count.txt)" -ge 1
 
       - name: Verify the binary starts on AlmaLinux 10 (本番OSの互換確認)
