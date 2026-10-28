@@ -8,11 +8,13 @@ name: Production build (admin-2fa)
 # - 公式リリース(release.yml)はfeature無しのままなので流用しない。
 # - 本番へ置く手順・差し替え・ロールバックは docs/admin-2fa-design.md §8。
 #
-# **feature一式について**: 下記は CLAUDE.md の記録
-# (「--features domain-watchdog,fastcgi-client,acme,ddns,sftp,upnp」)に
-# `admin-2fa` を足したもの。稼働中バイナリの実feature一式との一致は
-# 未確認(デプロイ前にVPSで確認すること。`auto-update` は意図的に含めない:
-# 有効だと公式リリースのfeature無しバイナリで上書きされる危険があるため)。
+# **feature一式について**: 稼働中の本番バイナリの目印文字列を比較して確認した
+# 結果(acme と upnp は含まれず、ddns・fastcgi・sftp・watchdog は含まれる)に
+# 合わせ、`admin-2fa,domain-watchdog,fastcgi-client,ddns,sftp` とする。
+# acme を入れると、本番のWATCHDOG_ACME_CONTACT_EMAIL設定により監視機能が
+# ACME証明書を自動取得し、certbot運用と衝突する恐れがあるため外している。
+# `auto-update` も意図的に含めない(有効だと公式リリースのfeature無し
+# バイナリで上書きされる危険があるため)。
 
 on:
   workflow_dispatch: {}
@@ -24,7 +26,7 @@ permissions:
   contents: read
 
 env:
-  PROD_FEATURES: "admin-2fa,domain-watchdog,fastcgi-client,acme,ddns,sftp,upnp"
+  PROD_FEATURES: "admin-2fa,domain-watchdog,fastcgi-client,ddns,sftp"
 
 jobs:
   build:
@@ -61,6 +63,15 @@ jobs:
           # admin-2fa が実際に入っていることの確認(feature無しではこのログ文言が無い。ルートのパス文字列は最適化で連続文字列にならない)。
           grep -c 'failed to send admin login OTP email' dist/open-web-server | tee dist/admin-2fa-marker-count.txt
           test "$(cat dist/admin-2fa-marker-count.txt)" -ge 1
+
+      - name: Verify feature set (acme / upnp absent, x-tls-token present)
+        run: |
+          set +e
+          acme=$(grep -c -a 'tls/acme' dist/open-web-server)
+          upnp=$(grep -c -a 'upnp' dist/open-web-server)
+          tls=$(grep -c -a 'x-tls-token' dist/open-web-server)
+          echo "tls/acme=$acme upnp=$upnp x-tls-token=$tls"
+          test "$acme" -eq 0 && test "$upnp" -eq 0 && test "$tls" -ge 1
 
       - name: Verify the binary starts on AlmaLinux 10 (本番OSの互換確認)
         run: |
