@@ -35,6 +35,10 @@ jobs:
       # open-web-server-wire が RS-SmartTCP を path 依存(../RS-SmartTCP)で参照。
       - name: Checkout RS-SmartTCP (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      # open-web-server-ledger が open-raid-z を optional path 依存で参照
+      # (使わなくてもマニフェストの解決に必要)。
+      - name: Checkout open-raid-z (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/open-raid-z.git ../open-raid-z
       - uses: Swatinem/rust-cache@v2
 
       - name: Test (production features)
