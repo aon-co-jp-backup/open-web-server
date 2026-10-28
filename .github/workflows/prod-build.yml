@@ -39,6 +39,9 @@ jobs:
       # (使わなくてもマニフェストの解決に必要)。
       - name: Checkout open-raid-z (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/open-raid-z.git ../open-raid-z
+      # open-raid-z/zfs_accel_hlsl(RS-SmartTCP経由)が open-cpu を path 依存で参照。
+      - name: Checkout open-cpu (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/open-cpu.git ../open-cpu
       - uses: Swatinem/rust-cache@v2
 
       - name: Test (production features)
