@@ -224,6 +224,8 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
         #[cfg(feature = "admin-2fa")]
         (Method::POST, "/admin/2fa/enroll") => handlers::admin_login::enroll(state, req).await,
         #[cfg(feature = "admin-2fa")]
+        (Method::POST, "/admin/2fa/reset") => handlers::admin_login::reset_enrollment(state, req).await,
+        #[cfg(feature = "admin-2fa")]
         (Method::POST, "/admin/2fa/confirm") => handlers::admin_login::confirm(state, req).await,
         #[cfg(feature = "admin-2fa")]
         (Method::POST, "/admin/2fa/verify") => handlers::admin_login::verify_suspension_override(state, req).await,
@@ -814,6 +816,14 @@ pub async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drop時に`OPEN_WEB_SERVER_ADMIN_TOKEN`を消す(テスト終了時の後始末)。
+    struct AdminTokenEnvReset;
+    impl Drop for AdminTokenEnvReset {
+        fn drop(&mut self) {
+            std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+        }
+    }
 
     /// `OPEN_WEB_SERVER_ADMIN_TOKEN`はプロセス全体で共有されるグローバル
     /// 環境変数であり、これを一時的に書き換えるテスト同士を`cargo test`の
@@ -1895,6 +1905,7 @@ mod tests {
     async fn import_apache_vhost_registers_and_serves_over_real_http() {
         let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-import-secret");
+        let _reset = AdminTokenEnvReset; // fail-closedのため、テスト終了までトークンを維持する
 
         let dir = std::env::temp_dir().join(format!("owsg-import-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1902,7 +1913,6 @@ mod tests {
         let docroot_str = dir.to_string_lossy().replace('\\', "/");
 
         let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed"));
-        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1950,9 +1960,9 @@ mod tests {
     async fn import_web_vhost_rejects_unknown_format_and_unparseable_config() {
         let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-import-secret-2");
+        let _reset = AdminTokenEnvReset; // fail-closedのため、テスト終了までトークンを維持する
 
         let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed"));
-        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2179,5 +2189,141 @@ mod tests {
         let list_bytes3 = http_body_util::BodyExt::collect(list_resp3.into_body()).await.unwrap().to_bytes();
         let list_body3: serde_json::Value = serde_json::from_slice(&list_bytes3).unwrap();
         assert_eq!(list_body3, serde_json::json!([]));
+    }
+    // ---- 管理API認証の経路別化(2026-10-28、docs/admin-2fa-design.md §3.3) ----
+
+    async fn http_status(addr: std::net::SocketAddr, method: Method, uri: &str, headers: &[(&str, &str)], body: &str) -> StatusCode {
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(tcp);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut b = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        let req = b.body(http_body_util::Full::new(bytes::Bytes::from(body.to_string()))).unwrap();
+        sender.send_request(req).await.unwrap().status()
+    }
+
+    async fn spawn_test_server() -> std::net::SocketAddr {
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state));
+        addr
+    }
+
+    struct EnvVarsReset(&'static [&'static str]);
+    impl Drop for EnvVarsReset {
+        fn drop(&mut self) {
+            for k in self.0 {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
+    const AUTH_TEST_VARS: &[&str] = &[
+        "OPEN_WEB_SERVER_ADMIN_TOKEN",
+        "OPEN_WEB_SERVER_TLS_TOKEN",
+        "OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE",
+        "OPEN_WEB_SERVER_ADMIN_INSECURE_DEV",
+    ];
+
+    #[tokio::test]
+    async fn tls_token_only_reaches_the_tls_endpoints_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        let _reset = EnvVarsReset(AUTH_TEST_VARS);
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "adm-secret");
+        std::env::set_var("OPEN_WEB_SERVER_TLS_TOKEN", "tls-secret");
+        let addr = spawn_test_server().await;
+        let bad_pem = r#"{"cert_pem":"x","key_pem":"y"}"#;
+
+        // 正しいTLSトークン(ループバックから) → 認証は通り、PEM不正で400。
+        assert_eq!(http_status(addr, Method::POST, "/admin/tenants/t.example/tls", &[("x-tls-token", "tls-secret")], bad_pem).await, StatusCode::BAD_REQUEST);
+        assert_eq!(http_status(addr, Method::DELETE, "/admin/tenants/t.example/tls", &[("x-tls-token", "tls-secret")], "").await, StatusCode::OK);
+        // 間違ったTLSトークンは、静的トークンを併記してもフォールバックしない。
+        assert_eq!(http_status(addr, Method::POST, "/admin/tenants/t.example/tls", &[("x-tls-token", "nope"), ("x-admin-token", "adm-secret")], bad_pem).await, StatusCode::UNAUTHORIZED);
+        // TLSトークンは他の管理エンドポイントでは使えない。
+        assert_eq!(http_status(addr, Method::GET, "/admin/tenants", &[("x-tls-token", "tls-secret")], "").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(http_status(addr, Method::POST, "/admin/keys", &[("x-tls-token", "tls-secret")], "{}").await, StatusCode::UNAUTHORIZED);
+        // 静的トークンは(modeがanyの間は)従来通りTLSエンドポイントにも使える。
+        assert_eq!(http_status(addr, Method::POST, "/admin/tenants/t.example/tls", &[("x-admin-token", "adm-secret")], bad_pem).await, StatusCode::BAD_REQUEST);
+
+        // TLSトークン未設定なら、ヘッダを付けても拒否(503)。
+        std::env::remove_var("OPEN_WEB_SERVER_TLS_TOKEN");
+        assert_eq!(http_status(addr, Method::POST, "/admin/tenants/t.example/tls", &[("x-tls-token", "tls-secret")], bad_pem).await, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn static_token_mode_switches_without_rebuild_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        let _reset = EnvVarsReset(AUTH_TEST_VARS);
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "adm-secret");
+        std::env::set_var("OPEN_WEB_SERVER_TLS_TOKEN", "tls-secret");
+        let addr = spawn_test_server().await;
+        let list = |tok: &'static str| async move { http_status(addr, Method::GET, "/admin/tenants", &[("x-admin-token", tok)], "").await };
+
+        // 既定(未設定)=any: 従来互換。
+        assert_eq!(list("adm-secret").await, StatusCode::OK);
+        assert_eq!(list("wrong").await, StatusCode::UNAUTHORIZED);
+        // loopback: テストクライアントはループバックなので通る。
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE", "loopback");
+        assert_eq!(list("adm-secret").await, StatusCode::OK);
+        assert_eq!(list("wrong").await, StatusCode::UNAUTHORIZED);
+        // off: 正しいトークンでも拒否。TLSトークン経路は影響を受けない。
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE", "off");
+        assert_eq!(list("adm-secret").await, StatusCode::FORBIDDEN);
+        assert_eq!(http_status(addr, Method::DELETE, "/admin/tenants/t.example/tls", &[("x-tls-token", "tls-secret")], "").await, StatusCode::OK);
+        // 再ビルド無しで any に戻せる。
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE", "any");
+        assert_eq!(list("adm-secret").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_api_is_fail_closed_without_a_token_unless_dev_opt_in() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        let _reset = EnvVarsReset(AUTH_TEST_VARS);
+        for k in AUTH_TEST_VARS {
+            std::env::remove_var(k);
+        }
+        let addr = spawn_test_server().await;
+        assert_eq!(http_status(addr, Method::GET, "/admin/tenants", &[], "").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(http_status(addr, Method::GET, "/admin/tenants", &[("x-admin-token", "")], "").await, StatusCode::SERVICE_UNAVAILABLE);
+        // 公開側(healthz)は影響を受けない。
+        assert_eq!(http_status(addr, Method::GET, "/healthz", &[], "").await, StatusCode::OK);
+
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_INSECURE_DEV", "true");
+        assert_eq!(http_status(addr, Method::GET, "/admin/tenants", &[], "").await, StatusCode::OK);
+    }
+
+    #[cfg(feature = "admin-2fa")]
+    #[tokio::test]
+    async fn two_factor_endpoints_are_hardened_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        let _reset = EnvVarsReset(AUTH_TEST_VARS);
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "adm-secret");
+        let addr = spawn_test_server().await;
+
+        // request-otp: 同一owner+IPは4回目で429。1〜3回目は(登録の有無に関わらず)200。
+        for _ in 0..3 {
+            assert_eq!(http_status(addr, Method::POST, "/admin/login/request-otp", &[], r#"{"owner":"nobody"}"#).await, StatusCode::OK);
+        }
+        assert_eq!(http_status(addr, Method::POST, "/admin/login/request-otp", &[], r#"{"owner":"nobody"}"#).await, StatusCode::TOO_MANY_REQUESTS);
+
+        // 連続失敗5回で /admin/login/verify は429(ロック)。
+        let bad = r#"{"owner":"victim","email_otp":"000000","totp_code":"000000"}"#;
+        for _ in 0..5 {
+            assert_eq!(http_status(addr, Method::POST, "/admin/login/verify", &[], bad).await, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(http_status(addr, Method::POST, "/admin/login/verify", &[], bad).await, StatusCode::TOO_MANY_REQUESTS);
+
+        // reset は break-glass(静的トークン)必須。トークン無しは401、あれば(存在しないownerで)404。
+        assert_eq!(http_status(addr, Method::POST, "/admin/2fa/reset", &[], r#"{"owner":"victim"}"#).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(http_status(addr, Method::POST, "/admin/2fa/reset", &[("x-admin-token", "adm-secret")], r#"{"owner":"victim"}"#).await, StatusCode::NOT_FOUND);
+        // 未確認ownerの再登録は引き続き可能(確認済みの拒否は単体テストで検証)。
+        assert_eq!(http_status(addr, Method::POST, "/admin/2fa/enroll", &[("x-admin-token", "adm-secret")], r#"{"owner":"newbie"}"#).await, StatusCode::CREATED);
+        assert_eq!(http_status(addr, Method::POST, "/admin/2fa/enroll", &[("x-admin-token", "adm-secret")], r#"{"owner":"newbie"}"#).await, StatusCode::CREATED);
     }
 }

@@ -14,7 +14,7 @@
 //!    撮影)・`POST /admin/2fa/confirm`で初回コードを確認。
 //! 2. 以後のログインは`POST /admin/login/request-otp`(メールOTP送信)→
 //!    `POST /admin/login/verify`(メールOTP+TOTPコードの両方を提示)→
-//!    成功すれば新しいBearerキー(既定12時間有効)を1回だけ返す。
+//!    成功すれば新しいBearerキー(既定2時間有効)を1回だけ返す。
 
 use std::sync::Arc;
 
@@ -24,8 +24,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::response::{json_response, read_json_body, text_response, BoxBody};
 use crate::state::AppState;
+use crate::two_factor::LoginCheck;
 
-const LOGIN_KEY_VALIDITY_HOURS: i64 = 12;
+/// ログインキーの既定有効期間(分)。以前は12時間だったが窃取時の窓を
+/// 狭めるため2時間に短縮。`OPEN_WEB_SERVER_LOGIN_KEY_TTL_MINUTES`で変更可
+/// (5〜720分にクランプ)。
+const DEFAULT_LOGIN_KEY_TTL_MINUTES: i64 = 120;
+
+fn login_key_ttl_minutes(raw: Option<&str>) -> i64 {
+    raw.and_then(|v| v.trim().parse::<i64>().ok())
+        .map(|m| m.clamp(5, 720))
+        .unwrap_or(DEFAULT_LOGIN_KEY_TTL_MINUTES)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct EnrollRequest {
@@ -56,11 +66,42 @@ pub async fn enroll(state: Arc<AppState>, req: Request<Incoming>) -> Response<Bo
     if body.owner.trim().is_empty() {
         return text_response(StatusCode::BAD_REQUEST, "owner must not be empty");
     }
-    let resp = state.two_factor.enroll(&body.owner, body.email, body.phone_number);
+    let resp = match state.two_factor.enroll(&body.owner, body.email, body.phone_number) {
+        Ok(r) => r,
+        Err(crate::two_factor::EnrollError::AlreadyConfirmed) => {
+            return text_response(
+                StatusCode::CONFLICT,
+                "2FA is already confirmed for this owner; re-enrolment requires POST /admin/2fa/reset (loopback + static admin token)",
+            )
+        }
+    };
     json_response(
         StatusCode::CREATED,
         &EnrollResponse { owner: resp.owner, secret_base32: resp.secret_base32, otpauth_url: resp.otpauth_url, qr_svg: resp.qr_svg },
     )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetRequest {
+    pub owner: String,
+}
+
+/// `POST /admin/2fa/reset` — 登録(確認済みを含む)を削除する。2FA自体を
+/// 迂回しうる操作なので、**break-glass認証(静的トークン+ループバック
+/// 限定)のみ**を受け付け、人用のBearerキーでは実行できない。
+pub async fn reset_enrollment(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+    if let Err(resp) = super::tenants::check_breakglass_auth(&req) {
+        return resp;
+    }
+    let body: ResetRequest = match read_json_body(req).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    if state.two_factor.reset(&body.owner) {
+        json_response(StatusCode::OK, &serde_json::json!({ "reset": true }))
+    } else {
+        text_response(StatusCode::NOT_FOUND, "no 2FA enrolment for this owner")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,14 +136,33 @@ pub struct RequestOtpRequest {
 /// 返す(owner列挙攻撃を避けるため、実際にメールが送られたかどうかを
 /// レスポンスから判別できないようにする)。
 pub async fn request_otp(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+    let peer_ip = req
+        .extensions()
+        .get::<crate::PeerAddr>()
+        .and_then(|p| p.0)
+        .map(|a| a.ip().to_canonical().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     let body: RequestOtpRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
     };
 
+    let now = chrono::Utc::now();
+    // owner+IPごとのレート制限。登録済みか否かに関わらず同じ制限を課す
+    // ので、429の有無からownerの存在は分からない。
+    if !state.two_factor.allow_otp_request(&body.owner, &peer_ip, now) {
+        return text_response(StatusCode::TOO_MANY_REQUESTS, "too many OTP requests; try again later");
+    }
+
+    // 有効なチャレンジがある間は再発行しない(正規ユーザーのOTPを第三者が
+    // 上書き・無効化し続けるログイン妨害と、メール爆撃を防ぐ)。
+    if state.two_factor.has_active_email_challenge(&body.owner, now) {
+        return json_response(StatusCode::OK, &serde_json::json!({ "message": "if this owner has 2FA enrolled, an OTP email has been sent" }));
+    }
+
     if let Some(email) = state.two_factor.email_for(&body.owner) {
         if let Some(smtp_config) = crate::two_factor::SmtpConfig::from_env() {
-            let code = state.two_factor.issue_email_otp(&body.owner, chrono::Utc::now());
+            let code = state.two_factor.issue_email_otp(&body.owner, now);
             let two_factor = state.two_factor.clone();
             let owner = body.owner.clone();
             // メール送信(同期SMTP)はブロッキングI/Oのため、リクエスト
@@ -142,10 +202,10 @@ pub async fn verify_suspension_override(state: Arc<AppState>, req: Request<Incom
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    if state.two_factor.verify_for_override(&body.owner, &body.totp_code, chrono::Utc::now()) {
-        json_response(StatusCode::OK, &serde_json::json!({ "override_granted": true }))
-    } else {
-        text_response(StatusCode::UNAUTHORIZED, "invalid TOTP code, or 2FA not confirmed for this owner")
+    match state.two_factor.verify_for_override(&body.owner, &body.totp_code, chrono::Utc::now()) {
+        LoginCheck::Success => json_response(StatusCode::OK, &serde_json::json!({ "override_granted": true })),
+        LoginCheck::Locked => text_response(StatusCode::TOO_MANY_REQUESTS, "too many failed attempts; locked temporarily"),
+        LoginCheck::Invalid => text_response(StatusCode::UNAUTHORIZED, "invalid TOTP code, or 2FA not confirmed for this owner"),
     }
 }
 
@@ -160,11 +220,11 @@ pub struct VerifyLoginRequest {
 pub struct VerifyLoginResponse {
     pub key: String,
     pub owner: String,
-    pub expires_in_hours: i64,
+    pub expires_in_minutes: i64,
 }
 
 /// `POST /admin/login/verify` — **認証不要**(ログインフローの本体)。
-/// メールOTP・TOTPコードの両方が正しい場合のみ、既定12時間有効の
+/// メールOTP・TOTPコードの両方が正しい場合のみ、既定2時間有効の
 /// `KeyGuardian`Bearerキーを新規発行して返す(以後の管理API呼び出しは
 /// このキーを`Authorization: Bearer`で使う、既存のキー方式をそのまま
 /// 再利用)。
@@ -175,15 +235,34 @@ pub async fn verify_login(state: Arc<AppState>, req: Request<Incoming>) -> Respo
     };
 
     let now = chrono::Utc::now();
-    if !state.two_factor.verify_login(&body.owner, &body.email_otp, &body.totp_code, now) {
-        return text_response(StatusCode::UNAUTHORIZED, "email OTP and/or TOTP code invalid, expired, or 2FA not enrolled for this owner");
+    match state.two_factor.verify_login(&body.owner, &body.email_otp, &body.totp_code, now) {
+        LoginCheck::Success => {}
+        LoginCheck::Locked => return text_response(StatusCode::TOO_MANY_REQUESTS, "too many failed attempts; locked temporarily"),
+        LoginCheck::Invalid => {
+            return text_response(StatusCode::UNAUTHORIZED, "email OTP and/or TOTP code invalid, expired, or 2FA not enrolled for this owner")
+        }
     }
 
-    let expires_at = now + chrono::Duration::hours(LOGIN_KEY_VALIDITY_HOURS);
+    let ttl_minutes = login_key_ttl_minutes(std::env::var("OPEN_WEB_SERVER_LOGIN_KEY_TTL_MINUTES").ok().as_deref());
+    let expires_at = now + chrono::Duration::minutes(ttl_minutes);
     let key = state.keyring.issue(&body.owner, vec!["admin".to_string()], Some(expires_at));
 
     json_response(
         StatusCode::OK,
-        &VerifyLoginResponse { key, owner: body.owner, expires_in_hours: LOGIN_KEY_VALIDITY_HOURS },
+        &VerifyLoginResponse { key, owner: body.owner, expires_in_minutes: ttl_minutes },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_key_ttl_defaults_to_two_hours_and_clamps() {
+        assert_eq!(login_key_ttl_minutes(None), 120);
+        assert_eq!(login_key_ttl_minutes(Some("abc")), 120);
+        assert_eq!(login_key_ttl_minutes(Some("30")), 30);
+        assert_eq!(login_key_ttl_minutes(Some("1")), 5);
+        assert_eq!(login_key_ttl_minutes(Some("100000")), 720);
+    }
 }

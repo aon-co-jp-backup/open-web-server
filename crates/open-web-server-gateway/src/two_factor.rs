@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -78,18 +78,61 @@ fn totp_at(secret: &[u8], time: DateTime<Utc>) -> u32 {
 
 /// TOTPコード(利用者がタップミス等で少し前後した時刻のコードを送って
 /// くることを許容するため、前後1ステップ=最大±30秒のクロックずれを
-/// 許容する、標準的なTOTP実装の慣行)を検証する。
-fn totp_matches(secret: &[u8], code: &str, now: DateTime<Utc>) -> bool {
-    let Ok(provided) = code.trim().parse::<u32>() else {
-        return false;
-    };
+/// 許容する、標準的なTOTP実装の慣行)を検証し、一致した**ステップ番号**
+/// (Unix秒/30)を返す。呼び出し側は直近に受理したステップ以下を拒否
+/// することでコードの再利用(リプレイ)を防ぐ。
+fn totp_matching_step(secret: &[u8], code: &str, now: DateTime<Utc>) -> Option<i64> {
+    let provided = code.trim().parse::<u32>().ok()?;
     for step_offset in [-1i64, 0, 1] {
         let shifted = now + chrono::Duration::seconds(step_offset * TOTP_STEP_SECS);
         if totp_at(secret, shifted) == provided {
-            return true;
+            return Some(shifted.timestamp() / TOTP_STEP_SECS);
         }
     }
-    false
+    None
+}
+
+/// 直近受理ステップより新しいステップで一致した場合のみ、そのステップを返す。
+fn fresh_totp_step(e: &TotpEnrollment, code: &str, now: DateTime<Utc>) -> Option<i64> {
+    totp_matching_step(&e.secret, code, now).filter(|s| e.last_used_step.is_none_or(|last| *s > last))
+}
+
+/// メールOTP要求のレート制限(owner+IPごと)。
+const OTP_REQUEST_LIMIT: usize = 3;
+const OTP_REQUEST_WINDOW_SECS: i64 = 300;
+/// 連続失敗の上限とロック時間(ownerごと)。
+const MAX_FAILED_ATTEMPTS: u32 = 5;
+const LOCKOUT_MINUTES: i64 = 15;
+/// 追跡テーブルの最大件数(認証不要エンドポイントからのメモリ枯渇対策)。
+const MAX_TRACKED_KEYS: usize = 10_000;
+
+/// ログイン/オーバーライド検証の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginCheck {
+    Success,
+    Invalid,
+    /// 連続失敗によりロック中(正しいコードでも拒否する)。
+    Locked,
+}
+
+impl LoginCheck {
+    #[cfg(test)]
+    pub fn is_success(self) -> bool {
+        self == Self::Success
+    }
+}
+
+#[derive(Debug)]
+pub enum EnrollError {
+    /// 確認済み(`confirmed`)の登録が既にある。再登録は明示的なresetが必要。
+    AlreadyConfirmed,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FailureState {
+    failures: u32,
+    window_start: DateTime<Utc>,
+    locked_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +143,10 @@ pub struct TotpEnrollment {
     /// 将来のSMS拡張向けの記録用フィールド(今回は送信ロジック未実装、
     /// モジュールdoc参照)。
     pub phone_number: Option<String>,
+    /// 最後に受理したTOTPステップ(再利用防止)。旧ファイルには無いので
+    /// 欠落時は`None`。
+    #[serde(default)]
+    pub last_used_step: Option<i64>,
 }
 
 /// TOTP登録済みシークレットを`path`へアトミックに書き込む(`keyring.rs`の
@@ -113,7 +160,7 @@ fn write_enrollments_atomically(path: &Path, enrollments: &HashMap<String, TotpE
     let json = serde_json::to_string_pretty(enrollments).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            create_private_dir_all(parent)?;
         }
     }
     let tmp_path = path.with_extension(format!(
@@ -121,8 +168,39 @@ fn write_enrollments_atomically(path: &Path, enrollments: &HashMap<String, TotpE
         path.extension().and_then(|e| e.to_str()).unwrap_or("json"),
         std::process::id()
     ));
-    std::fs::write(&tmp_path, json)?;
+    write_private_file(&tmp_path, json.as_bytes())?;
     std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// 所有者のみ読み書き可(Unixでは0600)でファイルを作成して書き込む。
+/// TOTPシークレットは平文で保存されるため、umask任せにしない。
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(contents)?;
+    f.sync_all()
+}
+
+/// 親ディレクトリを(無ければ)作成する。新規作成したディレクトリは
+/// Unixでは0700にする(既存ディレクトリの権限は勝手に変えない)。
+fn create_private_dir_all(dir: &Path) -> std::io::Result<()> {
+    let existed = dir.exists();
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    let _ = existed;
     Ok(())
 }
 
@@ -212,6 +290,10 @@ pub struct TwoFactorStore {
     enrollments: RwLock<HashMap<String, TotpEnrollment>>,
     overrides: RwLock<HashMap<String, DateTime<Utc>>>,
     email_challenges: RwLock<HashMap<String, EmailOtpChallenge>>,
+    /// `owner\nip`ごとのメールOTP要求時刻(レート制限用、メモリ上のみ)。
+    otp_requests: Mutex<HashMap<String, Vec<DateTime<Utc>>>>,
+    /// ownerごとの連続失敗/ロック状態(メモリ上のみ)。
+    failures: Mutex<HashMap<String, FailureState>>,
     persistence_path: Option<PathBuf>,
 }
 
@@ -232,12 +314,7 @@ impl TwoFactorStore {
             Some(path) => load_enrollments_from_path(path),
             None => HashMap::new(),
         };
-        Self {
-            enrollments: RwLock::new(enrollments),
-            overrides: RwLock::new(HashMap::new()),
-            email_challenges: RwLock::new(HashMap::new()),
-            persistence_path,
-        }
+        Self { enrollments: RwLock::new(enrollments), persistence_path, ..Self::default() }
     }
 
     fn persist(&self, enrollments: &HashMap<String, TotpEnrollment>) {
@@ -253,7 +330,11 @@ impl TwoFactorStore {
     /// 20バイト(160bit)のランダムシークレットを`ring::rand`で生成する
     /// (RFC 6238推奨のHMAC-SHA1鍵長)。`otpauth://`URIとQRコード(SVG)、
     /// 手入力用のBase32文字列を返す。
-    pub fn enroll(&self, owner: &str, email: Option<String>, phone_number: Option<String>) -> EnrollmentResponse {
+    ///
+    /// **確認済み(`confirmed`)のownerへの再登録は拒否する**(静的トークン
+    /// 保持者による秘密鍵の上書き=2FA迂回を防ぐ)。再登録したい場合は
+    /// 先に`reset`(break-glass認証必須)で削除する。未確認の登録は上書き可。
+    pub fn enroll(&self, owner: &str, email: Option<String>, phone_number: Option<String>) -> Result<EnrollmentResponse, EnrollError> {
         use ring::rand::{SecureRandom, SystemRandom};
         let mut secret = vec![0u8; 20];
         SystemRandom::new().fill(&mut secret).expect("system RNG must be available");
@@ -269,22 +350,42 @@ impl TwoFactorStore {
             .map(|code| code.render::<qrcode::render::svg::Color>().min_dimensions(240, 240).build());
 
         let mut enrollments = self.enrollments.write().unwrap();
-        enrollments.insert(owner.to_string(), TotpEnrollment { secret, confirmed: false, email, phone_number });
+        if enrollments.get(owner).is_some_and(|e| e.confirmed) {
+            return Err(EnrollError::AlreadyConfirmed);
+        }
+        enrollments.insert(owner.to_string(), TotpEnrollment { secret, confirmed: false, email, phone_number, last_used_step: None });
         self.persist(&enrollments);
         drop(enrollments);
 
-        EnrollmentResponse { owner: owner.to_string(), secret_base32, otpauth_url, qr_svg }
+        Ok(EnrollmentResponse { owner: owner.to_string(), secret_base32, otpauth_url, qr_svg })
+    }
+
+    /// `owner`の登録(確認済みを含む)を削除する。呼び出し側(break-glass
+    /// 認証済みのハンドラ)の責務で認可すること。削除したら`true`。
+    pub fn reset(&self, owner: &str) -> bool {
+        let mut enrollments = self.enrollments.write().unwrap();
+        let removed = enrollments.remove(owner).is_some();
+        if removed {
+            self.persist(&enrollments);
+        }
+        drop(enrollments);
+        self.overrides.write().unwrap().remove(owner);
+        self.email_challenges.write().unwrap().remove(owner);
+        self.failures.lock().unwrap().remove(owner);
+        removed
     }
 
     /// 登録直後の確認(初回スキャンしたコードが正しいか)。成功したら
     /// `confirmed = true`にし、以後の異常検知時の2FAチェック対象になる。
+    /// 確認に使ったTOTPステップは再利用できない。
     pub fn confirm(&self, owner: &str, code: &str, now: DateTime<Utc>) -> bool {
         let mut enrollments = self.enrollments.write().unwrap();
         let Some(enrollment) = enrollments.get_mut(owner) else {
             return false;
         };
-        if totp_matches(&enrollment.secret, code, now) {
+        if let Some(step) = fresh_totp_step(enrollment, code, now) {
             enrollment.confirmed = true;
+            enrollment.last_used_step = Some(step);
             self.persist(&enrollments);
             true
         } else {
@@ -297,20 +398,70 @@ impl TwoFactorStore {
         self.enrollments.read().unwrap().get(owner).is_some_and(|e| e.confirmed)
     }
 
+    /// 確認済み登録のTOTPコードを検証し、成功ならそのステップを消費する
+    /// (再利用防止)。永続化もここで行う。
+    fn consume_totp(&self, owner: &str, code: &str, now: DateTime<Utc>) -> bool {
+        let mut enrollments = self.enrollments.write().unwrap();
+        let Some(e) = enrollments.get_mut(owner).filter(|e| e.confirmed) else {
+            return false;
+        };
+        let Some(step) = fresh_totp_step(e, code, now) else {
+            return false;
+        };
+        e.last_used_step = Some(step);
+        self.persist(&enrollments);
+        true
+    }
+
+    fn is_locked(&self, owner: &str, now: DateTime<Utc>) -> bool {
+        self.failures
+            .lock()
+            .unwrap()
+            .get(owner)
+            .is_some_and(|f| f.locked_until.is_some_and(|until| until > now))
+    }
+
+    /// 失敗を1回記録する。`MAX_FAILED_ATTEMPTS`回目で`LOCKOUT_MINUTES`分
+    /// ロックする。窓(ロック時間と同じ長さ)を過ぎた古い失敗は数えない。
+    fn record_failure(&self, owner: &str, now: DateTime<Utc>) {
+        let mut map = self.failures.lock().unwrap();
+        if map.len() >= MAX_TRACKED_KEYS {
+            map.retain(|_, f| f.locked_until.is_some_and(|u| u > now) || now - f.window_start < chrono::Duration::minutes(LOCKOUT_MINUTES));
+            if map.len() >= MAX_TRACKED_KEYS {
+                map.clear();
+            }
+        }
+        let entry = map.entry(owner.to_string()).or_insert(FailureState { failures: 0, window_start: now, locked_until: None });
+        if now - entry.window_start >= chrono::Duration::minutes(LOCKOUT_MINUTES) && entry.locked_until.is_none_or(|u| u <= now) {
+            *entry = FailureState { failures: 0, window_start: now, locked_until: None };
+        }
+        entry.failures += 1;
+        if entry.failures >= MAX_FAILED_ATTEMPTS {
+            entry.locked_until = Some(now + chrono::Duration::minutes(LOCKOUT_MINUTES));
+            entry.failures = 0;
+            entry.window_start = now;
+        }
+    }
+
+    fn clear_failures(&self, owner: &str) {
+        self.failures.lock().unwrap().remove(owner);
+    }
+
     /// 異常検知(`KeyDecision::Suspended`)時の追加確認。成功すれば
     /// `OVERRIDE_VALIDITY_MINUTES`分だけ`Suspended`状態を上書きする。
-    pub fn verify_for_override(&self, owner: &str, code: &str, now: DateTime<Utc>) -> bool {
-        let matches = {
-            let enrollments = self.enrollments.read().unwrap();
-            match enrollments.get(owner) {
-                Some(e) if e.confirmed => totp_matches(&e.secret, code, now),
-                _ => false,
-            }
-        };
-        if matches {
-            self.overrides.write().unwrap().insert(owner.to_string(), now + chrono::Duration::minutes(OVERRIDE_VALIDITY_MINUTES));
+    /// 連続失敗は`verify_login`と共有のカウンタでロックされる。
+    pub fn verify_for_override(&self, owner: &str, code: &str, now: DateTime<Utc>) -> LoginCheck {
+        if self.is_locked(owner, now) {
+            return LoginCheck::Locked;
         }
-        matches
+        if self.consume_totp(owner, code, now) {
+            self.clear_failures(owner);
+            self.overrides.write().unwrap().insert(owner.to_string(), now + chrono::Duration::minutes(OVERRIDE_VALIDITY_MINUTES));
+            LoginCheck::Success
+        } else {
+            self.record_failure(owner, now);
+            LoginCheck::Invalid
+        }
     }
 
     /// 現在有効な(=期限内の)2FA通過済みオーバーライドを持っているか。
@@ -322,6 +473,33 @@ impl TwoFactorStore {
     /// `None`)。
     pub fn email_for(&self, owner: &str) -> Option<String> {
         self.enrollments.read().unwrap().get(owner).and_then(|e| e.email.clone())
+    }
+
+    /// `POST /admin/login/request-otp`のレート制限。owner+接続元IPごとに
+    /// `OTP_REQUEST_WINDOW_SECS`秒あたり`OTP_REQUEST_LIMIT`回まで。
+    /// 許可する場合は今回の要求を記録して`true`。登録済みか否かに関わらず
+    /// 全ownerに同じ制限を課す(存在有無が応答から漏れないように)。
+    pub fn allow_otp_request(&self, owner: &str, ip: &str, now: DateTime<Utc>) -> bool {
+        let window = chrono::Duration::seconds(OTP_REQUEST_WINDOW_SECS);
+        let mut map = self.otp_requests.lock().unwrap();
+        if map.len() >= MAX_TRACKED_KEYS {
+            map.retain(|_, v| v.iter().any(|t| now - *t < window));
+            if map.len() >= MAX_TRACKED_KEYS {
+                map.clear();
+            }
+        }
+        let times = map.entry(format!("{owner}\n{ip}")).or_default();
+        times.retain(|t| now - *t < window);
+        if times.len() >= OTP_REQUEST_LIMIT {
+            return false;
+        }
+        times.push(now);
+        true
+    }
+
+    /// 有効期限内のメールOTPチャレンジが既にあるか(あれば再発行しない)。
+    pub fn has_active_email_challenge(&self, owner: &str, now: DateTime<Utc>) -> bool {
+        self.email_challenges.read().unwrap().get(owner).is_some_and(|c| c.expires_at > now)
     }
 
     /// 6桁のメールOTPコードを生成し、`EMAIL_OTP_VALIDITY_MINUTES`分の
@@ -342,36 +520,31 @@ impl TwoFactorStore {
         challenges.get(owner).is_some_and(|c| c.expires_at > now && constant_time_eq(&c.code, code.trim()))
     }
 
-    /// **ログインフロー本体(2026-07-30新設、ユーザー指示「常に二段階認証
-    /// (メールOTP + QR/TOTP両方必須)」)**: メールOTPとTOTPコードの
-    /// **両方**が正しい場合のみ成功し、成功時はメールOTPチャレンジを
-    /// 消費(使い捨て)した上で、`OVERRIDE_VALIDITY_MINUTES`分の
-    /// オーバーライドを発行する(これを使って`keyring`から実際の
-    /// Bearerキーを発行するのは呼び出し側=`handlers::admin_login`の
-    /// 責務)。
-    pub fn verify_login(&self, owner: &str, email_code: &str, totp_code: &str, now: DateTime<Utc>) -> bool {
-        if !self.email_otp_matches(owner, email_code, now) {
-            return false;
+    /// **ログインフロー本体(ユーザー指示「常に二段階認証(メールOTP +
+    /// QR/TOTP両方必須)」)**: メールOTPとTOTPコードの**両方**が正しい
+    /// 場合のみ成功する。
+    ///
+    /// - 失敗するとそのownerのメールOTPチャレンジを無効化する(同じOTPで
+    ///   総当たりを続けられない)。
+    /// - ownerごとに連続`MAX_FAILED_ATTEMPTS`回失敗で`LOCKOUT_MINUTES`分
+    ///   ロックし、ロック中は正しいコードでも拒否する。
+    /// - 成功時はメールOTPを消費し、TOTPのステップも消費する(再利用不可)。
+    ///
+    /// 認証不要エンドポイントなので、ロックによる第三者のログイン妨害
+    /// (DoS)の余地は残る。復旧はロック時間経過、またはbreak-glassの
+    /// `POST /admin/2fa/reset`で行う。
+    pub fn verify_login(&self, owner: &str, email_code: &str, totp_code: &str, now: DateTime<Utc>) -> LoginCheck {
+        if self.is_locked(owner, now) {
+            return LoginCheck::Locked;
         }
-        let totp_ok = {
-            let enrollments = self.enrollments.read().unwrap();
-            match enrollments.get(owner) {
-                Some(e) if e.confirmed => totp_matches(&e.secret, totp_code, now),
-                _ => false,
-            }
-        };
-        if !totp_ok {
-            return false;
+        if self.email_otp_matches(owner, email_code, now) && self.consume_totp(owner, totp_code, now) {
+            self.email_challenges.write().unwrap().remove(owner);
+            self.clear_failures(owner);
+            return LoginCheck::Success;
         }
-        // 両方成功した場合のみ、メールOTPを使い捨てとして消費する
-        // (片方だけ正しい試行では消費しない——ブルートフォースで
-        // メールOTPだけ先に当てられても、TOTPが揃うまで何度でも
-        // 再試行されてしまう問題を避けるため、この設計は今回のスコープの
-        // 限界として明記: 真の対策にはメールOTP自体にも試行回数制限を
-        // 設けるべきだが、6桁OTP+5分有効期限+TOTPとの併用という多層に
-        // より実用上のブルートフォース耐性は確保できていると判断した)。
         self.email_challenges.write().unwrap().remove(owner);
-        true
+        self.record_failure(owner, now);
+        LoginCheck::Invalid
     }
 }
 
@@ -399,6 +572,27 @@ pub struct EnrollmentResponse {
 mod tests {
     use super::*;
 
+    fn secret_of(store: &TwoFactorStore, owner: &str) -> Vec<u8> {
+        store.enrollments.read().unwrap().get(owner).unwrap().secret.clone()
+    }
+
+    fn code_at(store: &TwoFactorStore, owner: &str, t: DateTime<Utc>) -> String {
+        format!("{:06}", totp_at(&secret_of(store, owner), t))
+    }
+
+    /// 確認済みのownerを作る(確認に使ったステップは`t0`)。
+    fn confirmed_store(owner: &str, email: Option<&str>, t0: DateTime<Utc>) -> TwoFactorStore {
+        let store = TwoFactorStore::new();
+        store.enroll(owner, email.map(String::from), None).unwrap();
+        let c = code_at(&store, owner, t0);
+        assert!(store.confirm(owner, &c, t0));
+        store
+    }
+
+    fn step(secs: i64) -> chrono::Duration {
+        chrono::Duration::seconds(secs)
+    }
+
     #[test]
     fn base32_encode_matches_known_vector() {
         // RFC 4648のテストベクタ("foobar" -> "MZXW6YTBOI======"、
@@ -410,16 +604,11 @@ mod tests {
     fn enroll_then_confirm_with_the_real_totp_code_succeeds() {
         let store = TwoFactorStore::new();
         let now = Utc::now();
-        let resp = store.enroll("alice", None, None);
+        let resp = store.enroll("alice", None, None).unwrap();
         assert!(resp.otpauth_url.contains("alice"));
         assert!(resp.qr_svg.is_some(), "QR SVG should be generated");
 
-        // 実際にシークレットからその瞬間のコードを計算して確認する
-        // (テストなので内部状態を直接読む——本物のTOTPアプリが行う計算を
-        // そのまま再現する)。
-        let secret = store.enrollments.read().unwrap().get("alice").unwrap().secret.clone();
-        let real_code = format!("{:06}", totp_at(&secret, now));
-
+        let real_code = code_at(&store, "alice", now);
         assert!(!store.has_confirmed_enrollment("alice"));
         assert!(store.confirm("alice", &real_code, now));
         assert!(store.has_confirmed_enrollment("alice"));
@@ -428,7 +617,7 @@ mod tests {
     #[test]
     fn confirm_with_wrong_code_fails_and_does_not_confirm() {
         let store = TwoFactorStore::new();
-        store.enroll("bob", None, None);
+        store.enroll("bob", None, None).unwrap();
         assert!(!store.confirm("bob", "000000", Utc::now()));
         assert!(!store.has_confirmed_enrollment("bob"));
     }
@@ -437,125 +626,264 @@ mod tests {
     fn verify_for_override_requires_prior_confirmation() {
         let store = TwoFactorStore::new();
         let now = Utc::now();
-        store.enroll("carol", None, None);
-        let secret = store.enrollments.read().unwrap().get("carol").unwrap().secret.clone();
-        let real_code = format!("{:06}", totp_at(&secret, now));
+        store.enroll("carol", None, None).unwrap();
+        let real_code = code_at(&store, "carol", now);
 
         // まだconfirmしていないので、正しいコードでもoverrideは発行されない。
-        assert!(!store.verify_for_override("carol", &real_code, now));
+        assert!(!store.verify_for_override("carol", &real_code, now).is_success());
         assert!(!store.has_valid_override("carol", now));
 
-        store.confirm("carol", &real_code, now);
-        assert!(store.verify_for_override("carol", &real_code, now));
-        assert!(store.has_valid_override("carol", now));
+        assert!(store.confirm("carol", &real_code, now));
+        // confirmで使ったステップは再利用できないので、次のステップのコードを使う。
+        let later = now + step(60);
+        let next_code = code_at(&store, "carol", later);
+        assert!(store.verify_for_override("carol", &next_code, later).is_success());
+        assert!(store.has_valid_override("carol", later));
     }
 
     #[test]
     fn override_expires_after_validity_window() {
-        let store = TwoFactorStore::new();
-        let now = Utc::now();
-        store.enroll("dave", None, None);
-        let secret = store.enrollments.read().unwrap().get("dave").unwrap().secret.clone();
-        let real_code = format!("{:06}", totp_at(&secret, now));
-        store.confirm("dave", &real_code, now);
-        assert!(store.verify_for_override("dave", &real_code, now));
+        let t0 = Utc::now();
+        let store = confirmed_store("dave", None, t0);
+        let later = t0 + step(60);
+        let c = code_at(&store, "dave", later);
+        assert!(store.verify_for_override("dave", &c, later).is_success());
 
-        assert!(store.has_valid_override("dave", now + chrono::Duration::minutes(10)));
-        assert!(!store.has_valid_override("dave", now + chrono::Duration::minutes(16)));
+        assert!(store.has_valid_override("dave", later + chrono::Duration::minutes(10)));
+        assert!(!store.has_valid_override("dave", later + chrono::Duration::minutes(16)));
     }
 
     #[test]
     fn totp_tolerates_one_step_of_clock_skew_but_not_two() {
         let secret = b"a-fixed-test-secret-".to_vec();
         let now = Utc::now();
-        let code_one_step_ago = format!("{:06}", totp_at(&secret, now - chrono::Duration::seconds(TOTP_STEP_SECS)));
-        let code_two_steps_ago = format!("{:06}", totp_at(&secret, now - chrono::Duration::seconds(2 * TOTP_STEP_SECS)));
-        assert!(totp_matches(&secret, &code_one_step_ago, now));
-        assert!(!totp_matches(&secret, &code_two_steps_ago, now));
+        let code_one_step_ago = format!("{:06}", totp_at(&secret, now - step(TOTP_STEP_SECS)));
+        let code_two_steps_ago = format!("{:06}", totp_at(&secret, now - step(2 * TOTP_STEP_SECS)));
+        assert!(totp_matching_step(&secret, &code_one_step_ago, now).is_some());
+        assert!(totp_matching_step(&secret, &code_two_steps_ago, now).is_none());
     }
 
-    /// `verify_login`(ユーザー指示「常に二段階認証(メールOTP+QR/TOTP
-    /// 両方必須)」の中核ロジック)は、**両方**正しくなければ成功しない
-    /// ことを網羅的に検証する: 片方だけ正しい2パターン(メールOTPのみ
-    /// 正しい・TOTPのみ正しい)はいずれも失敗し、両方正しい場合のみ
-    /// 成功する。
+    /// `verify_login`は**両方**正しくなければ成功しない。片方だけ正しい
+    /// 試行は失敗し、さらに失敗するとメールOTPチャレンジが無効化される
+    /// (総当たりを同じOTPで続けられない)。
     #[test]
     fn verify_login_requires_both_email_otp_and_totp_to_succeed() {
-        let store = TwoFactorStore::new();
-        let now = Utc::now();
-        store.enroll("erin", Some("erin@example.test".to_string()), None);
-        let secret = store.enrollments.read().unwrap().get("erin").unwrap().secret.clone();
-        let real_totp = format!("{:06}", totp_at(&secret, now));
-        store.confirm("erin", &real_totp, now);
+        let t0 = Utc::now();
+        let store = confirmed_store("erin", Some("erin@example.test"), t0);
+        let now = t0 + step(60);
+        let real_totp = code_at(&store, "erin", now);
 
-        let real_email_otp = store.issue_email_otp("erin", now);
+        // TOTPのみ正しい → 失敗(チャレンジも無効化される)。
+        let otp = store.issue_email_otp("erin", now);
+        assert_eq!(store.verify_login("erin", "000000", &real_totp, now), LoginCheck::Invalid);
+        assert!(!store.has_active_email_challenge("erin", now), "failure must invalidate the challenge");
+        // 無効化後は正しいメールOTPでも通らない。
+        assert_eq!(store.verify_login("erin", &otp, &real_totp, now), LoginCheck::Invalid);
 
-        // TOTPのみ正しい(メールOTPは適当な値) → 失敗。
-        assert!(!store.verify_login("erin", "000000", &real_totp, now));
-        // メールOTPのみ正しい(TOTPは適当な値) → 失敗。
-        assert!(!store.verify_login("erin", &real_email_otp, "000000", now));
-        // 両方正しい → 成功。
-        assert!(store.verify_login("erin", &real_email_otp, &real_totp, now));
-        // 成功後はメールOTPが使い捨てのため、同じコードでの再試行は失敗する。
-        assert!(!store.verify_login("erin", &real_email_otp, &real_totp, now));
+        // メールOTPのみ正しい → 失敗。
+        let otp = store.issue_email_otp("erin", now);
+        assert_eq!(store.verify_login("erin", &otp, "000000", now), LoginCheck::Invalid);
+
+        // 両方正しい → 成功。成功後は同じOTPでの再試行は失敗する。
+        let otp = store.issue_email_otp("erin", now);
+        assert_eq!(store.verify_login("erin", &otp, &real_totp, now), LoginCheck::Success);
+        assert!(!store.verify_login("erin", &otp, &real_totp, now).is_success());
     }
 
     #[test]
     fn verify_login_fails_without_confirmed_totp_enrollment() {
         let store = TwoFactorStore::new();
         let now = Utc::now();
-        // enrollしたがconfirmしていない owner。
-        store.enroll("frank", Some("frank@example.test".to_string()), None);
+        store.enroll("frank", Some("frank@example.test".to_string()), None).unwrap();
         let email_otp = store.issue_email_otp("frank", now);
-        let secret = store.enrollments.read().unwrap().get("frank").unwrap().secret.clone();
-        let real_totp = format!("{:06}", totp_at(&secret, now));
-        assert!(!store.verify_login("frank", &email_otp, &real_totp, now), "unconfirmed TOTP enrollment must not authorize login");
+        let real_totp = code_at(&store, "frank", now);
+        assert!(!store.verify_login("frank", &email_otp, &real_totp, now).is_success(), "unconfirmed TOTP enrollment must not authorize login");
     }
 
-    /// プロセス再起動を想定し、確認済みTOTP登録が独立した第二の
-    /// `TwoFactorStore`インスタンスへ実ファイル経由で引き継がれることを
-    /// 検証する(`KeyGuardian`の`issued_key_survives_reload_into_a_fresh_
-    /// instance`と同じ検証パターン)。
+    #[test]
+    fn totp_code_cannot_be_reused_after_login() {
+        let t0 = Utc::now();
+        let store = confirmed_store("gina", Some("gina@example.test"), t0);
+        let now = t0 + step(60);
+        let totp = code_at(&store, "gina", now);
+
+        let otp = store.issue_email_otp("gina", now);
+        assert!(store.verify_login("gina", &otp, &totp, now).is_success());
+
+        // 同じTOTPコード(盗み見・再送)+新しいメールOTP → 拒否。
+        let otp2 = store.issue_email_otp("gina", now);
+        assert!(!store.verify_login("gina", &otp2, &totp, now).is_success());
+        // 同じ窓内でも、次のステップの新しいコードなら通る。
+        let later = now + step(TOTP_STEP_SECS);
+        let totp2 = code_at(&store, "gina", later);
+        let otp3 = store.issue_email_otp("gina", later);
+        assert!(store.verify_login("gina", &otp3, &totp2, later).is_success());
+    }
+
+    #[test]
+    fn totp_code_used_for_confirm_cannot_be_replayed_for_override() {
+        let t0 = Utc::now();
+        let store = TwoFactorStore::new();
+        store.enroll("hal", None, None).unwrap();
+        let c = code_at(&store, "hal", t0);
+        assert!(store.confirm("hal", &c, t0));
+        assert!(!store.verify_for_override("hal", &c, t0).is_success());
+    }
+
+    #[test]
+    fn enroll_is_refused_for_confirmed_owner_until_reset() {
+        let t0 = Utc::now();
+        let store = confirmed_store("ivy", None, t0);
+        let before = secret_of(&store, "ivy");
+        assert!(matches!(store.enroll("ivy", None, None), Err(EnrollError::AlreadyConfirmed)));
+        assert_eq!(secret_of(&store, "ivy"), before, "secret must not be overwritten");
+        assert!(store.has_confirmed_enrollment("ivy"));
+
+        assert!(store.reset("ivy"));
+        assert!(!store.has_confirmed_enrollment("ivy"));
+        assert!(store.enroll("ivy", None, None).is_ok());
+        assert!(!store.reset("nobody"));
+    }
+
+    #[test]
+    fn unconfirmed_enrollment_can_be_overwritten() {
+        let store = TwoFactorStore::new();
+        store.enroll("jon", None, None).unwrap();
+        let first = secret_of(&store, "jon");
+        store.enroll("jon", None, None).unwrap();
+        assert_ne!(first, secret_of(&store, "jon"));
+    }
+
+    #[test]
+    fn five_consecutive_failures_lock_the_owner_even_for_correct_codes() {
+        let t0 = Utc::now();
+        let store = confirmed_store("kim", Some("kim@example.test"), t0);
+        let now = t0 + step(60);
+
+        for _ in 0..MAX_FAILED_ATTEMPTS {
+            assert_eq!(store.verify_login("kim", "000000", "000000", now), LoginCheck::Invalid);
+        }
+        // ロック中は正しい2要素でも拒否。
+        let otp = store.issue_email_otp("kim", now);
+        let totp = code_at(&store, "kim", now);
+        assert_eq!(store.verify_login("kim", &otp, &totp, now), LoginCheck::Locked);
+        assert_eq!(store.verify_for_override("kim", &totp, now), LoginCheck::Locked);
+
+        // ロック時間経過後は復帰する。
+        let after = now + chrono::Duration::minutes(LOCKOUT_MINUTES) + step(1);
+        let otp = store.issue_email_otp("kim", after);
+        let totp = code_at(&store, "kim", after);
+        assert_eq!(store.verify_login("kim", &otp, &totp, after), LoginCheck::Success);
+    }
+
+    #[test]
+    fn failures_are_per_owner_and_success_resets_the_counter() {
+        let t0 = Utc::now();
+        let store = confirmed_store("lee", Some("lee@example.test"), t0);
+        let now = t0 + step(60);
+        for _ in 0..(MAX_FAILED_ATTEMPTS - 1) {
+            assert_eq!(store.verify_login("lee", "000000", "000000", now), LoginCheck::Invalid);
+        }
+        // 他ownerの失敗はleeに影響しない。
+        for _ in 0..10 {
+            store.verify_login("someone-else", "000000", "000000", now);
+        }
+        let otp = store.issue_email_otp("lee", now);
+        let totp = code_at(&store, "lee", now);
+        assert_eq!(store.verify_login("lee", &otp, &totp, now), LoginCheck::Success);
+        // 成功でカウンタがリセットされ、また4回失敗してもロックされない。
+        for _ in 0..(MAX_FAILED_ATTEMPTS - 1) {
+            assert_eq!(store.verify_login("lee", "000000", "000000", now), LoginCheck::Invalid);
+        }
+    }
+
+    #[test]
+    fn override_failures_also_lock() {
+        let t0 = Utc::now();
+        let store = confirmed_store("max", None, t0);
+        let now = t0 + step(60);
+        for _ in 0..MAX_FAILED_ATTEMPTS {
+            assert_eq!(store.verify_for_override("max", "000000", now), LoginCheck::Invalid);
+        }
+        let totp = code_at(&store, "max", now);
+        assert_eq!(store.verify_for_override("max", &totp, now), LoginCheck::Locked);
+    }
+
+    #[test]
+    fn otp_requests_are_rate_limited_per_owner_and_ip() {
+        let store = TwoFactorStore::new();
+        let now = Utc::now();
+        for _ in 0..OTP_REQUEST_LIMIT {
+            assert!(store.allow_otp_request("nia", "203.0.113.1", now));
+        }
+        assert!(!store.allow_otp_request("nia", "203.0.113.1", now));
+        // 別IP・別ownerは独立。
+        assert!(store.allow_otp_request("nia", "203.0.113.2", now));
+        assert!(store.allow_otp_request("other", "203.0.113.1", now));
+        // 窓が過ぎれば再び許可。
+        let later = now + step(OTP_REQUEST_WINDOW_SECS + 1);
+        assert!(store.allow_otp_request("nia", "203.0.113.1", later));
+    }
+
+    #[test]
+    fn active_email_challenge_is_detected_until_it_expires() {
+        let store = TwoFactorStore::new();
+        let now = Utc::now();
+        assert!(!store.has_active_email_challenge("oz", now));
+        store.issue_email_otp("oz", now);
+        assert!(store.has_active_email_challenge("oz", now));
+        assert!(!store.has_active_email_challenge("oz", now + chrono::Duration::minutes(EMAIL_OTP_VALIDITY_MINUTES + 1)));
+    }
+
+    /// プロセス再起動を想定し、確認済みTOTP登録(と消費済みステップ)が
+    /// 独立した第二の`TwoFactorStore`インスタンスへ実ファイル経由で
+    /// 引き継がれ、権限が所有者のみになっていることを検証する。
     #[test]
     fn confirmed_enrollment_survives_reload_into_a_fresh_instance_via_disk() {
         let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-test-{}", uuid::Uuid::new_v4()));
-        let path = tmp_dir.join("2fa-store.json");
-        // SAFETY: このプロセス内で他のテストと環境変数名が衝突しないよう
-        // 一意な一時パスを使う(並列テスト実行下でも安全)。
-        unsafe {
-            std::env::set_var("OPEN_WEB_SERVER_2FA_STORE_PATH", &path);
-        }
-
+        let path = tmp_dir.join("sub").join("2fa-store.json");
         let now = Utc::now();
-        let store1 = TwoFactorStore::load_from_env();
-        store1.enroll("carol", None, None);
-        let secret = store1.enrollments.read().unwrap().get("carol").unwrap().secret.clone();
-        let real_code = format!("{:06}", totp_at(&secret, now));
+        // 環境変数を介さずに永続化パスを直接指定する(並列テストと衝突しない)。
+        let store1 = TwoFactorStore { persistence_path: Some(path.clone()), ..TwoFactorStore::default() };
+        store1.enroll("carol", None, None).unwrap();
+        let real_code = code_at(&store1, "carol", now);
         assert!(store1.confirm("carol", &real_code, now));
-        assert!(store1.has_confirmed_enrollment("carol"));
 
-        // 独立した第二のインスタンスが、同じディスク上のファイルから
-        // 確認済み状態を復元できることを確認する。
-        let store2 = TwoFactorStore::load_from_env();
+        let loaded = load_enrollments_from_path(&path);
+        let e = loaded.get("carol").expect("persisted");
+        assert!(e.confirmed);
+        assert!(e.last_used_step.is_some(), "consumed step must be persisted");
+        let store2 = TwoFactorStore { enrollments: RwLock::new(loaded), ..TwoFactorStore::default() };
         assert!(store2.has_confirmed_enrollment("carol"), "confirmed enrollment must survive reload from disk");
+        // 再起動後も、消費済みステップのコードは再利用できない。
+        assert!(!store2.verify_for_override("carol", &real_code, now).is_success());
 
-        unsafe {
-            std::env::remove_var("OPEN_WEB_SERVER_2FA_STORE_PATH");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "store file must be owner-only");
+            let dir_mode = std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700, "newly created store dir must be 0700");
         }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn old_store_files_without_last_used_step_still_load() {
+        let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-old-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("old.json");
+        std::fs::write(&path, r#"{"zed":{"secret":[1,2,3],"confirmed":true,"email":null,"phone_number":null}}"#).unwrap();
+        let loaded = load_enrollments_from_path(&path);
+        assert!(loaded.get("zed").is_some_and(|e| e.confirmed && e.last_used_step.is_none()));
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn missing_persistence_file_starts_empty_without_crashing() {
         let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-missing-{}", uuid::Uuid::new_v4()));
-        let path = tmp_dir.join("does-not-exist.json");
-        unsafe {
-            std::env::set_var("OPEN_WEB_SERVER_2FA_STORE_PATH", &path);
-        }
-        let store = TwoFactorStore::load_from_env();
-        assert!(!store.has_confirmed_enrollment("nobody"));
-        unsafe {
-            std::env::remove_var("OPEN_WEB_SERVER_2FA_STORE_PATH");
-        }
+        let loaded = load_enrollments_from_path(&tmp_dir.join("does-not-exist.json"));
+        assert!(loaded.is_empty());
     }
 }

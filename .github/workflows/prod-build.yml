@@ -1,0 +1,73 @@
+name: Production build (admin-2fa)
+
+# 本番VPS(AlmaLinux)向けの open-web-server を、本番と同じfeature一式 +
+# `admin-2fa` でビルドする(docs/admin-2fa-design.md §5)。
+#
+# - VPSはメモリに余裕が無いため、VPS上ではビルドしない。ここでビルドして
+#   成果物(+SHA-256)をArtifactとして受け取り、scp等で置く。
+# - 公式リリース(release.yml)はfeature無しのままなので流用しない。
+# - 本番へ置く手順・差し替え・ロールバックは docs/admin-2fa-design.md §8。
+#
+# **feature一式について**: 下記は CLAUDE.md の記録
+# (「--features domain-watchdog,fastcgi-client,acme,ddns,sftp,upnp」)に
+# `admin-2fa` を足したもの。稼働中バイナリの実feature一式との一致は
+# 未確認(デプロイ前にVPSで確認すること。`auto-update` は意図的に含めない:
+# 有効だと公式リリースのfeature無しバイナリで上書きされる危険があるため)。
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - admin-2fa-hardening
+
+permissions:
+  contents: read
+
+env:
+  PROD_FEATURES: "admin-2fa,domain-watchdog,fastcgi-client,acme,ddns,sftp,upnp"
+
+jobs:
+  build:
+    name: Build (ubuntu-latest, glibc 2.39) and verify on AlmaLinux 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # open-web-server-wire が RS-SmartTCP を path 依存(../RS-SmartTCP)で参照。
+      - name: Checkout RS-SmartTCP (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test (production features)
+        run: cargo test -p open-web-server-gateway --features "$PROD_FEATURES"
+
+      - name: Build
+        run: cargo build --release -p open-web-server-gateway --bin open-web-server --features "$PROD_FEATURES"
+
+      - name: Package (binary + SHA-256)
+        run: |
+          mkdir -p dist
+          cp target/release/open-web-server dist/open-web-server
+          strip dist/open-web-server
+          (cd dist && sha256sum open-web-server | tee open-web-server.sha256)
+          # 要求するglibcシンボルの最大バージョンを記録する。
+          objdump -T dist/open-web-server | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | tee dist/max-glibc.txt
+          # admin-2fa が実際に入っていることの確認(feature無しではこの文字列が無い)。
+          grep -c 'admin/login/request-otp' dist/open-web-server | tee dist/admin-2fa-marker-count.txt
+          test "$(cat dist/admin-2fa-marker-count.txt)" -ge 1
+
+      - name: Verify the binary starts on AlmaLinux 10 (本番OSの互換確認)
+        run: |
+          docker run --rm -v "$PWD/dist:/w:ro" almalinux:10 bash -c '
+            cat /etc/almalinux-release; ldd --version | head -1
+            ldd /w/open-web-server
+            /w/open-web-server --version
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-web-server-prod-admin-2fa-linux-x86_64
+          path: |
+            dist/open-web-server
+            dist/open-web-server.sha256
+            dist/max-glibc.txt
+          retention-days: 14

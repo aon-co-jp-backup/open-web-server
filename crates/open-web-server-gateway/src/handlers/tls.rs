@@ -12,7 +12,9 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 
+#[cfg(feature = "acme")]
 use crate::handlers::tenants::check_admin_auth;
+use crate::handlers::tenants::check_tls_auth;
 use crate::response::{read_json_body, text_response, BoxBody};
 use crate::state::AppState;
 
@@ -35,7 +37,7 @@ pub async fn upsert_tenant_tls(
     req: Request<Incoming>,
     host: &str,
 ) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(&state, &req) {
+    if let Err(resp) = check_tls_auth(&state, &req) {
         return resp;
     }
 
@@ -53,7 +55,7 @@ pub async fn upsert_tenant_tls(
 /// `DELETE /admin/tenants/:host/tls` — 登録済み証明書を削除する
 /// (`tenant_router::remove`と同様、未登録でも冪等に成功する)。
 pub async fn remove_tenant_tls(state: Arc<AppState>, req: &Request<Incoming>, host: &str) -> Response<BoxBody> {
-    if let Err(resp) = check_admin_auth(&state, req) {
+    if let Err(resp) = check_tls_auth(&state, req) {
         return resp;
     }
 

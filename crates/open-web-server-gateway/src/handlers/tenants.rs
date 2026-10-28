@@ -33,26 +33,153 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-/// `OPEN_WEB_SERVER_ADMIN_TOKEN` が設定されている場合のみ検証する
-/// 静的共有シークレット認証(第二引数の`state`は使わない、キー方式との
-/// 呼び出しシグネチャ統一のためだけに受け取る)。
-fn check_static_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
-    let Ok(expected) = std::env::var("OPEN_WEB_SERVER_ADMIN_TOKEN") else {
-        return Ok(());
-    };
+/// 静的トークン(`x-admin-token`)の受け入れ範囲
+/// (`OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE`、2026-10-28新設)。
+/// 既定は`Any`(従来互換)。再ビルドなしで`loopback`/`off`へ段階的に
+/// 絞り、また`any`へ戻せる(`docs/admin-2fa-design.md` §3.3・§8)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StaticTokenMode {
+    Any,
+    Loopback,
+    Off,
+}
 
-    let provided = req
-        .headers()
-        .get(ADMIN_TOKEN_HEADER)
-        .and_then(|v| v.to_str().ok());
-
-    match provided {
-        Some(token) if constant_time_eq(token, &expected) => Ok(()),
-        _ => Err(text_response(
-            StatusCode::UNAUTHORIZED,
-            format!("missing or invalid '{ADMIN_TOKEN_HEADER}' header"),
-        )),
+impl StaticTokenMode {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("") | Some("any") => Self::Any,
+            Some("loopback") => Self::Loopback,
+            Some("off") => Self::Off,
+            Some(other) => {
+                // 綴り間違いで全開放になるのを避けるため、不明な値は
+                // 安全側(loopback)に倒して警告する。
+                tracing::warn!(value = other, "unknown OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE, treating as 'loopback'");
+                Self::Loopback
+            }
+        }
     }
+
+    fn from_env() -> Self {
+        Self::parse(std::env::var("OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE").ok().as_deref())
+    }
+}
+
+/// 送信元がループバック(127.0.0.0/8, ::1, IPv4射影の::ffff:127.x)か。
+/// `ip_allowlist`と同様、前段にリバースプロキシが無い(open-web-serverが
+/// 入口)構成が前提で、`X-Forwarded-For`等のヘッダは一切見ない。
+pub(crate) fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
+    ip.to_canonical().is_loopback()
+}
+
+/// 接続元が不明(`PeerAddr`無し)の場合は安全側で`false`。
+fn peer_is_loopback(req: &Request<Incoming>) -> bool {
+    req.extensions()
+        .get::<crate::PeerAddr>()
+        .and_then(|p| p.0)
+        .is_some_and(|addr| is_loopback_ip(addr.ip()))
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}
+
+/// 静的トークン認証の判定(純粋関数。環境・リクエストに依存しないので
+/// 単体テストできる)。`expected`は`OPEN_WEB_SERVER_ADMIN_TOKEN`。
+///
+/// **fail-closed**: トークン未設定なら拒否(503)。従来の無認証動作は
+/// `OPEN_WEB_SERVER_ADMIN_INSECURE_DEV=true`を明示した開発時のみ。
+fn static_auth_decision(
+    mode: StaticTokenMode,
+    expected: Option<&str>,
+    insecure_dev: bool,
+    provided: Option<&str>,
+    loopback: bool,
+) -> Result<(), (StatusCode, String)> {
+    let Some(expected) = expected.filter(|e| !e.is_empty()) else {
+        if insecure_dev {
+            return Ok(());
+        }
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin API is disabled: OPEN_WEB_SERVER_ADMIN_TOKEN is not set (set OPEN_WEB_SERVER_ADMIN_INSECURE_DEV=true for development only)".to_string(),
+        ));
+    };
+    match mode {
+        StaticTokenMode::Off => {
+            return Err((StatusCode::FORBIDDEN, "static admin token is disabled (OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE=off)".to_string()))
+        }
+        StaticTokenMode::Loopback if !loopback => {
+            return Err((StatusCode::FORBIDDEN, "static admin token is accepted from loopback only".to_string()))
+        }
+        _ => {}
+    }
+    match provided {
+        Some(token) if constant_time_eq(token, expected) => Ok(()),
+        _ => Err((StatusCode::UNAUTHORIZED, format!("missing or invalid '{ADMIN_TOKEN_HEADER}' header"))),
+    }
+}
+
+/// 静的共有シークレット認証。`OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE`と
+/// 送信元に従う。
+fn check_static_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+    let expected = std::env::var("OPEN_WEB_SERVER_ADMIN_TOKEN").ok();
+    let provided = req.headers().get(ADMIN_TOKEN_HEADER).and_then(|v| v.to_str().ok());
+    static_auth_decision(
+        StaticTokenMode::from_env(),
+        expected.as_deref(),
+        env_flag("OPEN_WEB_SERVER_ADMIN_INSECURE_DEV"),
+        provided,
+        peer_is_loopback(req),
+    )
+    .map_err(|(status, msg)| text_response(status, msg))
+}
+
+/// 非常用(break-glass)認証: 静的トークン**かつループバック限定**
+/// (modeが`any`でも常にループバックを要求する。Bearerは受け付けない)。
+/// 2FA登録のリセットなど、2FA自体を迂回しうる操作に使う。
+#[cfg(feature = "admin-2fa")]
+pub(crate) fn check_breakglass_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+    let mode = match StaticTokenMode::from_env() {
+        StaticTokenMode::Any => StaticTokenMode::Loopback,
+        m => m,
+    };
+    let expected = std::env::var("OPEN_WEB_SERVER_ADMIN_TOKEN").ok();
+    let provided = req.headers().get(ADMIN_TOKEN_HEADER).and_then(|v| v.to_str().ok());
+    // 開発用の無認証オプトインはbreak-glassには適用しない(常にトークン必須)。
+    static_auth_decision(mode, expected.as_deref(), false, provided, peer_is_loopback(req))
+        .map_err(|(status, msg)| text_response(status, msg))
+}
+
+const TLS_TOKEN_HEADER: &str = "x-tls-token";
+
+/// TLS登録専用トークン(`x-tls-token`、`OPEN_WEB_SERVER_TLS_TOKEN`)の判定。
+/// 純粋関数。トークン未設定なら常に拒否、ループバック以外も拒否。
+fn tls_token_decision(expected: Option<&str>, provided: &str, loopback: bool) -> Result<(), (StatusCode, String)> {
+    let Some(expected) = expected.filter(|e| !e.is_empty()) else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "OPEN_WEB_SERVER_TLS_TOKEN is not set".to_string()));
+    };
+    if !loopback {
+        return Err((StatusCode::FORBIDDEN, format!("'{TLS_TOKEN_HEADER}' is accepted from loopback only")));
+    }
+    if constant_time_eq(provided, expected) {
+        Ok(())
+    } else {
+        Err((StatusCode::UNAUTHORIZED, format!("invalid '{TLS_TOKEN_HEADER}' header")))
+    }
+}
+
+/// TLS証明書登録/削除エンドポイント専用の認証。`x-tls-token`が提示された
+/// 場合はそれだけで判定する(間違っていても他の資格情報へフォールバック
+/// しない)。無ければ通常の`check_admin_auth`(人用Bearer/静的トークン)。
+/// このトークンで到達できるのは`POST/DELETE /admin/tenants/:host/tls`の
+/// 2つだけ(他のハンドラは`check_admin_auth`を使うため通らない)。
+pub(crate) fn check_tls_auth(state: &AppState, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+    let Some(provided) = req.headers().get(TLS_TOKEN_HEADER).and_then(|v| v.to_str().ok()) else {
+        return check_admin_auth(state, req);
+    };
+    let expected = std::env::var("OPEN_WEB_SERVER_TLS_TOKEN").ok();
+    tls_token_decision(expected.as_deref(), provided, peer_is_loopback(req))
+        .map_err(|(status, msg)| text_response(status, msg))
 }
 
 /// キーの`roles`が管理API(`/admin/*`全体・`/internal/*`)への
@@ -248,4 +375,67 @@ pub async fn list_tenants(state: Arc<AppState>, req: &Request<Incoming>) -> Resp
 
     let list = state.tenants.list().await;
     json_response(StatusCode::OK, &list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_parsing_defaults_to_any_and_unknown_falls_back_to_loopback() {
+        assert_eq!(StaticTokenMode::parse(None), StaticTokenMode::Any);
+        assert_eq!(StaticTokenMode::parse(Some("")), StaticTokenMode::Any);
+        assert_eq!(StaticTokenMode::parse(Some("ANY")), StaticTokenMode::Any);
+        assert_eq!(StaticTokenMode::parse(Some("loopback")), StaticTokenMode::Loopback);
+        assert_eq!(StaticTokenMode::parse(Some(" off ")), StaticTokenMode::Off);
+        assert_eq!(StaticTokenMode::parse(Some("lopback")), StaticTokenMode::Loopback);
+    }
+
+    #[test]
+    fn loopback_detection_covers_v4_v6_and_mapped_addresses() {
+        for ok in ["127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1"] {
+            assert!(is_loopback_ip(ok.parse().unwrap()), "{ok}");
+        }
+        for ng in ["10.0.0.1", "8.8.8.8", "2001:db8::1", "::ffff:8.8.8.8", "0.0.0.0"] {
+            assert!(!is_loopback_ip(ng.parse().unwrap()), "{ng}");
+        }
+    }
+
+    #[test]
+    fn static_token_is_fail_closed_when_unset() {
+        let r = static_auth_decision(StaticTokenMode::Any, None, false, None, true);
+        assert_eq!(r.unwrap_err().0, StatusCode::SERVICE_UNAVAILABLE);
+        let r = static_auth_decision(StaticTokenMode::Any, Some(""), false, Some(""), true);
+        assert_eq!(r.unwrap_err().0, StatusCode::SERVICE_UNAVAILABLE);
+        // 明示オプトインのときだけ従来の無認証。
+        assert!(static_auth_decision(StaticTokenMode::Any, None, true, None, false).is_ok());
+    }
+
+    #[test]
+    fn static_token_mode_any_accepts_remote_with_correct_token_only() {
+        assert!(static_auth_decision(StaticTokenMode::Any, Some("s3"), false, Some("s3"), false).is_ok());
+        assert_eq!(static_auth_decision(StaticTokenMode::Any, Some("s3"), false, Some("x"), false).unwrap_err().0, StatusCode::UNAUTHORIZED);
+        assert_eq!(static_auth_decision(StaticTokenMode::Any, Some("s3"), false, None, true).unwrap_err().0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn static_token_mode_loopback_rejects_remote_even_with_correct_token() {
+        assert!(static_auth_decision(StaticTokenMode::Loopback, Some("s3"), false, Some("s3"), true).is_ok());
+        assert_eq!(static_auth_decision(StaticTokenMode::Loopback, Some("s3"), false, Some("s3"), false).unwrap_err().0, StatusCode::FORBIDDEN);
+        assert_eq!(static_auth_decision(StaticTokenMode::Loopback, Some("s3"), false, Some("bad"), true).unwrap_err().0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn static_token_mode_off_rejects_everything() {
+        assert_eq!(static_auth_decision(StaticTokenMode::Off, Some("s3"), false, Some("s3"), true).unwrap_err().0, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn tls_token_requires_configuration_loopback_and_exact_match() {
+        assert!(tls_token_decision(Some("t"), "t", true).is_ok());
+        assert_eq!(tls_token_decision(None, "t", true).unwrap_err().0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(tls_token_decision(Some(""), "", true).unwrap_err().0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(tls_token_decision(Some("t"), "t", false).unwrap_err().0, StatusCode::FORBIDDEN);
+        assert_eq!(tls_token_decision(Some("t"), "wrong", true).unwrap_err().0, StatusCode::UNAUTHORIZED);
+    }
 }
