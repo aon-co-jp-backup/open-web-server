@@ -40,6 +40,17 @@ fn shared_h2_client() -> &'static ProxyClient {
     })
 }
 
+type StreamClient = Client<HttpConnector, BoxBody>;
+
+/// 素のgRPCの要求本文を溜めずに上流へ流す(クライアント/双方向ストリーミング用)。
+/// 本文を再生成できないため、接続失敗時の再送はしない。
+fn shared_h2_stream_client() -> &'static StreamClient {
+    static CLIENT: OnceLock<StreamClient> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder(TokioExecutor::new()).http2_only(true).build(HttpConnector::new())
+    })
+}
+
 fn is_plain_grpc(headers: &hyper::HeaderMap) -> bool {
     headers
         .get(hyper::header::CONTENT_TYPE)
@@ -115,6 +126,10 @@ pub async fn forward_to_stripped(
 
     let (parts, body) = req.into_parts();
 
+    if is_plain_grpc(&parts.headers) {
+        return forward_grpc_streaming(&base_url, strip_prefix, parts, body).await;
+    }
+
     let body_bytes = match BodyExt::collect(body).await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
@@ -188,6 +203,47 @@ pub async fn forward_to_stripped(
             StatusCode::BAD_GATEWAY,
             format!("failed to reach upstream '{base_url}': {e}"),
         ),
+    }
+}
+
+async fn forward_grpc_streaming(
+    base_url: &str,
+    strip_prefix: Option<&str>,
+    parts: hyper::http::request::Parts,
+    body: Incoming,
+) -> Response<BoxBody> {
+    let path = parts.uri.path();
+    let path = match strip_prefix {
+        Some(prefix) if !prefix.is_empty() => crate::tenant_router::strip_path_prefix(path, prefix),
+        _ => path.to_string(),
+    };
+    let pq = match parts.uri.query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path,
+    };
+    let uri: Uri = match format!("{base_url}{pq}").parse() {
+        Ok(u) => u,
+        Err(e) => {
+            return text_response(StatusCode::INTERNAL_SERVER_ERROR, format!("invalid upstream URI for '{base_url}': {e}"))
+        }
+    };
+    let mut b = Request::builder().method(parts.method.clone()).uri(uri);
+    for (name, value) in parts.headers.iter() {
+        b = b.header(name, value);
+    }
+    let up_body: BoxBody = body.map_err(|e| -> crate::response::BoxError { Box::new(e) }).boxed();
+    let req = match b.body(up_body) {
+        Ok(r) => r,
+        Err(e) => {
+            return text_response(StatusCode::INTERNAL_SERVER_ERROR, format!("failed to build upstream request: {e}"))
+        }
+    };
+    match shared_h2_stream_client().request(req).await {
+        Ok(resp) => {
+            let (parts, body) = resp.into_parts();
+            Response::from_parts(parts, crate::response::stream_body(body))
+        }
+        Err(e) => text_response(StatusCode::BAD_GATEWAY, format!("failed to reach upstream '{base_url}': {e}")),
     }
 }
 
@@ -299,6 +355,84 @@ mod tests {
         let collected = BodyExt::collect(resp.into_body()).await.unwrap();
         let trailers = collected.trailers().cloned().expect("trailers must arrive");
         assert_eq!(trailers.get("grpc-status").unwrap(), "0");
+    }
+
+    /// 要求本文を送り終える前に、上流が最初の断片を受け取り応答を返せること
+    /// (クライアント/双方向ストリーミング)。本文を全部読んでから転送する実装だと
+    /// ここでタイムアウトする。
+    #[tokio::test]
+    async fn plain_grpc_request_body_is_streamed_to_the_upstream() {
+        use hyper_util::server::conn::auto;
+
+        // 上流: 最初のデータ断片を受けた時点で応答を返す。
+        let up = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = up.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = up.accept().await.unwrap();
+            let svc = hyper::service::service_fn(|req: Request<hyper::body::Incoming>| async move {
+                let mut body = req.into_body();
+                let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+                Ok::<_, std::convert::Infallible>(
+                    Response::builder()
+                        .header("content-type", "application/grpc")
+                        .body(Full::new(first))
+                        .unwrap(),
+                )
+            });
+            let _ = auto::Builder::new(TokioExecutor::new())
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                .await;
+        });
+
+        // 前面: forward_to_stripped を呼ぶだけのサーバー(h2c)。
+        let front = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let front_addr = front.local_addr().unwrap();
+        let upstream = up_addr.to_string();
+        tokio::spawn(async move {
+            let (stream, _) = front.accept().await.unwrap();
+            let svc = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
+                let upstream = upstream.clone();
+                async move { Ok::<_, std::convert::Infallible>(forward_to_stripped(&upstream, None, req).await) }
+            });
+            let _ = auto::Builder::new(TokioExecutor::new())
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                .await;
+        });
+
+        // クライアント: 1つ目を送った後、本文を閉じずに応答を待つ。
+        let (tx, rx) = tokio::sync::mpsc::channel::<hyper::body::Frame<Bytes>>(4);
+        tx.send(hyper::body::Frame::data(Bytes::from_static(b"first"))).await.unwrap();
+        let body = RxBody(rx);
+        let client: Client<HttpConnector, _> =
+            Client::builder(TokioExecutor::new()).http2_only(true).build(HttpConnector::new());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("http://{front_addr}/x.Y/Z"))
+            .header("content-type", "application/grpc")
+            .body(body)
+            .unwrap();
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(5), client.request(req))
+            .await
+            .expect("response must arrive before the request body is finished")
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let got = BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        assert_eq!(&got[..], b"first");
+        drop(tx);
+    }
+
+    /// チャネルから届いたフレームをそのまま本文として流す(閉じるまで終わらない)。
+    struct RxBody(tokio::sync::mpsc::Receiver<hyper::body::Frame<Bytes>>);
+
+    impl hyper::body::Body for RxBody {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+            self.0.poll_recv(cx).map(|f| f.map(Ok))
+        }
     }
 
     /// データ→トレーラーの順にフレームを返すだけの本文。
