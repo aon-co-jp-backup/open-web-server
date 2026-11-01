@@ -144,20 +144,25 @@ impl HttpAruaruDbBackend {
         })
     }
 
-    /// `POST {endpoint}/graphql`を1回叩く。HTTPは常に200で、GraphQLエラーは
-    /// `extensions.status`(REST時代のHTTPステータスと同じ値)で返る。
+    /// `POST {endpoint}/open_runo.admin.v1.Admin/<method>`(Connect、JSON)を1回叩く。
+    /// 2xxなら`Ok(Ok(JSON))`、それ以外は`Ok(Err((HTTPステータス, メッセージ)))`。
     #[cfg(feature = "custom_domain")]
-    async fn graphql(
+    async fn rpc(
         &self,
-        query: &str,
-        variables: serde_json::Value,
+        method: &str,
+        body: serde_json::Value,
         api_key: Option<&str>,
     ) -> Result<Result<serde_json::Value, (u16, String)>, DualWriteError> {
-        let url = format!("{}/graphql", self.endpoint.trim_end_matches('/'));
+        let url = format!(
+            "{}/open_runo.admin.v1.Admin/{method}",
+            self.endpoint.trim_end_matches('/')
+        );
         let mut req = self
             .client
             .post(&url)
-            .json(&serde_json::json!({ "query": query, "variables": variables }));
+            .header("content-type", "application/json")
+            .header("connect-protocol-version", "1")
+            .json(&body);
         if let Some(key) = api_key {
             req = req.header("x-api-key", key);
         }
@@ -165,28 +170,21 @@ impl HttpAruaruDbBackend {
             .send()
             .await
             .map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(DualWriteError::AruaruDbFailed(format!("HTTP {}", resp.status())));
+        let status = resp.status().as_u16();
+        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        if (200..300).contains(&status) {
+            return Ok(Ok(json));
         }
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
-        if let Some(err) = body["errors"].get(0) {
-            let status = err["extensions"]["status"].as_u64().unwrap_or(0) as u16;
-            let message = err["message"].as_str().unwrap_or("GraphQL error").to_string();
-            return Ok(Err((status, message)));
-        }
-        Ok(Ok(body["data"].clone()))
+        Ok(Err((status, json["message"].as_str().unwrap_or("").to_string())))
     }
 
     #[cfg(feature = "custom_domain")]
     async fn issue_key(&self) -> Result<String, DualWriteError> {
         let data = self
-            .graphql("mutation { selfIssueKey }", serde_json::json!({}), None)
+            .rpc("SelfIssueKey", serde_json::json!({}), None)
             .await?
             .map_err(|(s, m)| DualWriteError::AruaruDbFailed(format!("self-issue failed ({s}): {m}")))?;
-        let key = data["selfIssueKey"]["api_key"]
+        let key = data["apiKey"]
             .as_str()
             .ok_or_else(|| DualWriteError::AruaruDbFailed("self-issue response missing api_key".to_string()))?
             .to_string();
@@ -199,24 +197,26 @@ impl HttpAruaruDbBackend {
 impl AruaruDbBackend for HttpAruaruDbBackend {
     #[cfg(feature = "custom_domain")]
     async fn record_change(&self, record: &SubdomainRecord) -> Result<String, DualWriteError> {
-        const MUTATION: &str = "mutation ($t: String!, $k: String!, $v: JSON!) { admin { dbPut(table: $t, key: $k, value: $v) } }";
-        let value = serde_json::to_value(record).map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
-        let variables = serde_json::json!({ "t": "custom_subdomains", "k": record.subdomain_name, "v": value });
+        let body = serde_json::json!({
+            "table": "custom_subdomains",
+            "key": record.subdomain_name,
+            "value": serde_json::to_value(record).map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?,
+        });
 
         let cached = self.api_key.lock().await.clone();
         let mut key = match cached {
             Some(k) => k,
             None => self.issue_key().await?,
         };
-        let mut outcome = self.graphql(MUTATION, variables.clone(), Some(&key)).await?;
+        let mut outcome = self.rpc("DbPut", body.clone(), Some(&key)).await?;
         if matches!(outcome, Err((401, _))) {
             // キャッシュ済みキーの期限切れ: 1回だけ再発行して再試行する。
             key = self.issue_key().await?;
-            outcome = self.graphql(MUTATION, variables, Some(&key)).await?;
+            outcome = self.rpc("DbPut", body, Some(&key)).await?;
         }
         let data = outcome.map_err(|(s, m)| DualWriteError::AruaruDbFailed(format!("HTTP {s}: {m}")))?;
-        // open-runoのdbPutは現状コミットIDを返さない(`commit_id`が付いていれば使う)。
-        data["admin"]["dbPut"]["commit_id"]
+        // open-runoのDbPutは現状コミットIDを返さない(`commit_id`が付いていれば使う)。
+        data["commit_id"]
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| DualWriteError::AruaruDbFailed("open-runo response missing commit_id".to_string()))
@@ -347,7 +347,7 @@ mod tests {
     /// 叩くこと。期限切れキー(モックが`extensions.status`=401を返す)は1回だけ再発行して再試行する。
     #[cfg(feature = "custom_domain")]
     #[tokio::test]
-    async fn http_backend_writes_via_graphql_and_reissues_an_expired_key_once() {
+    async fn http_backend_writes_via_connect_json_and_reissues_an_expired_key_once() {
         use bytes::Bytes;
         use http_body_util::{BodyExt, Full};
         use hyper::body::Incoming;
@@ -370,6 +370,7 @@ mod tests {
                     let service = service_fn(move |req: Request<Incoming>| {
                         let counter = Arc::clone(&counter);
                         async move {
+                            let is_self_issue = req.uri().path().ends_with("/SelfIssueKey");
                             let key = req
                                 .headers()
                                 .get("x-api-key")
@@ -378,20 +379,19 @@ mod tests {
                                 .to_string();
                             let bytes = req.into_body().collect().await.map(|c| c.to_bytes()).unwrap_or_default();
                             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
-                            let query = body["query"].as_str().unwrap_or("");
-                            let payload = if query.contains("selfIssueKey") {
+                            let (status, payload) = if is_self_issue {
                                 counter.fetch_add(1, Ordering::SeqCst);
-                                serde_json::json!({ "data": { "selfIssueKey": { "api_key": "fresh-key" } } })
+                                (200u16, serde_json::json!({ "apiKey": "fresh-key" }))
                             } else if key != "fresh-key" {
-                                serde_json::json!({ "data": null, "errors": [{ "message": "authentication required", "extensions": { "status": 401 } }] })
-                            } else if body["variables"]["t"] == "custom_subdomains" && body["variables"]["k"] == "alice" {
-                                serde_json::json!({ "data": { "admin": { "dbPut": { "table": "custom_subdomains", "key": "alice", "value": {}, "commit_id": "c-42" } } } })
+                                (401, serde_json::json!({ "code": "unauthenticated", "message": "authentication required" }))
+                            } else if body["table"] == "custom_subdomains" && body["key"] == "alice" {
+                                (200, serde_json::json!({ "table": "custom_subdomains", "key": "alice", "value": {}, "commit_id": "c-42" }))
                             } else {
-                                serde_json::json!({ "data": null, "errors": [{ "message": "unexpected", "extensions": { "status": 422 } }] })
+                                (422, serde_json::json!({ "code": "invalid_argument", "message": "unexpected" }))
                             };
                             Ok::<_, std::convert::Infallible>(
                                 Response::builder()
-                                    .status(StatusCode::OK)
+                                    .status(StatusCode::from_u16(status).unwrap())
                                     .header("content-type", "application/json")
                                     .body(Full::new(Bytes::from(payload.to_string())))
                                     .unwrap(),

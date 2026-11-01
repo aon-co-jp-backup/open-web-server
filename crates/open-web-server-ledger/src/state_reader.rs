@@ -2,19 +2,19 @@
 //!
 //! `Ledger::commit`(書き込み側、`forward_once`経由でopen-runoへ確定を
 //! フォワードする)の対になる、履歴読み出し側。ある target/key が指定
-//! コミット時点で保持していた値を、open-runoのGraphQL
-//! (`POST /graphql` の `query { admin { dbGetAtCommit(...) } }`、
-//! `AruaruDbBackend`のみ実対応で他バックエンドは`extensions.status`=501)
-//! へ問い合わせて返す。旧RESTの`GET /api/db/:table/:key/at/:commit_id`は
-//! open-runo側のREST全廃(2026-11-01)で廃止予定のため、こちらへ切り替えた。
-//! `open-web-server-gateway`側の
-//! `GET /internal/db/state/:target/:key/at/:commit_id`ハンドラから使われる。
+//! コミット時点で保持していた値を、open-runoの管理サービス
+//! (`open_runo.admin.v1.Admin`)の`DbGetAtCommit`で問い合わせて返す
+//! (`AruaruDbBackend`のみ実対応で他バックエンドは501=`UNIMPLEMENTED`)。
+//! 旧RESTの`GET /api/db/:table/:key/at/:commit_id`はopen-runo側のREST全廃(2026-11-01)で
+//! 廃止された。`open-web-server`の前面プロキシ越えを考え、**素のHTTP POST(Connectプロトコルの
+//! JSON、`POST /open_runo.admin.v1.Admin/<Method>`)**で呼ぶ: HTTP/2もトレーラーも不要で、
+//! 既存の`reqwest`だけで動き、エラーはHTTPステータス(404/401/501…)でそのまま判別できる。
+//! `open-web-server-gateway`側の`GET /internal/db/state/:target/:key/at/:commit_id`から使われる。
 //!
-//! **認証**: open-runoの`admin`は`X-Api-Key`(またはセッションCookie)を要求する。
-//! `open-runo-cli`・WASMフロントエンドと同じ「人間がAPIキーを意識しない」方針:
-//! 初回利用時に`mutation { selfIssueKey }`で短命な developer role キーを自動発行
-//! しキャッシュ、認証失敗(GraphQLエラーの`extensions.status`=401。HTTPは200の
-//! ままなので注意)が返ってきた場合は透過的に再発行してリトライする。
+//! **認証**: open-runoの管理サービスは`X-Api-Key`(またはセッションCookie)を要求する。
+//! `open-runo-cli`・管理画面と同じ「人間がAPIキーを意識しない」方針: 初回利用時に
+//! `SelfIssueKey`で短命な developer role キーを自動発行しキャッシュ、`401`が返ってきた場合
+//! (キャッシュ済みキーの期限切れ)は透過的に再発行してリトライする。
 
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ impl DbStateReader {
         let api_key = self.ensure_api_key().await?;
         let mut outcome = self.request(target, key, commit_id, &api_key).await?;
 
-        if matches!(outcome, Gql::Status(401, _)) {
+        if matches!(outcome, Rpc::Status(401, _)) {
             // キャッシュ済みキーが期限切れ(self-issueキーは短命)——
             // 一度だけ再発行してリトライする。呼び出し元には
             // 「たまたま期限が切れていた」という実装詳細を露出しない。
@@ -69,29 +69,35 @@ impl DbStateReader {
         Self::parse_response(target, key, commit_id, outcome)
     }
 
-    /// `POST /graphql`を1回叩く。HTTPが2xx以外ならエラー、GraphQLエラーは
-    /// `extensions.status`(open-runoがRESTのHTTPステータスと同じ値を載せる)付きで返す。
-    async fn gql(
+    /// `POST {endpoint}/open_runo.admin.v1.Admin/<method>`(Connect、JSON)を1回叩く。
+    /// 2xxなら本文のJSON、それ以外はHTTPステータスとエラーメッセージ(`{code,message}`)で返す。
+    async fn rpc(
         &self,
-        query: &str,
-        variables: serde_json::Value,
+        method: &str,
+        body: serde_json::Value,
         api_key: Option<&str>,
-    ) -> anyhow::Result<Gql> {
-        let url = format!("{}/graphql", self.open_runo_endpoint.trim_end_matches('/'));
+    ) -> anyhow::Result<Rpc> {
+        let url = format!(
+            "{}/open_runo.admin.v1.Admin/{method}",
+            self.open_runo_endpoint.trim_end_matches('/')
+        );
         let mut req = self
             .http
             .post(url)
-            .json(&serde_json::json!({ "query": query, "variables": variables }));
+            .header("content-type", "application/json")
+            .header("connect-protocol-version", "1")
+            .json(&body);
         if let Some(key) = api_key {
             req = req.header("x-api-key", key);
         }
-        let body: serde_json::Value = req.send().await?.error_for_status()?.json().await?;
-        if let Some(err) = body["errors"].get(0) {
-            let status = err["extensions"]["status"].as_u64().unwrap_or(0) as u16;
-            let message = err["message"].as_str().unwrap_or("GraphQL error").to_string();
-            return Ok(Gql::Status(status, message));
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        if (200..300).contains(&status) {
+            return Ok(Rpc::Data(json));
         }
-        Ok(Gql::Data(body["data"].clone()))
+        let message = json["message"].as_str().unwrap_or("").to_string();
+        Ok(Rpc::Status(status, message))
     }
 
     async fn request(
@@ -100,10 +106,10 @@ impl DbStateReader {
         key: &str,
         commit_id: &str,
         api_key: &str,
-    ) -> anyhow::Result<Gql> {
-        self.gql(
-            "query ($t: String!, $k: String!, $c: String!) { admin { dbGetAtCommit(table: $t, key: $k, commitId: $c) } }",
-            serde_json::json!({ "t": target, "k": key, "c": commit_id }),
+    ) -> anyhow::Result<Rpc> {
+        self.rpc(
+            "DbGetAtCommit",
+            serde_json::json!({ "table": target, "key": key, "commitId": commit_id }),
             Some(api_key),
         )
         .await
@@ -113,11 +119,10 @@ impl DbStateReader {
         target: &str,
         key: &str,
         commit_id: &str,
-        outcome: Gql,
+        outcome: Rpc,
     ) -> anyhow::Result<Option<DbStateAtCommitResponse>> {
         match outcome {
-            Gql::Data(data) => {
-                let record = &data["admin"]["dbGetAtCommit"];
+            Rpc::Data(record) => {
                 let value = record.get("value").cloned().unwrap_or(serde_json::Value::Null);
                 Ok(Some(DbStateAtCommitResponse {
                     target: target.to_string(),
@@ -126,10 +131,10 @@ impl DbStateReader {
                     value,
                 }))
             }
-            Gql::Status(404, _) => Ok(None),
+            Rpc::Status(404, _) => Ok(None),
             // 501 (バックエンドがコミット履歴クエリ自体に未対応) を含め、
             // それ以外の全ステータスは呼び出し元にエラーとして伝える。
-            Gql::Status(other, message) => Err(anyhow::anyhow!(
+            Rpc::Status(other, message) => Err(anyhow::anyhow!(
                 "open-runo returned unexpected status {other} for {target}/{key}@{commit_id}: {message}"
             )),
         }
@@ -145,23 +150,20 @@ impl DbStateReader {
     }
 
     async fn self_issue_key(&self) -> anyhow::Result<String> {
-        match self
-            .gql("mutation { selfIssueKey }", serde_json::json!({}), None)
-            .await?
-        {
-            Gql::Data(data) => data["selfIssueKey"]["api_key"]
+        match self.rpc("SelfIssueKey", serde_json::json!({}), None).await? {
+            Rpc::Data(data) => data["apiKey"]
                 .as_str()
                 .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("open-runo self-issue response missing api_key")),
-            Gql::Status(status, message) => {
+                .ok_or_else(|| anyhow::anyhow!("open-runo self-issue response missing apiKey")),
+            Rpc::Status(status, message) => {
                 Err(anyhow::anyhow!("open-runo self-issue failed ({status}): {message}"))
             }
         }
     }
 }
 
-/// `DbStateReader::gql`の結果。
-enum Gql {
+/// `DbStateReader::rpc`の結果。
+enum Rpc {
     Data(serde_json::Value),
     Status(u16, String),
 }
@@ -179,11 +181,9 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::net::TcpListener;
 
-    /// 最小限のopen-runoモック(`POST /graphql`のみ):
-    /// `selfIssueKey`(呼び出し回数を記録)と`dbGetAtCommit`(固定のtarget/key/
-    /// commit_idにのみ値を返し、それ以外は`extensions.status`=404のGraphQLエラー。
-    /// 実際のopen-runoと同じくHTTPは常に200)。`X-Api-Key`が
-    /// `self-issued-test-key`でなければ`extensions.status`=401を返す。
+    /// 最小限のopen-runoモック(Connect JSON、`POST /open_runo.admin.v1.Admin/<Method>`):
+    /// `SelfIssueKey`(呼び出し回数を記録)と`DbGetAtCommit`(固定のtarget/key/commit_idにのみ値を返し、
+    /// それ以外は404)。`X-Api-Key`が`self-issued-test-key`でなければ401を返す。
     /// 実TCP+実HTTPで`DbStateReader`を検証するための最小サーバー。
     async fn spawn_mock_open_runo() -> (std::net::SocketAddr, Arc<AtomicU32>) {
         let self_issue_calls = Arc::new(AtomicU32::new(0));
@@ -217,55 +217,42 @@ mod tests {
                                 .unwrap_or_default();
                             let body: serde_json::Value =
                                 serde_json::from_slice(&bytes).unwrap_or_default();
-                            let query = body["query"].as_str().unwrap_or("").to_string();
-                            let vars = body["variables"].clone();
-                            let gql_error = |status: u16| {
-                                serde_json::json!({
-                                    "data": null,
-                                    "errors": [{ "message": "mock", "extensions": { "status": status } }],
-                                })
+                            let json = |status: StatusCode, v: serde_json::Value| {
+                                Response::builder()
+                                    .status(status)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(v.to_string())))
+                                    .unwrap()
                             };
-                            let payload = if method != Method::POST || path != "/graphql" {
-                                None
-                            } else if query.contains("selfIssueKey") {
+                            let resp = if method != Method::POST {
+                                Response::builder().status(StatusCode::NOT_FOUND).body(Full::new(Bytes::new())).unwrap()
+                            } else if path == "/open_runo.admin.v1.Admin/SelfIssueKey" {
                                 calls.fetch_add(1, Ordering::SeqCst);
-                                Some(serde_json::json!({
-                                    "data": { "selfIssueKey": {
-                                        "api_key": "self-issued-test-key",
-                                        "expires_at": "2099-01-01T00:00:00Z",
-                                    } },
-                                }))
-                            } else if query.contains("dbGetAtCommit") {
+                                json(
+                                    StatusCode::OK,
+                                    serde_json::json!({ "apiKey": "self-issued-test-key", "expiresAt": "2099-01-01T00:00:00Z" }),
+                                )
+                            } else if path == "/open_runo.admin.v1.Admin/DbGetAtCommit" {
                                 if key != "self-issued-test-key" {
-                                    Some(gql_error(401))
-                                } else if vars["t"] == "game_items"
-                                    && vars["k"] == "player-1"
-                                    && vars["c"] == "commit-abc"
+                                    json(StatusCode::UNAUTHORIZED, serde_json::json!({ "code": "unauthenticated", "message": "key required" }))
+                                } else if body["table"] == "game_items"
+                                    && body["key"] == "player-1"
+                                    && body["commitId"] == "commit-abc"
                                 {
-                                    Some(serde_json::json!({
-                                        "data": { "admin": { "dbGetAtCommit": {
+                                    json(
+                                        StatusCode::OK,
+                                        serde_json::json!({
                                             "table": "game_items",
                                             "key": "player-1",
                                             "commit_id": "commit-abc",
                                             "value": { "quantity": 3 },
-                                        } } },
-                                    }))
+                                        }),
+                                    )
                                 } else {
-                                    Some(gql_error(404))
+                                    json(StatusCode::NOT_FOUND, serde_json::json!({ "code": "not_found", "message": "no value" }))
                                 }
                             } else {
-                                None
-                            };
-                            let resp = match payload {
-                                Some(p) => Response::builder()
-                                    .status(StatusCode::OK)
-                                    .header("content-type", "application/json")
-                                    .body(Full::new(Bytes::from(p.to_string())))
-                                    .unwrap(),
-                                None => Response::builder()
-                                    .status(StatusCode::NOT_FOUND)
-                                    .body(Full::new(Bytes::new()))
-                                    .unwrap(),
+                                Response::builder().status(StatusCode::NOT_FOUND).body(Full::new(Bytes::new())).unwrap()
                             };
                             Ok::<_, std::convert::Infallible>(resp)
                         }
