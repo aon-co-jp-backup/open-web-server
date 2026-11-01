@@ -42,6 +42,19 @@
   側のコード変更なしにそちらへも接続できることを実バイナリ3つ
   (`open-runo-router`・poem-cosmo-tauri版`open-runo-router`・
   `open-web-server`)で実証済み。
+  **【2026-11-01 GraphQL化】** open-runo(RPoem)がRESTを全廃する計画
+  (RPoem `CLAUDE.md`「2026-11-01追記」)に合わせ、`DbStateReader`と
+  `HttpAruaruDbBackend`は上記RESTの代わりに`POST /graphql`
+  (`mutation { selfIssueKey }`・`query { admin { dbGetAtCommit(...) } }`・
+  `mutation { admin { dbPut(...) } }`)を使うようにした(ブランチ
+  `rest-to-graphql`)。GraphQLはHTTP 200のまま失敗を返すため、
+  `errors[0].extensions.status`(REST時代のHTTPステータスと同じ値)で
+  404→`Ok(None)`、401→キー再発行、501等→エラーに振り分ける。
+  **`OPEN_RUNO_ENDPOINT`はRPoemの`open-runo-gateway`(GraphQL対応版)を指すこと**
+  — 旧`poem-cosmo-tauri`・`open-cosmo`・`open-runo`の複製はRESTのみでGraphQLの
+  `admin`を持たないため、このブランチでは接続できない(それらを使う間は
+  `rest-to-graphql`をマージしない)。`/internal/db/mutate`(`Ledger::commit`の
+  書き込み)はRPoem側でも当面RESTのまま。
 
 ## 型の共有方針
 

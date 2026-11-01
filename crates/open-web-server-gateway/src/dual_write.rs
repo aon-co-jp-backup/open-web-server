@@ -124,6 +124,9 @@ pub struct HttpAruaruDbBackend {
     endpoint: String,
     #[cfg(feature = "custom_domain")]
     client: reqwest::Client,
+    /// open-runoの`selfIssueKey`で自動発行した短命キー(期限切れは1回だけ再発行して再試行)。
+    #[cfg(feature = "custom_domain")]
+    api_key: tokio::sync::Mutex<Option<String>>,
 }
 
 impl HttpAruaruDbBackend {
@@ -136,7 +139,59 @@ impl HttpAruaruDbBackend {
             endpoint,
             #[cfg(feature = "custom_domain")]
             client: reqwest::Client::new(),
+            #[cfg(feature = "custom_domain")]
+            api_key: tokio::sync::Mutex::new(None),
         })
+    }
+
+    /// `POST {endpoint}/graphql`を1回叩く。HTTPは常に200で、GraphQLエラーは
+    /// `extensions.status`(REST時代のHTTPステータスと同じ値)で返る。
+    #[cfg(feature = "custom_domain")]
+    async fn graphql(
+        &self,
+        query: &str,
+        variables: serde_json::Value,
+        api_key: Option<&str>,
+    ) -> Result<Result<serde_json::Value, (u16, String)>, DualWriteError> {
+        let url = format!("{}/graphql", self.endpoint.trim_end_matches('/'));
+        let mut req = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "query": query, "variables": variables }));
+        if let Some(key) = api_key {
+            req = req.header("x-api-key", key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(DualWriteError::AruaruDbFailed(format!("HTTP {}", resp.status())));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
+        if let Some(err) = body["errors"].get(0) {
+            let status = err["extensions"]["status"].as_u64().unwrap_or(0) as u16;
+            let message = err["message"].as_str().unwrap_or("GraphQL error").to_string();
+            return Ok(Err((status, message)));
+        }
+        Ok(Ok(body["data"].clone()))
+    }
+
+    #[cfg(feature = "custom_domain")]
+    async fn issue_key(&self) -> Result<String, DualWriteError> {
+        let data = self
+            .graphql("mutation { selfIssueKey }", serde_json::json!({}), None)
+            .await?
+            .map_err(|(s, m)| DualWriteError::AruaruDbFailed(format!("self-issue failed ({s}): {m}")))?;
+        let key = data["selfIssueKey"]["api_key"]
+            .as_str()
+            .ok_or_else(|| DualWriteError::AruaruDbFailed("self-issue response missing api_key".to_string()))?
+            .to_string();
+        *self.api_key.lock().await = Some(key.clone());
+        Ok(key)
     }
 }
 
@@ -144,23 +199,27 @@ impl HttpAruaruDbBackend {
 impl AruaruDbBackend for HttpAruaruDbBackend {
     #[cfg(feature = "custom_domain")]
     async fn record_change(&self, record: &SubdomainRecord) -> Result<String, DualWriteError> {
-        #[derive(serde::Deserialize)]
-        struct CommitResponse {
-            commit_id: String,
+        const MUTATION: &str = "mutation ($t: String!, $k: String!, $v: JSON!) { admin { dbPut(table: $t, key: $k, value: $v) } }";
+        let value = serde_json::to_value(record).map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
+        let variables = serde_json::json!({ "t": "custom_subdomains", "k": record.subdomain_name, "v": value });
+
+        let cached = self.api_key.lock().await.clone();
+        let mut key = match cached {
+            Some(k) => k,
+            None => self.issue_key().await?,
+        };
+        let mut outcome = self.graphql(MUTATION, variables.clone(), Some(&key)).await?;
+        if matches!(outcome, Err((401, _))) {
+            // キャッシュ済みキーの期限切れ: 1回だけ再発行して再試行する。
+            key = self.issue_key().await?;
+            outcome = self.graphql(MUTATION, variables, Some(&key)).await?;
         }
-        let url = format!("{}/api/db/custom_subdomains/{}", self.endpoint.trim_end_matches('/'), record.subdomain_name);
-        let resp = self
-            .client
-            .put(&url)
-            .json(record)
-            .send()
-            .await
-            .map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(DualWriteError::AruaruDbFailed(format!("HTTP {}", resp.status())));
-        }
-        let body: CommitResponse = resp.json().await.map_err(|e| DualWriteError::AruaruDbFailed(e.to_string()))?;
-        Ok(body.commit_id)
+        let data = outcome.map_err(|(s, m)| DualWriteError::AruaruDbFailed(format!("HTTP {s}: {m}")))?;
+        // open-runoのdbPutは現状コミットIDを返さない(`commit_id`が付いていれば使う)。
+        data["admin"]["dbPut"]["commit_id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| DualWriteError::AruaruDbFailed("open-runo response missing commit_id".to_string()))
     }
 
     #[cfg(not(feature = "custom_domain"))]
@@ -282,5 +341,80 @@ mod tests {
         assert!(outcome.postgres_committed, "postgres write must still be reported as committed");
         assert!(outcome.aruaru_db_commit_id.is_none());
         assert!(outcome.aruaru_db_error.is_some(), "aruaru-db failure must be surfaced, not swallowed");
+    }
+
+    /// `HttpAruaruDbBackend`がopen-runoのGraphQL(`selfIssueKey`→`dbPut`)を実TCP+実HTTPで
+    /// 叩くこと。期限切れキー(モックが`extensions.status`=401を返す)は1回だけ再発行して再試行する。
+    #[cfg(feature = "custom_domain")]
+    #[tokio::test]
+    async fn http_backend_writes_via_graphql_and_reissues_an_expired_key_once() {
+        use bytes::Bytes;
+        use http_body_util::{BodyExt, Full};
+        use hyper::body::Incoming;
+        use hyper::server::conn::http1;
+        use hyper::service::service_fn;
+        use hyper::{Request, Response, StatusCode};
+        use hyper_util::rt::TokioIo;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let issues = Arc::new(AtomicU32::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let counter = Arc::clone(&issues);
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { continue };
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let service = service_fn(move |req: Request<Incoming>| {
+                        let counter = Arc::clone(&counter);
+                        async move {
+                            let key = req
+                                .headers()
+                                .get("x-api-key")
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("")
+                                .to_string();
+                            let bytes = req.into_body().collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+                            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                            let query = body["query"].as_str().unwrap_or("");
+                            let payload = if query.contains("selfIssueKey") {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                serde_json::json!({ "data": { "selfIssueKey": { "api_key": "fresh-key" } } })
+                            } else if key != "fresh-key" {
+                                serde_json::json!({ "data": null, "errors": [{ "message": "authentication required", "extensions": { "status": 401 } }] })
+                            } else if body["variables"]["t"] == "custom_subdomains" && body["variables"]["k"] == "alice" {
+                                serde_json::json!({ "data": { "admin": { "dbPut": { "table": "custom_subdomains", "key": "alice", "value": {}, "commit_id": "c-42" } } } })
+                            } else {
+                                serde_json::json!({ "data": null, "errors": [{ "message": "unexpected", "extensions": { "status": 422 } }] })
+                            };
+                            Ok::<_, std::convert::Infallible>(
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(payload.to_string())))
+                                    .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
+                });
+            }
+        });
+
+        let backend = HttpAruaruDbBackend {
+            endpoint: format!("http://{addr}"),
+            client: reqwest::Client::new(),
+            api_key: tokio::sync::Mutex::new(Some("stale-key".to_string())),
+        };
+        let mut record = sample_record();
+        record.subdomain_name = "alice".to_string();
+        let commit_id = backend.record_change(&record).await.expect("401 -> reissue -> retry should succeed");
+        assert_eq!(commit_id, "c-42");
+        assert_eq!(issues.load(Ordering::SeqCst), 1, "exactly one re-issue");
+        // 2回目は再発行不要(キャッシュ済み)。
+        backend.record_change(&record).await.unwrap();
+        assert_eq!(issues.load(Ordering::SeqCst), 1);
     }
 }
