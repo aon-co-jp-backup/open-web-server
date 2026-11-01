@@ -30,6 +30,23 @@ fn shared_client() -> &'static ProxyClient {
     CLIENT.get_or_init(|| Client::builder(TokioExecutor::new()).build(HttpConnector::new()))
 }
 
+/// 素のgRPC(`application/grpc`、gRPC-webは除く)の上流向け。上流とはHTTP/2(h2c、prior knowledge)で
+/// 話す——gRPCの終了状態はHTTP/2のトレーラーで運ばれ、応答はそのまま(`stream_body`)転送するので
+/// トレーラーも落ちない。
+fn shared_h2_client() -> &'static ProxyClient {
+    static CLIENT: OnceLock<ProxyClient> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder(TokioExecutor::new()).http2_only(true).build(HttpConnector::new())
+    })
+}
+
+fn is_plain_grpc(headers: &hyper::HeaderMap) -> bool {
+    headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/grpc") && !ct.starts_with("application/grpc-web"))
+}
+
 /// 受信リクエストを `base_addr` (例: `"127.0.0.1:9001"` または
 /// `"http://127.0.0.1:8080"`)へそのまま転送し、応答を返す。
 ///
@@ -159,7 +176,8 @@ pub async fn forward_to_stripped(
         }
     };
 
-    let attempt = request_with_one_retry_on_connect_failure(upstream_req, &build_upstream_req).await;
+    let client = if is_plain_grpc(&parts.headers) { shared_h2_client() } else { shared_client() };
+    let attempt = request_with_one_retry_on_connect_failure(client, upstream_req, &build_upstream_req).await;
 
     match attempt {
         Ok(upstream_resp) => {
@@ -181,18 +199,19 @@ pub async fn forward_to_stripped(
 /// 「動的登録された直後のバックエンドが一瞬だけ接続を受け付けない」
 /// 実際のレースを観測したことを受けて追加。
 async fn request_with_one_retry_on_connect_failure(
+    client: &ProxyClient,
     first_req: Request<Full<Bytes>>,
     rebuild: &(dyn Fn() -> Result<Request<Full<Bytes>>, String> + Send + Sync),
 ) -> Result<
     Response<Incoming>,
     hyper_util::client::legacy::Error,
 > {
-    let first = shared_client().request(first_req).await;
+    let first = client.request(first_req).await;
     match first {
         Err(e) if is_transient_connection_failure(&e) => {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             match rebuild() {
-                Ok(retry_req) => shared_client().request(retry_req).await,
+                Ok(retry_req) => client.request(retry_req).await,
                 Err(_) => Err(e),
             }
         }
@@ -227,6 +246,74 @@ fn is_transient_connection_failure(e: &hyper_util::client::legacy::Error) -> boo
 mod tests {
     use super::*;
     use std::net::TcpListener as StdTcpListener;
+
+    #[test]
+    fn only_plain_grpc_selects_the_h2_client() {
+        let h = |ct: &str| {
+            let mut m = hyper::HeaderMap::new();
+            m.insert(hyper::header::CONTENT_TYPE, ct.parse().unwrap());
+            m
+        };
+        assert!(is_plain_grpc(&h("application/grpc")));
+        assert!(is_plain_grpc(&h("application/grpc+proto")));
+        assert!(!is_plain_grpc(&h("application/grpc-web+proto")));
+        assert!(!is_plain_grpc(&h("application/json")));
+        assert!(!is_plain_grpc(&hyper::HeaderMap::new()));
+    }
+
+    /// gRPCの終了状態はHTTP/2のトレーラーで来る。h2c(prior knowledge)の上流へ`shared_h2_client`で
+    /// 話し、応答のトレーラー(`grpc-status`)が落ちずに読めることを実TCPで確認する。
+    #[tokio::test]
+    async fn h2_client_receives_grpc_trailers_from_an_h2c_upstream() {
+        use hyper::body::Frame;
+        use hyper_util::server::conn::auto;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let svc = hyper::service::service_fn(|_req: Request<hyper::body::Incoming>| async {
+                let mut trailers = hyper::HeaderMap::new();
+                trailers.insert("grpc-status", "0".parse().unwrap());
+                let frames = vec![Frame::data(Bytes::from_static(b"     ")), Frame::trailers(trailers)];
+                Ok::<_, std::convert::Infallible>(
+                    Response::builder()
+                        .header("content-type", "application/grpc")
+                        .body(FrameList(frames.into()))
+                        .unwrap(),
+                )
+            });
+            let _ = auto::Builder::new(TokioExecutor::new())
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                .await;
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("http://{addr}/x.Y/Z"))
+            .header("content-type", "application/grpc")
+            .body(Full::new(Bytes::from_static(b"     ")))
+            .unwrap();
+        let resp = shared_h2_client().request(req).await.unwrap();
+        assert_eq!(resp.version(), hyper::Version::HTTP_2);
+        let collected = BodyExt::collect(resp.into_body()).await.unwrap();
+        let trailers = collected.trailers().cloned().expect("trailers must arrive");
+        assert_eq!(trailers.get("grpc-status").unwrap(), "0");
+    }
+
+    /// データ→トレーラーの順にフレームを返すだけの本文。
+    struct FrameList(std::collections::VecDeque<hyper::body::Frame<Bytes>>);
+
+    impl hyper::body::Body for FrameList {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+            std::task::Poll::Ready(self.0.pop_front().map(Ok))
+        }
+    }
 
     fn build(uri: &str) -> Request<Full<Bytes>> {
         Request::builder()
@@ -269,7 +356,7 @@ mod tests {
         let uri = format!("http://{addr}/");
         let req = build(&uri);
         let uri_for_retry = uri.clone();
-        let result = request_with_one_retry_on_connect_failure(req, &|| Ok(build(&uri_for_retry))).await;
+        let result = request_with_one_retry_on_connect_failure(shared_client(), req, &|| Ok(build(&uri_for_retry))).await;
 
         let resp = result.expect("should recover on retry");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -308,7 +395,7 @@ mod tests {
         let req = build(&uri);
         let uri_for_retry = uri.clone();
         let started = Instant::now();
-        let resp = request_with_one_retry_on_connect_failure(req, &|| Ok(build(&uri_for_retry)))
+        let resp = request_with_one_retry_on_connect_failure(shared_client(), req, &|| Ok(build(&uri_for_retry)))
             .await
             .expect("upstream should respond");
         let (_parts, body) = resp.into_parts();
@@ -360,7 +447,7 @@ mod tests {
         let uri = format!("http://{addr}/");
         let req = build(&uri);
         let uri_for_retry = uri.clone();
-        let result = request_with_one_retry_on_connect_failure(req, &|| Ok(build(&uri_for_retry))).await;
+        let result = request_with_one_retry_on_connect_failure(shared_client(), req, &|| Ok(build(&uri_for_retry))).await;
 
         let resp = result.expect("server responded, no connect error");
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);

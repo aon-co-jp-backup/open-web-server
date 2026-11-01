@@ -295,7 +295,10 @@ impl rustls::server::ResolvesServerCert for TenantCertResolver {
 /// バックエンド間4層防御通信の方に別途ある——ここは公開向けの通常TLS)。
 pub fn build_tenant_server_config(resolver: Arc<TenantCertResolver>) -> Arc<rustls::ServerConfig> {
     ensure_crypto_provider_installed();
-    Arc::new(rustls::ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolver))
+    let mut config = rustls::ServerConfig::builder().with_no_client_auth().with_cert_resolver(resolver);
+    // HTTP/2(gRPC含む)をALPNで受ける。h2非対応のクライアントはhttp/1.1のまま。
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Arc::new(config)
 }
 
 #[cfg(test)]

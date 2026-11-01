@@ -499,7 +499,26 @@ async fn route(
     .await
 }
 
-/// TCP接続を受け付け続け、1接続ごとに HTTP/1.1 サーバを `spawn` する。
+/// 1接続をHTTP/1.1とHTTP/2(平文はprior knowledge〈h2c〉、TLSはALPN)のどちらでも処理する。
+/// gRPCはHTTP/2のトレーラーで終了状態を運ぶため、HTTP/2を受けられることが前提。
+/// HTTP/2 Rapid Reset対策として同時ストリーム数などを制限する。
+async fn serve_auto<I, S>(io: I, service: S) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    S: hyper::service::Service<Request<Incoming>, Response = Response<crate::response::BoxBody>> + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let mut builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    builder
+        .http2()
+        .max_concurrent_streams(128)
+        .max_pending_accept_reset_streams(20)
+        .max_local_error_reset_streams(1024);
+    builder.serve_connection(io, service).await
+}
+
+/// TCP接続を受け付け続け、1接続ごとに HTTP/1.1・HTTP/2 サーバを `spawn` する。
 async fn accept_loop(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
@@ -515,7 +534,7 @@ async fn accept_loop(listener: TcpListener, state: Arc<AppState>) -> anyhow::Res
 
         tokio::spawn(async move {
             let service = service_fn(move |req| route(state.clone(), req, Some(peer_addr)));
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            if let Err(err) = serve_auto(io, service).await {
                 tracing::warn!(error = %err, "connection error");
             }
         });
@@ -554,7 +573,7 @@ async fn accept_tls_loop(
             };
             let io = TokioIo::new(tls_stream);
             let service = service_fn(move |req| route(state.clone(), req, Some(peer_addr)));
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            if let Err(err) = serve_auto(io, service).await {
                 tracing::warn!(error = %err, "tls connection error");
             }
         });
