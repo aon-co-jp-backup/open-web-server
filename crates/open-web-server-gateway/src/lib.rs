@@ -424,11 +424,26 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
 ///
 /// 元 Poem 実装の `poem::middleware::Tracing` に相当する、method/path/status/
 /// 所要時間を記録するリクエストロギング層。
+/// HTTP/2のリクエストは`Host`ヘッダーを持たず、宛先は`:authority`(`uri().authority()`)で来る。
+/// 以降のルーティング・転送は`Host`ヘッダーを前提にしているので、無ければ`:authority`から補う。
+fn ensure_host_header<B>(req: &mut Request<B>) {
+    if req.headers().contains_key(hyper::header::HOST) {
+        return;
+    }
+    let Some(authority) = req.uri().authority().map(|a| a.as_str().to_string()) else {
+        return;
+    };
+    if let Ok(v) = hyper::header::HeaderValue::from_str(&authority) {
+        req.headers_mut().insert(hyper::header::HOST, v);
+    }
+}
+
 async fn route(
     state: Arc<AppState>,
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     peer_addr: Option<SocketAddr>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
+    ensure_host_header(&mut req);
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let span = tracing::info_span!("http_request", %method, %path, status = tracing::field::Empty);
@@ -833,6 +848,24 @@ pub async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HTTP/2は`Host`ヘッダー無しで`:authority`だけが来る。補った`Host`でテナント振り分けが効く。
+    #[test]
+    fn host_header_is_filled_from_the_h2_authority() {
+        let mut req = Request::builder().uri("https://aruaru.tokyo/x").body(()).unwrap();
+        ensure_host_header(&mut req);
+        assert_eq!(req.headers().get(hyper::header::HOST).unwrap(), "aruaru.tokyo");
+
+        // 既にHostがあるHTTP/1.1はそのまま(authorityのない相対URI)。
+        let mut req = Request::builder().uri("/x").header("host", "a.example").body(()).unwrap();
+        ensure_host_header(&mut req);
+        assert_eq!(req.headers().get(hyper::header::HOST).unwrap(), "a.example");
+
+        // どちらも無ければ何も足さない。
+        let mut req = Request::builder().uri("/x").body(()).unwrap();
+        ensure_host_header(&mut req);
+        assert!(req.headers().get(hyper::header::HOST).is_none());
+    }
 
     /// `OPEN_WEB_SERVER_ADMIN_TOKEN`はプロセス全体で共有されるグローバル
     /// 環境変数であり、これを一時的に書き換えるテスト同士を`cargo test`の
