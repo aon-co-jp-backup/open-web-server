@@ -5,8 +5,9 @@
 //! - `OTEL_EXPORTER_OTLP_ENDPOINT` 環境変数が設定されている場合は、その
 //!   エンドポイントへ OTLP/HTTP (protobuf) でスパンをエクスポートする
 //!   (本番/ステージング環境で Collector に接続する想定)。
-//! - 未設定の場合は標準出力へスパンを書き出す `opentelemetry-stdout` を
-//!   使う (ローカル開発・Collector 未起動時のフォールバック)。
+//! - 未設定の場合は、既定ではスパンを書き出さない。ローカル開発で標準出力へ出したいときだけ
+//!   `OPEN_WEB_SERVER_OTEL_STDOUT=1` を設定する(`opentelemetry-stdout`)。以前は未設定のとき常に
+//!   標準出力へ出していて、本番のログを1日に約250MBずつ埋めていた。
 //!
 //! いずれの場合も `open-runo`/`aruaru-db` 側から見た「aruaru-web ->
 //! open-web-server -> open-runo -> aruaru-db」の一連のリクエストを
@@ -54,6 +55,13 @@ fn resource() -> Resource {
         .build()
 }
 
+/// スパンの標準出力への書き出しを、明示的に頼んでいるか(`OPEN_WEB_SERVER_OTEL_STDOUT` が `1` か `true`)。
+fn stdout_exporter_requested() -> bool {
+    std::env::var("OPEN_WEB_SERVER_OTEL_STDOUT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// `OTEL_EXPORTER_OTLP_ENDPOINT` の有無に応じてエクスポータを選び、
 /// `SdkTracerProvider` を構築する。
 fn build_tracer_provider() -> anyhow::Result<SdkTracerProvider> {
@@ -65,10 +73,15 @@ fn build_tracer_provider() -> anyhow::Result<SdkTracerProvider> {
             .with_endpoint(endpoint)
             .build()?;
         builder.with_batch_exporter(exporter).build()
-    } else {
-        // Collector 未設定時は標準出力にスパンを書き出す (開発用フォールバック)。
+    } else if stdout_exporter_requested() {
+        // 開発時に、標準出力へスパンを書き出したいときだけ使う(`OPEN_WEB_SERVER_OTEL_STDOUT=1`)。
         let exporter = opentelemetry_stdout::SpanExporter::default();
         builder.with_batch_exporter(exporter).build()
+    } else {
+        // 既定は書き出さない。以前は Collector 未設定のとき、全リクエストのスパンを標準出力へ出していて、
+        // 本番(systemd)では /var/log/messages が1日に約250MBずつ埋まっていた。`tracing` の通常のログ
+        // (fmtレイヤー)は、これとは別に従来どおり出る。
+        builder.build()
     };
 
     Ok(provider)
