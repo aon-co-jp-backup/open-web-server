@@ -42,7 +42,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use open_web_server_core::MutationRequest;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
@@ -189,7 +189,7 @@ fn encode_frame(
     let plaintext = serde_json::to_vec(req)?;
     let ciphertext = cipher.encrypt(&plaintext)?;
 
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(mac_key)
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(mac_key)
         .map_err(|e| anyhow::anyhow!("invalid HMAC key: {e}"))?;
     mac.update(&seq.to_le_bytes());
     mac.update(&ciphertext);
@@ -214,7 +214,7 @@ fn decode_frame(
     let (tag, ciphertext) = rest.split_at(MAC_LEN);
     let seq = u64::from_le_bytes(seq_bytes.try_into().unwrap());
 
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(mac_key)
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(mac_key)
         .map_err(|e| anyhow::anyhow!("invalid HMAC key: {e}"))?;
     mac.update(seq_bytes);
     mac.update(ciphertext);

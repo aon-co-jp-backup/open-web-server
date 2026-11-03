@@ -56,17 +56,17 @@ russh = { version = "0.63", optional = true }
 russh-sftp = { version = "2", optional = true }
 # UPnP IGD自動ポート開放(upnp feature)向け。`igd`の後継で活発にメンテ
 # されている`igd-next`を採用(2026-07時点でcrates.io確認済み)。
-igd-next = { version = "0.15", optional = true, features = ["aio_tokio"] }
+igd-next = { version = "0.18", optional = true, features = ["aio_tokio"] }
 # 自社ドメイン(aon.co.jp/runo.tokyo)配下の無料サブドメイン発行機能
 # (custom_domain feature)向け。DnsProvider実装(Value-Domain/ConoHa DNS)の
 # 実HTTP呼び出し、およびGitHub OAuthのトークン交換に使う。
 sqlx = { workspace = true, optional = true }
-fastcgi-client = { version = "0.11.1", features = ["runtime-tokio"], optional = true }
+fastcgi-client = { version = "0.12", features = ["tokio"], optional = true }
 # 2FA(TOTP、Google Authenticator等のスマホアプリでQRコード撮影して登録する
 # 標準方式、admin-2fa feature向け)。RFC 6238のHMAC-SHA1計算に使用、
 # 活発にメンテされているRustCrypto製の標準crate。
-hmac = { version = "0.12", optional = true }
-sha1 = { version = "0.10", optional = true }
+hmac = { version = "0.13", optional = true }
+sha1 = { version = "0.11", optional = true }
 # TOTP登録用のQRコード生成(SVG出力、画像デコード用の追加依存を避けるため
 # ラスタ画像ではなくSVGで出力する)。
 qrcode = { version = "0.14", optional = true }

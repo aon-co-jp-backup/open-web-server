@@ -5286,3 +5286,10 @@ Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms
 **Adoption**: in `Cargo.toml`, `rust-json = { path = "../RS-JSON", features = ["fast"] }`. Example in `RS-JSON/README.md`.
 
 **Status in this repository**: Not yet applied (policy only). Code will be switched over place by place, starting where measurements show large or frequent JSON reads.
+
+## 依存の更新(2026-11-03)
+`Cargo.lock`を更新(quinn-proto 0.11.19・crypto-bigint 0.7.10・blake2 0.11 ほか。RUSTSEC-2026-0338〜0342・0387・2019-0019 を解消)し、主要版を上げた:
+hmac/hkdf 0.13、sha2/sha1 0.11、chacha20poly1305 0.11(`OsRng`は`rand::thread_rng()`へ、HMACは`KeyInit`を取り込む)、
+opentelemetry系 0.33 + tracing-opentelemetry 0.34、igd-next 0.18、fastcgi-client 0.12(機能名`runtime-tokio`→`tokio`)、
+aggligator 0.12 / aggligator-transport-tcp 0.6(`tcp_server`廃止→`tcp_listen`+`accept`)。
+**未解決**: `rsa`(RUSTSEC-2023-0071、修正版なし)。`--all-features`の`two_factor`系テストは環境変数の競合で不安定(更新前から)。

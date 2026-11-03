@@ -6,7 +6,7 @@
 //! aruaru-db の `aruaru-wire::payload_crypto` と同一方式。
 
 use chacha20poly1305::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
 use rand::RngCore;
@@ -25,7 +25,7 @@ impl PayloadCipher {
 
     pub fn generate_key() -> [u8; 32] {
         let mut key = [0u8; 32];
-        OsRng.fill_bytes(&mut key);
+        rand::thread_rng().fill_bytes(&mut key);
         key
     }
 

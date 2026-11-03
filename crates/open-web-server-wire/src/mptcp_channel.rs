@@ -90,18 +90,18 @@ impl MptcpServer {
         let tx = std::sync::Mutex::new(Some(tx));
 
         tokio::spawn(async move {
-            let result = agg_tcp::tcp_server(local_addr, move |mut stream| {
-                let tx = tx.lock().unwrap().take();
-                async move {
-                    let outcome = read_one_mutation(&mut stream).await;
-                    if let Some(tx) = tx {
-                        let _ = tx.send(outcome);
-                    }
+            let result: anyhow::Result<()> = async {
+                let listener = agg_tcp::tcp_listen(local_addr).await?;
+                let mut stream = listener.accept().await?;
+                let outcome = read_one_mutation(&mut stream).await;
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(outcome);
                 }
-            })
+                Ok(())
+            }
             .await;
             if let Err(e) = result {
-                tracing::warn!(error = %e, "mptcp_channel: aggligator tcp_server exited with error");
+                tracing::warn!(error = %e, "mptcp_channel: aggligator listener exited with error");
             }
         });
 

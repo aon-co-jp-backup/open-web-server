@@ -46,8 +46,8 @@ rcgen.workspace = true
 # (物理経路マルチホーミングによる伝送路冗長化)をユーザー空間で実現する
 # aggligator を使用する(公式ドキュメントいわく "serves the same purpose
 # as Multipath TCP and SCTP... completely implemented in user space")。
-aggligator = "0.9"
-aggligator-transport-tcp = { version = "0.2", default-features = false }
+aggligator = "0.12"
+aggligator-transport-tcp = { version = "0.6", default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
