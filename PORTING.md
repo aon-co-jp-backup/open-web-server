@@ -1,5 +1,41 @@
 # PORTING.md — open-web-server お引越しファイル
 
+## 管理API・公開API: REST 全廃 → Connect(POST、RS-JSON)(2026-11-04)
+
+旧 `GET/POST/PUT/DELETE /admin/...`・`/api/v1/...`・`/internal/db/state/...` はすべて削除した。呼び方は
+`POST /open_web_server.admin.v1.Admin/<Method>`(公開APIは `open_web_server.api.v1.Api/<Method>`)、
+`content-type: application/json`、本文は JSON オブジェクト(空でも可)。認証は従来どおり `x-admin-token` または
+`Authorization: Bearer <KeyGuardianのキー>`。本文は RS-JSON の `parse_secure`(2MiB・深さ32・重複キー拒否)で検査する。
+成功は常に 200(配列は `{"items":[…]}`、文字だけの応答は `{"message":"…"}`)、失敗は `{"code":"…","message":"…"}`。
+旧パスパラメータ・クエリは本文のフィールドへ(`host`・`domain`・`base_domain`・`subdomain`・`path_prefix`・`target`・`key`・`commit_id`)。
+実装は `crates/open-web-server-gateway/src/connect.rs`。REST のまま残すのは `/healthz`・`/healthz/ddns`・ACME チャレンジ・`/demo`・静的配信・テナントへの素通しのみ。
+
+| 旧REST | Connect(`Admin/…`) | 本文の主なフィールド |
+|---|---|---|
+| POST/GET `/admin/tenants` | `AddTenant` / `ListTenants` | TenantConfig |
+| PUT `/admin/tenants/:host` | `UpdateTenant` | `host` + TenantConfig |
+| DELETE `/admin/tenants/:host[?path_prefix=]` | `RemoveTenant` | `host`, `path_prefix` |
+| POST/DELETE `/admin/tenants/:host/tls` | `UpsertTenantTls` / `RemoveTenantTls` | `host`, `cert_pem`, `key_pem` |
+| POST `/admin/tenants/:host/tls/acme` | `ObtainTenantTlsViaAcme`(acme) | `host`, `directory_url`, `contact_email` |
+| POST/GET/DELETE `/admin/web-vhosts[...]` | `UpsertWebVhost` / `ListWebVhosts` / `RemoveWebVhost` / `ImportWebVhost` / `UpdateWebVhostCompatMode` | `host` ほか |
+| POST/GET/DELETE `/admin/redirects[...]` | `UpsertRedirect` / `ListRedirects` / `RemoveRedirect` | `host` |
+| GET/POST `/admin/power-profile` | `GetPowerProfile` / `SetPowerProfile` | `profiles` |
+| GET/POST `/admin/auto-update` | `GetAutoUpdate` / `SetAutoUpdate`(auto-update) | `enabled` |
+| GET `/admin/watchdog/status`・`expectations`、POST `.../expectations/:host` | `GetWatchdogStatus` / `ListWatchdogExpectations` / `SetWatchdogExpectations` | `host`, `expected_substrings` |
+| POST/GET/DELETE `/admin/keys[...]` | `IssueKey` / `KeyStatus` / `RevokeKey` | `owner` |
+| `/admin/2fa/*`・`/admin/login/*` | `Enroll2fa` / `Confirm2fa` / `Verify2fa` / `RequestLoginOtp` / `VerifyLogin`(admin-2fa) | 従来どおり |
+| `/admin/disaster-email-backup[/verify]` | `SetDisasterEmailBackup` / `VerifyDisasterEmailBackup` | 従来どおり |
+| GET `/admin/sftp/connection-info[?host=]` | `GetSftpConnectionInfo` | `host`(任意) |
+| POST/GET/DELETE `/admin/ddns/...` | `SetupFreeDomain` / `ListFreeDomains` / `RemoveFreeDomain` | `domain`, `token` |
+| POST/GET/DELETE `/admin/custom-domain/ipv6-auto-update[...]` | `SetupIpv6AutoUpdate` / `ListIpv6AutoUpdate` / `RemoveIpv6AutoUpdate` | `base_domain`, `subdomain` |
+| GET `/internal/db/state/:target/:key/at/:commit_id` | `GetStateAtCommit` | `target`, `key`, `commit_id` |
+| POST `/api/v1/items/grant`・`/transactions/charge` | `Api/GrantItem` / `Api/Charge`(`Idempotency-Key` ヘッダ必須) | 従来どおり |
+
+呼び出し元: 証明書更新フック `scripts/certbot-deploy-hook-open-web-server.sh`(VPS では `/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)、
+Android `DdnsSetupActivity.kt`、`open-easy-web`(`src/api_free_domain.rs`・`server/src/appserver_registration.rs`)を Connect へ移行済み。
+`admin-2fa-hardening` ブランチ(未マージ)は `tenants.rs`・`tls.rs`・`lib.rs` のルートと認証、上記フックを変更しているため、マージ時に衝突する(`x-tls-token` と `/admin/2fa/reset` は未取り込み)。
+**本文中の旧REST名(`POST /admin/tenants` 等)の記述は、上の対応表で読み替えること。**
+
 > 🎯 **移植時の前提(2026-08-29)**: aruaru-dbはRPoemとのSETで初めて
 > 「REST API不要・Cosmo有料版互換」の価値が成立する(正本:
 > aruaru-db/CLAUDE.md冒頭)。本リポジトリの管理REST APIをGraphQLへ

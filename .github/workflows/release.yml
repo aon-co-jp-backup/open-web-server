@@ -34,6 +34,8 @@ jobs:
       # 発覚したビルド失敗の修正)。
       - name: Checkout RS-SmartTCP (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - name: Checkout RS-JSON (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -58,6 +60,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Checkout RS-SmartTCP (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - name: Checkout RS-JSON (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -86,6 +90,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Checkout RS-SmartTCP (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - name: Checkout RS-JSON (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON
       - name: Add Apple Silicon target
         run: rustup target add aarch64-apple-darwin
       - name: Build (x86_64-apple-darwin, ネイティブランナーアーキ)
@@ -131,6 +137,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Checkout RS-SmartTCP (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
+      - name: Checkout RS-JSON (sibling path dependency)
+        run: git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
