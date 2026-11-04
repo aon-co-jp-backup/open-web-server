@@ -1,4 +1,4 @@
-//! `GET`/`POST /admin/auto-update` — 自己アップデート機能の実行時
+//! `GET`/`Connect Admin/SetAutoUpdate` — 自己アップデート機能の実行時
 //! 有効/無効切替+状態確認(`auto-update` feature、2026-08-19新設)。
 //! 既存の`x-admin-token`/`KeyGuardian`認証パターン
 //! (`handlers::tenants::check_admin_auth`)をそのまま再利用する
@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +21,8 @@ struct AutoUpdateStatusResponse {
     repo: &'static str,
 }
 
-/// `GET /admin/auto-update` — 現在の有効/無効状態を返す。
-pub async fn get_auto_update(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/GetAutoUpdate` — 現在の有効/無効状態を返す。
+pub async fn get_auto_update(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -41,9 +41,9 @@ struct SetAutoUpdateRequest {
     enabled: bool,
 }
 
-/// `POST /admin/auto-update` — 有効/無効を切り替える(再起動不要、
+/// `Connect Admin/SetAutoUpdate` — 有効/無効を切り替える(再起動不要、
 /// `power_profile`と同じ即時反映の設計)。
-pub async fn set_auto_update(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn set_auto_update(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }

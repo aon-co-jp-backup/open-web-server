@@ -24,7 +24,7 @@
 //! `tenant_router::TenantRegistry`(`RwLock<HashMap<..>>`による動的
 //! 登録・削除、再起動不要)と同じパターンを踏襲した——[`DomainRegistry`]
 //! が「サブドメイン名 → DuckDNSトークン」を保持し、管理API
-//! (`POST /admin/ddns/setup-free-domain`)を複数回呼べば複数ドメインを
+//! (`Connect Admin/SetupFreeDomain`)を複数回呼べば複数ドメインを
 //! 追加登録できる。5分間隔の自動更新ループは、登録済み全ドメインを毎回
 //! 順に更新する。
 //!

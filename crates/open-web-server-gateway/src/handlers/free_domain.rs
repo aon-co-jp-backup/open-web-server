@@ -1,10 +1,10 @@
 //! 無料DDNS(DuckDNS)ドメインの管理API群(既存の
 //! `OPEN_WEB_SERVER_ADMIN_TOKEN`/`KeyGuardian`認証を再利用):
-//! - `POST /admin/ddns/setup-free-domain` — ドメインを1件登録し、即座に
+//! - `Connect Admin/SetupFreeDomain` — ドメインを1件登録し、即座に
 //!   疎通確認する。複数回呼べば最大`free_domain::MAX_DUCKDNS_DOMAINS`件まで
 //!   追加登録できる。
-//! - `GET /admin/ddns/domains` — 登録済みドメイン一覧(残り枠も返す)。
-//! - `DELETE /admin/ddns/domains/:domain` — 登録解除(自動更新ループの対象
+//! - `Connect Admin/ListFreeDomains` — 登録済みドメイン一覧(残り枠も返す)。
+//! - `Connect Admin/RemoveFreeDomain` — 登録解除(自動更新ループの対象
 //!   から即座に外れる)。
 //!
 //! **正直な開示(スコープの境界)**: DuckDNSのアカウント自体(トークン
@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 #[cfg(feature = "ddns")]
@@ -55,10 +55,10 @@ pub struct SetupFreeDomainResponse {
     pub message: String,
 }
 
-/// `POST /admin/ddns/setup-free-domain` — ドメインを1件登録し、即時疎通確認する。
+/// `Connect Admin/SetupFreeDomain` — ドメインを1件登録し、即時疎通確認する。
 /// 複数回呼べば最大`MAX_DUCKDNS_DOMAINS`件まで追加登録できる(21件目以降は
 /// 明示的な400エラーで拒否する)。
-pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
@@ -87,7 +87,7 @@ pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> 
                 status,
                 format!(
                     "{e} — このインスタンスは最大{MAX_DUCKDNS_DOMAINS}件までのDuckDNSドメインしか\
-                     登録できません。不要なドメインを DELETE /admin/ddns/domains/:domain で\
+                     登録できません。不要なドメインを Connect Admin/RemoveFreeDomain で\
                      削除してから再度お試しください。"
                 ),
             );
@@ -158,8 +158,8 @@ pub async fn setup_free_domain(state: Arc<AppState>, req: Request<Incoming>) -> 
     }
 }
 
-/// `GET /admin/ddns/domains` — 登録済みドメイン一覧+残り枠。
-pub async fn list_domains(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/ListFreeDomains` — 登録済みドメイン一覧+残り枠。
+pub async fn list_domains(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -174,8 +174,8 @@ pub async fn list_domains(state: Arc<AppState>, req: &Request<Incoming>) -> Resp
     json_response(StatusCode::OK, &body)
 }
 
-/// `DELETE /admin/ddns/domains/:domain` — 登録解除。
-pub async fn remove_domain(state: Arc<AppState>, req: &Request<Incoming>, domain: &str) -> Response<BoxBody> {
+/// `Connect Admin/RemoveFreeDomain` — 登録解除。
+pub async fn remove_domain(state: Arc<AppState>, req: &Request<Bytes>, domain: &str) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }

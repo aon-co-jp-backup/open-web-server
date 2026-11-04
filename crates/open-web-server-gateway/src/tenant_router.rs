@@ -62,7 +62,7 @@ pub enum BackendKind {
 /// 1ドメイン分の設定(宣言的プロビジョニングの単位)。
 ///
 /// `domains.toml` の `[[domain]]` テーブル、または管理API
-/// `POST /admin/tenants` のJSONボディがこの構造にデシリアライズされる。
+/// `Connect Admin/AddTenant` のJSONボディがこの構造にデシリアライズされる。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantConfig {
     /// 振り分け対象のHostヘッダ値(例: "shop.example.com")。

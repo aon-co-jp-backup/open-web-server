@@ -33,7 +33,7 @@ import org.json.JSONObject
  * Rust本体(`crates/open-web-server-gateway/src/free_domain.rs`)が既に
  * 実装している「DuckDNSトークン登録・5分間隔でのIP自動更新・最大20ドメイン
  * 管理」機能を、起動中のローカルopen-web-serverプロセスの管理API
- * (`http://127.0.0.1:<port>/admin/ddns/...`)経由でこのアプリ内から使える
+ * (`http://127.0.0.1:<port>/open_web_server.admin.v1.Admin/...`(Connect、POST + JSON))経由でこのアプリ内から使える
  * ようにする。管理APIそのもの・自動更新ループ自体はRust側が既に持っている
  * ため、このActivityは(a)トークン入力・登録、(b)登録済み一覧のポーリング
  * 表示、(c)削除、の3操作に徹する薄いUI層。
@@ -151,7 +151,7 @@ class DdnsSetupActivity : AppCompatActivity() {
     /**
      * 「現在のDDNS状態」の定期ポーリング(2026-07-24追加)。5分間隔の
      * サーバー側自動更新ループ自体は`free_domain.rs`が既に持っているため、
-     * このActivityは表示のためだけに`GET /admin/ddns/domains`を短い間隔
+     * このActivityは表示のためだけに`Admin/ListFreeDomains`を短い間隔
      * (15秒)でポーリングする——Rust側の`DomainRegistry`が記録する
      * `last_update`(直近の更新成功/失敗・反映IP・確認時刻)をそのまま
      * 表示する。
@@ -233,7 +233,7 @@ class DdnsSetupActivity : AppCompatActivity() {
 }
 
 /**
- * `/admin/ddns/...` 管理APIの薄いHTTPクライアント(`java.net.HttpURLConnection`
+ * Connect の管理API(`Admin/SetupFreeDomain` ほか)の薄いHTTPクライアント(`java.net.HttpURLConnection`
  * のみ、既存`MainActivity`のヘルスチェック実装と同じ作法——新規HTTP
  * ライブラリ依存を追加しない)。
  */
@@ -252,7 +252,7 @@ class DdnsApiClient(private val port: Int) {
 
     fun setupFreeDomain(adminToken: String, domain: String, token: String): String {
         return try {
-            val url = URL("${baseUrl()}/admin/ddns/setup-free-domain")
+            val url = URL("${baseUrl()}/open_web_server.admin.v1.Admin/SetupFreeDomain")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
@@ -286,12 +286,15 @@ class DdnsApiClient(private val port: Int) {
     /** @return (状態表示用の1行サマリ, ドメイン一覧) */
     fun listDomains(adminToken: String): Pair<String, List<DomainEntry>> {
         return try {
-            val url = URL("${baseUrl()}/admin/ddns/domains")
+            val url = URL("${baseUrl()}/open_web_server.admin.v1.Admin/ListFreeDomains")
             val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("x-admin-token", adminToken)
+            conn.doOutput = true
             conn.connectTimeout = 5000
             conn.readTimeout = 5000
+            OutputStreamWriter(conn.outputStream).use { it.write("{}") }
 
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
@@ -332,12 +335,15 @@ class DdnsApiClient(private val port: Int) {
 
     fun deleteDomain(adminToken: String, domain: String): String {
         return try {
-            val url = URL("${baseUrl()}/admin/ddns/domains/$domain")
+            val url = URL("${baseUrl()}/open_web_server.admin.v1.Admin/RemoveFreeDomain")
             val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "DELETE"
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("x-admin-token", adminToken)
+            conn.doOutput = true
             conn.connectTimeout = 5000
             conn.readTimeout = 5000
+            OutputStreamWriter(conn.outputStream).use { it.write(JSONObject().put("domain", domain).toString()) }
 
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream

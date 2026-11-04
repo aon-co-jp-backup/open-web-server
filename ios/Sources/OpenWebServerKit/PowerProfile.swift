@@ -1,7 +1,7 @@
 import Foundation
 
 /// 電源・省電力プロファイル(Android版`PowerProfile.kt`と同じ4分類、
-/// 同じ`prefValue`文字列を使う——`POST /admin/power-profile`が受け取る
+/// 同じ`prefValue`文字列を使う——Connect `Admin/SetPowerProfile`が受け取る
 /// JSON配列の値と一致させ、Windows/Linux/Android/iOS全プラットフォームで
 /// 同じAPI形状を共有する)。
 ///

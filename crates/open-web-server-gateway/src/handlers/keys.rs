@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +37,8 @@ pub struct IssueKeyResponse {
     pub roles: Vec<String>,
 }
 
-/// `POST /admin/keys` — キーを自動発行する。
-pub async fn issue_key(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/IssueKey` — キーを自動発行する。
+pub async fn issue_key(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -71,8 +71,8 @@ pub struct RevokeOwnerResponse {
     pub revoked_count: usize,
 }
 
-/// `POST /admin/keys/revoke` — 指定ownerの全キーを自動失効させる。
-pub async fn revoke_owner(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/RevokeKey` — 指定ownerの全キーを自動失効させる。
+pub async fn revoke_owner(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -91,10 +91,10 @@ pub struct KeyStatusResponse {
     pub active_key_count: usize,
 }
 
-/// `GET /admin/keys` — 発行済み(かつ失効していない)キーの件数のみを
+/// `Connect Admin/KeyStatus` — 発行済み(かつ失効していない)キーの件数のみを
 /// 返す(プレーンテキスト自体は再表示しない、ハッシュのみ保持する
 /// 設計のため一覧表示できるのは件数までが安全な範囲)。
-pub async fn key_status(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+pub async fn key_status(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, req) {
         return resp;
     }
@@ -106,7 +106,7 @@ pub async fn key_status(state: Arc<AppState>, req: &Request<Incoming>) -> Respon
 /// `KeyGuardian`で検証する。呼び出し側は、これが`Ok`を返さない場合に
 /// 既存の`check_admin_auth`(静的シークレット)へフォールバックすれば、
 /// 「両対応」の移行期間を安全に実現できる。
-pub fn check_bearer_key(state: &AppState, req: &Request<Incoming>) -> KeyDecision {
+pub fn check_bearer_key(state: &AppState, req: &Request<Bytes>) -> KeyDecision {
     let Some(header) = req.headers().get(hyper::header::AUTHORIZATION) else {
         return KeyDecision::Rejected;
     };

@@ -5,11 +5,14 @@
 #   OPEN_WEB_SERVER_DOMAINS_FILE=./domains.toml.example ./open-web-server
 #
 # 起動後も再起動不要で追加/削除できる(ノーダウンタイム):
-#   curl -X POST http://localhost:8080/admin/tenants \
-#     -H 'content-type: application/json' \
+#   (Connect の単純呼び出し: POST + JSON。REST は2026-11-04に全廃)
+#   curl -X POST http://localhost:8080/open_web_server.admin.v1.Admin/AddTenant \
+#     -H 'content-type: application/json' -H 'x-admin-token: <token>' \
 #     -d '{"host":"new.example.com","backend":"open_runo","backend_addr":"127.0.0.1:9003","db_uri":"postgres://localhost/new"}'
-#   curl -X DELETE http://localhost:8080/admin/tenants/new.example.com
-#   curl http://localhost:8080/admin/tenants
+#   curl -X POST http://localhost:8080/open_web_server.admin.v1.Admin/RemoveTenant \
+#     -H 'content-type: application/json' -H 'x-admin-token: <token>' -d '{"host":"new.example.com"}'
+#   curl -X POST http://localhost:8080/open_web_server.admin.v1.Admin/ListTenants \
+#     -H 'content-type: application/json' -H 'x-admin-token: <token>' -d '{}'
 
 [[domain]]
 host = "shop.example.com"

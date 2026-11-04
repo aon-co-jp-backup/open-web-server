@@ -49,7 +49,7 @@ pub struct MutationReceipt {
     pub committed_at: Option<DateTime<Utc>>,
 }
 
-/// `GET /internal/db/state/:target/:key/at/:commit_id` の応答。
+/// `Connect Admin/GetStateAtCommit` の応答。
 ///
 /// VersionLessAPI + Git-on-SQL ハイブリッドの「読み出し側」——
 /// `MutationRequest.target`/`account_id` が書き込み側で使うのと同じ

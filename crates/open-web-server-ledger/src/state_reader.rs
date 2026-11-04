@@ -6,7 +6,7 @@
 //! `GET /api/db/:table/:key/at/:commit_id`(2026-07-13実装済み、
 //! `AruaruDbBackend`のみ実対応で他バックエンドは501)へプロキシして返す。
 //! `open-web-server-gateway`側の
-//! `GET /internal/db/state/:target/:key/at/:commit_id`ハンドラから使われる
+//! `Connect Admin/GetStateAtCommit`ハンドラから使われる
 //! (拡張要件(1)が長らく「書き込み側のみ実装済み」だったギャップを解消)。
 //!
 //! **認証**: open-runoのこのエンドポイントは`X-Api-Key`(またはセッション

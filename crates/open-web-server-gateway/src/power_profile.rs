@@ -229,7 +229,7 @@ impl PowerProfileRegistry {
     /// 読み取って構築する(2026-08-24追加)。
     ///
     /// **背景**: これまで`PowerProfileRegistry`は常に「通常」で起動し、
-    /// 管理API(`POST /admin/power-profile`)でしか変更できなかった。
+    /// 管理API(`Connect Admin/SetPowerProfile`)でしか変更できなかった。
     /// つまりインストーラーでプロファイルを選ばせても、その選択を
     /// サービス起動時に反映する手段が存在しなかった(機能欠落)。
     ///

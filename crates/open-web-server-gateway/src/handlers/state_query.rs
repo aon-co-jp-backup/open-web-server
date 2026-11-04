@@ -1,4 +1,4 @@
-//! `GET /internal/db/state/:target/:key/at/:commit_id` — VersionLessAPI +
+//! `Connect Admin/GetStateAtCommit` — VersionLessAPI +
 //! Git-on-SQL ハイブリッドの読み出し側(拡張要件(1))。
 //!
 //! これまで拡張要件(1)は`MutationReceipt.db_commit_id`の配線という
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 
 use crate::response::{json_response, text_response, BoxBody};
@@ -24,26 +24,7 @@ struct ParsedPath {
     commit_id: String,
 }
 
-/// `/internal/db/state/:target/:key/at/:commit_id` をパースする。
-/// フレームワーク非依存の自前ディスパッチャ(`main.rs`の`dispatch`)は
-/// 動的パスパラメータを持たないため、ここで手動パースする。
-fn parse_path(path: &str) -> Option<ParsedPath> {
-    let rest = path.strip_prefix("/internal/db/state/")?;
-    let segments: Vec<&str> = rest.split('/').collect();
-    let [target, key, "at", commit_id] = segments[..] else {
-        return None;
-    };
-    if target.is_empty() || key.is_empty() || commit_id.is_empty() {
-        return None;
-    }
-    Some(ParsedPath {
-        target: target.to_string(),
-        key: key.to_string(),
-        commit_id: commit_id.to_string(),
-    })
-}
-
-/// `GET /internal/db/state/:target/:key/at/:commit_id` の本体。
+/// `Connect Admin/GetStateAtCommit` の本体。
 ///
 /// **2026-07-30追記(セキュリティ強化)**: 過去のコミット時点の状態
 /// (課金アイテム・金融/決済データを含みうる)を誰でも無認証で照会
@@ -58,17 +39,15 @@ fn parse_path(path: &str) -> Option<ParsedPath> {
     skip(state, req),
     fields(target = tracing::field::Empty, key = tracing::field::Empty, commit_id = tracing::field::Empty)
 )]
-pub async fn get_state_at_commit(state: Arc<AppState>, path: &str, req: &Request<Incoming>) -> Response<BoxBody> {
+pub async fn get_state_at_commit(state: Arc<AppState>, req: &Request<Bytes>, target: &str, key: &str, commit_id: &str) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, req) {
         return resp;
     }
 
-    let Some(parsed) = parse_path(path) else {
-        return text_response(
-            StatusCode::BAD_REQUEST,
-            "expected /internal/db/state/:target/:key/at/:commit_id",
-        );
-    };
+    if target.is_empty() || key.is_empty() || commit_id.is_empty() {
+        return text_response(StatusCode::BAD_REQUEST, "'target', 'key' and 'commit_id' must be non-empty");
+    }
+    let parsed = ParsedPath { target: target.to_string(), key: key.to_string(), commit_id: commit_id.to_string() };
 
     let span = tracing::Span::current();
     span.record("target", parsed.target.as_str());
@@ -93,35 +72,5 @@ pub async fn get_state_at_commit(state: Arc<AppState>, path: &str, req: &Request
         // 502(このゲートウェイの下流障害)を返す——404(このゲートウェイ
         // 自体にリソースが無い)とは区別する。
         Err(e) => text_response(StatusCode::BAD_GATEWAY, format!("open-runo request failed: {e}")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_path_extracts_target_key_and_commit_id() {
-        let parsed = parse_path("/internal/db/state/game_items/player-1/at/commit-abc").unwrap();
-        assert_eq!(parsed.target, "game_items");
-        assert_eq!(parsed.key, "player-1");
-        assert_eq!(parsed.commit_id, "commit-abc");
-    }
-
-    #[test]
-    fn parse_path_rejects_missing_at_segment() {
-        assert!(parse_path("/internal/db/state/game_items/player-1/commit-abc").is_none());
-    }
-
-    #[test]
-    fn parse_path_rejects_wrong_segment_count() {
-        assert!(parse_path("/internal/db/state/game_items/at/commit-abc").is_none());
-        assert!(parse_path("/internal/db/state/game_items/player-1/at/commit-abc/extra").is_none());
-    }
-
-    #[test]
-    fn parse_path_rejects_empty_segments() {
-        assert!(parse_path("/internal/db/state//player-1/at/commit-abc").is_none());
-        assert!(parse_path("/internal/db/state/game_items/player-1/at/").is_none());
     }
 }

@@ -1,4 +1,4 @@
-//! `GET /admin/sftp/connection-info` — 「今すぐ何を入力すればSFTP接続できるか」
+//! `Connect Admin/GetSftpConnectionInfo` — 「今すぐ何を入力すればSFTP接続できるか」
 //! を1回のAPI呼び出しで確認できるようにするヘルパー(既存の
 //! `OPEN_WEB_SERVER_ADMIN_TOKEN`/`KeyGuardian`認証を再利用)。
 //!
@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use hyper::{Request, Response, StatusCode};
-use hyper::body::Incoming;
+use bytes::Bytes;
 use serde::Serialize;
 
 use crate::handlers::tenants::check_admin_auth;
@@ -44,7 +44,7 @@ pub struct SftpConnectionInfo {
     pub available_duckdns_domains: Vec<String>,
 }
 
-pub async fn connection_info(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+pub async fn connection_info(state: Arc<AppState>, req: &Request<Bytes>, requested_host: Option<String>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -62,9 +62,6 @@ pub async fn connection_info(state: Arc<AppState>, req: &Request<Incoming>) -> R
     let available_duckdns_domains: Vec<String> =
         registered_domains.iter().map(|d| d.full_hostname.clone()).collect();
 
-    let requested_host = req.uri().query().and_then(|q| {
-        q.split('&').find_map(|kv| kv.strip_prefix("host=")).map(str::to_string)
-    });
 
     let selected_duckdns_host = match requested_host {
         // 明示的にクエリで選ばれたドメインが、実際に登録済みか確認する

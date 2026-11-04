@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 
@@ -24,7 +24,7 @@ pub struct UpsertTlsCertRequest {
     pub key_pem: String,
 }
 
-/// `POST /admin/tenants/:host/tls` — `host`(SNI名)向けの証明書チェーン+
+/// `Connect Admin/UpsertTenantTls` — `host`(SNI名)向けの証明書チェーン+
 /// 秘密鍵を登録・更新する。既存の登録は上書き(証明書ローテーション用途)。
 /// `tenant_router`にその`host`が登録されているかは意図的にチェックしない
 /// ——証明書登録とHTTPルーティング登録は独立した操作であり、TLS終端だけ
@@ -32,7 +32,7 @@ pub struct UpsertTlsCertRequest {
 /// 妨げないため。
 pub async fn upsert_tenant_tls(
     state: Arc<AppState>,
-    req: Request<Incoming>,
+    req: Request<Bytes>,
     host: &str,
 ) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
@@ -50,9 +50,9 @@ pub async fn upsert_tenant_tls(
     }
 }
 
-/// `DELETE /admin/tenants/:host/tls` — 登録済み証明書を削除する
+/// `Connect Admin/RemoveTenantTls` — 登録済み証明書を削除する
 /// (`tenant_router::remove`と同様、未登録でも冪等に成功する)。
-pub async fn remove_tenant_tls(state: Arc<AppState>, req: &Request<Incoming>, host: &str) -> Response<BoxBody> {
+pub async fn remove_tenant_tls(state: Arc<AppState>, req: &Request<Bytes>, host: &str) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -73,9 +73,9 @@ pub struct ObtainAcmeCertRequest {
     pub contact_email: String,
 }
 
-/// `POST /admin/tenants/:host/tls/acme` — HTTP-01でACME証明書を実際に
+/// `Connect Admin/ObtainTenantTlsViaAcme` — HTTP-01でACME証明書を実際に
 /// 取得し、成功すれば即座に`TenantCertResolver`へ登録する(手動での
-/// `POST /admin/tenants/:host/tls`呼び出しが不要になる、自動化された
+/// `Connect Admin/UpsertTenantTls`呼び出しが不要になる、自動化された
 /// 経路)。`acme` feature有効時のみコンパイルされる。
 ///
 /// **前提条件(呼び出し前に必ず満たすこと)**: HTTP-01検証のため、ACME CAが
@@ -85,7 +85,7 @@ pub struct ObtainAcmeCertRequest {
 #[cfg(feature = "acme")]
 pub async fn obtain_tenant_tls_via_acme(
     state: Arc<AppState>,
-    req: Request<Incoming>,
+    req: Request<Bytes>,
     host: &str,
 ) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {

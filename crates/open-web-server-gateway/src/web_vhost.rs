@@ -144,7 +144,7 @@ pub struct BasicAuthConfig {
 /// TenantCertResolver`)への配線は、このモジュールのスコープでは行って
 /// いない——ここではvhost設定として証明書パスを保持するだけであり、
 /// 実際に`open-web-server`自身のTLSリスナーへ反映するには、別途
-/// `POST /admin/tenants/:host/tls`(ファイルパス版)または
+/// `Connect Admin/UpsertTenantTls`(ファイルパス版)または
 /// `upsert_from_files`経由でこのパスを読み込ませる配線が必要
 /// (既存実装がある場合はそちらへ繋ぐ、というユーザー指示に従い、今回は
 /// 保持のみに留める——過剰な想像で「自動的にTLSへ反映される」とは
@@ -296,7 +296,7 @@ impl WebVhostRegistry {
     /// 設定値を把握していないと誤って他のフィールドをリセットしてしまう
     /// リスクがあるため、`compat_mode`だけを安全に差し替えられる専用の
     /// 更新経路を追加した。インストール時に限らず、稼働中いつでも
-    /// (`PUT /admin/web-vhosts/:host/compat-mode`経由で)切り替え可能。
+    /// (`Connect Admin/UpdateWebVhostCompatMode`経由で)切り替え可能。
     pub async fn set_compat_mode(&self, host: &str, compat_mode: CompatMode) -> Result<(), WebVhostError> {
         let mut guard = self.vhosts.write().await;
         let Some(existing) = guard.get(host) else {

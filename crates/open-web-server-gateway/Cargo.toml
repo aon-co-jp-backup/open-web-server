@@ -32,6 +32,7 @@ serde.workspace = true
 flate2 = "1.0"
 serde_json.workspace = true
 sonic-rs = "0.5"
+rust-json = { path = "../../../RS-JSON", features = ["fast"] }
 toml.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

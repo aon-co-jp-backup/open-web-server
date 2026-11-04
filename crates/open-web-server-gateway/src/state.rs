@@ -71,14 +71,14 @@ pub struct AppState {
     pub accel_backend: AccelBackend,
     /// 実行時に切り替え可能な省メモリ/省電力プロファイル(`power_profile`
     /// 参照、2026-07-26追加)。Android版`PowerProfile.kt`と同じ4プロファイル・
-    /// 同じラベルを共有し、`POST /admin/power-profile`で**再起動無しに**
+    /// 同じラベルを共有し、`Connect Admin/SetPowerProfile`で**再起動無しに**
     /// 切り替えられる。バックグラウンドポーリングループ(`ddns`/
     /// `free_domain`、`ddns` feature配下)がこの値を毎回読み直す。
     pub power_profile: Arc<PowerProfileRegistry>,
     /// ドメイン/URL死活監視+自動復旧の状態(`domain_watchdog`参照、
     /// 2026-07-29追加)。監視ループ自体は`OPEN_WEB_SERVER_WATCHDOG_ENABLED`
     /// 環境変数でopt-in(既定オフ)だが、この状態自体は常時存在し、
-    /// `GET /admin/watchdog/status`で(ループが動いていなくても空の状態を)
+    /// `Connect Admin/GetWatchdogStatus`で(ループが動いていなくても空の状態を)
     /// 参照できる。
     pub watchdog: Arc<WatchdogState>,
     /// 2FA(TOTP、`admin-2fa` feature、2026-07-30新設)。`handlers::

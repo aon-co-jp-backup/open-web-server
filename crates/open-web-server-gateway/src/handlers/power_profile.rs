@@ -1,4 +1,4 @@
-//! `GET`/`POST /admin/power-profile` — 実行時の省メモリ/省電力プロファイル
+//! `GET`/`Connect Admin/SetPowerProfile` — 実行時の省メモリ/省電力プロファイル
 //! 切替(2026-07-26追加、同日中に単一選択→**組み合わせ可能な独立フラグ**
 //! へ再設計、`crate::power_profile`参照)。既存の`x-admin-token`/
 //! `KeyGuardian`認証パターン(`handlers::tenants::check_admin_auth`)を
@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -44,8 +44,8 @@ impl From<PowerProfileFlags> for PowerProfileResponse {
     }
 }
 
-/// `GET /admin/power-profile` — 現在アクティブなフラグの組み合わせを返す。
-pub async fn get_power_profile(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/GetPowerProfile` — 現在アクティブなフラグの組み合わせを返す。
+pub async fn get_power_profile(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -59,12 +59,12 @@ struct SetPowerProfileRequest {
     profiles: Vec<String>,
 }
 
-/// `POST /admin/power-profile` — フラグの組み合わせを切り替える。
+/// `Connect Admin/SetPowerProfile` — フラグの組み合わせを切り替える。
 /// **再起動不要**: 変更は`PowerProfileRegistry`(`RwLock`)へ即座に反映され、
 /// バックグラウンドのポーリングループ(`ddns`/`free_domain`、`ddns` feature
 /// 配下)は次のイテレーションから、新しい組み合わせから合成された間隔を
 /// 使う。
-pub async fn set_power_profile(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn set_power_profile(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }

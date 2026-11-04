@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use open_web_server_ledger::DisasterEmailBackupConfig;
 use serde::Serialize;
@@ -23,10 +23,10 @@ struct SimpleMessage {
     message_en: &'static str,
 }
 
-/// `POST /admin/disaster-email-backup` — メールアドレスひとつだけで
+/// `Connect Admin/SetDisasterEmailBackup` — メールアドレスひとつだけで
 /// スタンドアロンのディザスタ・メールバックアップを有効化する。
 /// VPS同期先・マルチリージョンレプリケータの設定は一切不要。
-pub async fn set_disaster_email_backup(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn set_disaster_email_backup(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -47,9 +47,9 @@ pub async fn set_disaster_email_backup(state: Arc<AppState>, req: Request<Incomi
     )
 }
 
-/// `POST /admin/disaster-email-backup/verify` — SMTP接続の疎通確認のみ
+/// `Connect Admin/VerifyDisasterEmailBackup` — SMTP接続の疎通確認のみ
 /// (実際にメールは送信しない)。
-pub async fn verify_disaster_email_backup(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn verify_disaster_email_backup(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, &req) {
         return resp;
     }

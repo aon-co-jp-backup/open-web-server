@@ -38,7 +38,7 @@
 //! 版DDNS」。自動更新ループ本体は[`crate::custom_dns_ipv6_autoupdate`]
 //! (この`custom_dns.rs`とは別モジュール、`free_domain.rs`の5分間隔自動
 //! 更新ループと同じ設計パターンを踏襲)、管理APIは
-//! `POST /admin/custom-domain/setup-ipv6-auto-update`
+//! `Connect Admin/SetupIpv6AutoUpdate`
 //! (`handlers::custom_dns_ipv6`)。
 //!
 //! ## 正直な開示

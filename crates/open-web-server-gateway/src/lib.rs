@@ -21,6 +21,7 @@ mod acme;
 mod app_proxy;
 mod compression;
 mod config_import;
+mod connect;
 mod custom_dns;
 mod custom_dns_ipv6_autoupdate;
 #[cfg(feature = "ddns")]
@@ -135,188 +136,18 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
         }
     }
 
+    // Connect(`POST /<パッケージ>.<Service>/<Method>`、本文は RS-JSON で検査した JSON)。
+    let req = match connect::handle(state.clone(), req).await {
+        Ok(resp) => return resp,
+        Err(req) => req,
+    };
+
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
     match (method, path.as_str()) {
-        (Method::POST, "/api/v1/items/grant") => handlers::items::grant_item(state, req).await,
-        (Method::POST, "/api/v1/transactions/charge") => {
-            handlers::transactions::charge(state, req).await
-        }
-        (Method::POST, "/admin/redirects") => {
-            handlers::redirects::upsert_redirect(state, req).await
-        }
-        (Method::GET, "/admin/redirects") => {
-            handlers::redirects::list_redirects(state, &req).await
-        }
-        (Method::DELETE, p) if p.starts_with("/admin/redirects/") => {
-            let host = p.trim_start_matches("/admin/redirects/").to_string();
-            handlers::redirects::remove_redirect(state, &req, &host).await
-        }
-        // 実行時の省メモリ/省電力プロファイル切替(2026-07-26、再起動不要。
-        // Android版`PowerProfile.kt`と同じ4プロファイル・同じラベル、
-        // `power_profile.rs`参照)。
-        (Method::GET, "/admin/power-profile") => {
-            handlers::power_profile::get_power_profile(state, &req).await
-        }
-        (Method::POST, "/admin/power-profile") => {
-            handlers::power_profile::set_power_profile(state, req).await
-        }
-        // ドメイン/URL死活監視+自動復旧の直近状態(2026-07-29追加、
-        // `domain_watchdog`参照)。
-        // 自己アップデート機能の実行時有効/無効切替+状態確認(`auto-update`
-        // feature、2026-08-19新設、`self_update`参照)。
-        #[cfg(feature = "auto-update")]
-        (Method::GET, "/admin/auto-update") => {
-            handlers::self_update::get_auto_update(state, &req).await
-        }
-        #[cfg(feature = "auto-update")]
-        (Method::POST, "/admin/auto-update") => {
-            handlers::self_update::set_auto_update(state, req).await
-        }
-        (Method::GET, "/admin/watchdog/status") => {
-            handlers::watchdog::get_watchdog_status(state, &req).await
-        }
-        (Method::GET, "/admin/watchdog/expectations") => {
-            handlers::watchdog::list_watchdog_expectations(state, &req).await
-        }
-        (Method::POST, p) if p.starts_with("/admin/watchdog/expectations/") => {
-            let host = p.trim_start_matches("/admin/watchdog/expectations/").to_string();
-            handlers::watchdog::set_watchdog_expectations(state, req, &host).await
-        }
-        (Method::POST, "/admin/tenants") => handlers::tenants::add_tenant(state, req).await,
-        (Method::GET, "/admin/tenants") => handlers::tenants::list_tenants(state, &req).await,
-        // 静的ファイル/PHPサイト向けvhost管理API(Apache+Nginxハイブリッド
-        // 配信エンジン構想、`web_vhost`参照)。
-        (Method::POST, "/admin/web-vhosts") => {
-            handlers::web_vhost::upsert_web_vhost(state, req).await
-        }
-        // 実Apache/Nginx設定ファイルからvhost定義の基本部分をインポート
-        // (2026-08-03新設、改善計画「(3)」対応)。
-        (Method::POST, "/admin/web-vhosts/import") => {
-            handlers::web_vhost::import_web_vhost(state, req).await
-        }
-        (Method::GET, "/admin/web-vhosts") => {
-            handlers::web_vhost::list_web_vhosts(state, &req).await
-        }
-        (Method::DELETE, p) if p.starts_with("/admin/web-vhosts/") => {
-            let host = p.trim_start_matches("/admin/web-vhosts/").to_string();
-            handlers::web_vhost::remove_web_vhost(state, &req, &host).await
-        }
-        // Apache/Nginx互換モードをいつでも切り替え可能にする専用API
-        // (2026-08-03新設、`docroot`等の再送不要)。
-        (Method::PUT, p) if p.starts_with("/admin/web-vhosts/") && p.ends_with("/compat-mode") => {
-            let host = p
-                .trim_start_matches("/admin/web-vhosts/")
-                .trim_end_matches("/compat-mode")
-                .to_string();
-            handlers::web_vhost::update_compat_mode(state, req, &host).await
-        }
-        // 自己運用型APIキー(KeyGuardian、「第二のTomcat」REST-API不要・
-        // 自動発行/自動失効の実現)。
-        (Method::POST, "/admin/keys") => handlers::keys::issue_key(state, req).await,
-        (Method::GET, "/admin/keys") => handlers::keys::key_status(state, &req).await,
-        (Method::POST, "/admin/keys/revoke") => handlers::keys::revoke_owner(state, req).await,
-        // 2FA(TOTP、admin-2fa feature、2026-07-30新設)。enroll/confirmは
-        // 管理者トークン必須(ブートストラップ)、login系は認証不要
-        // (ログインフローの入口そのもののため、`handlers::admin_login`の
-        // doc comment参照)。
-        #[cfg(feature = "admin-2fa")]
-        (Method::POST, "/admin/2fa/enroll") => handlers::admin_login::enroll(state, req).await,
-        #[cfg(feature = "admin-2fa")]
-        (Method::POST, "/admin/2fa/confirm") => handlers::admin_login::confirm(state, req).await,
-        #[cfg(feature = "admin-2fa")]
-        (Method::POST, "/admin/2fa/verify") => handlers::admin_login::verify_suspension_override(state, req).await,
-        #[cfg(feature = "admin-2fa")]
-        (Method::POST, "/admin/login/request-otp") => handlers::admin_login::request_otp(state, req).await,
-        #[cfg(feature = "admin-2fa")]
-        (Method::POST, "/admin/login/verify") => handlers::admin_login::verify_login(state, req).await,
-        // スタンドアロンのメール・ディザスタバックアップ(disaster_email_backup
-        // feature)。VPS同期先・マルチリージョンレプリケータの設定有無に関わらず、
-        // メールアドレスひとつだけで有効化できる(`open-easy-web`のdist_sync.rsと
-        // 同じ設計方針)。
-        #[cfg(feature = "disaster_email_backup")]
-        (Method::POST, "/admin/disaster-email-backup") => {
-            handlers::disaster_email_backup::set_disaster_email_backup(state, req).await
-        }
-        #[cfg(feature = "disaster_email_backup")]
-        (Method::POST, "/admin/disaster-email-backup/verify") => {
-            handlers::disaster_email_backup::verify_disaster_email_backup(state, req).await
-        }
-        // 固定IPを持たない環境でも「今すぐ何を入力すればSFTP接続できるか」
-        // を1回のAPI呼び出しで確認できるヘルパー(sftp featureの有無に
-        // 関わらず常時応答し、`sftp_enabled: false`で状態を正直に返す)。
-        (Method::GET, "/admin/sftp/connection-info") => handlers::sftp_info::connection_info(state, &req).await,
-        // 無料DDNS(DuckDNS)によるサブドメイン取得〜自動更新セットアップ
-        // (`free_domain.rs`参照、`ddns` feature無効時は503を返す)。
-        // 複数回呼べば最大`free_domain::MAX_DUCKDNS_DOMAINS`件まで追加登録できる。
-        (Method::POST, "/admin/ddns/setup-free-domain") => {
-            handlers::free_domain::setup_free_domain(state, req).await
-        }
-        // 登録済みDuckDNSドメイン一覧(残り枠の確認にも使う)。
-        (Method::GET, "/admin/ddns/domains") => {
-            handlers::free_domain::list_domains(state, &req).await
-        }
-        (Method::DELETE, p) if p.starts_with("/admin/ddns/domains/") => {
-            let domain = p.trim_start_matches("/admin/ddns/domains/").to_string();
-            handlers::free_domain::remove_domain(state, &req, &domain).await
-        }
-        // v6プラス(MAP-E)環境向けIPv6(AAAA)自動更新の有効化(バリュー
-        // ドメイン管理の`aon.co.jp`向け、`custom_dns_ipv6_autoupdate`参照、
-        // 2026-08-06新設)。上記DuckDNS(IPv4)系エンドポイントとは独立した
-        // 設定空間。
-        (Method::POST, "/admin/custom-domain/setup-ipv6-auto-update") => {
-            handlers::custom_dns_ipv6::setup_ipv6_auto_update(state, req).await
-        }
-        (Method::GET, "/admin/custom-domain/ipv6-auto-update") => {
-            handlers::custom_dns_ipv6::list_ipv6_auto_update(state, &req).await
-        }
-        (Method::DELETE, p) if p.starts_with("/admin/custom-domain/ipv6-auto-update/") => {
-            // パス形式: /admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain
-            let rest = p.trim_start_matches("/admin/custom-domain/ipv6-auto-update/");
-            match rest.split_once('/') {
-                Some((base_domain, subdomain)) => {
-                    handlers::custom_dns_ipv6::remove_ipv6_auto_update(state, &req, base_domain, subdomain).await
-                }
-                None => text_response(
-                    StatusCode::BAD_REQUEST,
-                    "expected path '/admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain'",
-                ),
-            }
-        }
-        // `/tls`サフィックス付きのルートは、下の汎用`/admin/tenants/:host`
-        // prefixマッチより先に評価する必要がある(先に評価されると
-        // `:host`が`"foo.example.com/tls"`ごと拾われてしまうため)。
-        (Method::POST, p) if p.starts_with("/admin/tenants/") && p.ends_with("/tls") => {
-            let host = p
-                .trim_start_matches("/admin/tenants/")
-                .trim_end_matches("/tls")
-                .to_string();
-            handlers::tls::upsert_tenant_tls(state, req, &host).await
-        }
-        (Method::DELETE, p) if p.starts_with("/admin/tenants/") && p.ends_with("/tls") => {
-            let host = p
-                .trim_start_matches("/admin/tenants/")
-                .trim_end_matches("/tls")
-                .to_string();
-            handlers::tls::remove_tenant_tls(state, &req, &host).await
-        }
-        #[cfg(feature = "acme")]
-        (Method::POST, p) if p.starts_with("/admin/tenants/") && p.ends_with("/tls/acme") => {
-            let host = p
-                .trim_start_matches("/admin/tenants/")
-                .trim_end_matches("/tls/acme")
-                .to_string();
-            handlers::tls::obtain_tenant_tls_via_acme(state, req, &host).await
-        }
-        (Method::DELETE, p) if p.starts_with("/admin/tenants/") => {
-            let host = p.trim_start_matches("/admin/tenants/").to_string();
-            handlers::tenants::remove_tenant(state, &req, &host).await
-        }
-        (Method::PUT, p) if p.starts_with("/admin/tenants/") => {
-            let host = p.trim_start_matches("/admin/tenants/").to_string();
-            handlers::tenants::update_tenant(state, req, &host).await
-        }
+        // 管理API・公開APIはすべて Connect(`connect.rs`、`match`より前で処理済み)。
+        // REST 風の旧経路(`/admin/*`、`/api/v1/*`)は2026-11-04に全廃した。
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
         // 本番/デモ分離パターン(2026-08-24新設、ユーザー指示・
         // open-easy-web等の姉妹アプリと同じ考え方): 読み取り専用の
@@ -338,10 +169,6 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
         #[cfg(not(feature = "ddns"))]
         (Method::GET, "/healthz/ddns") => {
             crate::response::json_response(StatusCode::OK, &serde_json::json!({ "healthy": true, "seconds_since_tick": 0, "note": "ddns feature disabled" }))
-        }
-        (Method::GET, p) if p.starts_with("/internal/db/state/") => {
-            let path = p.to_string();
-            handlers::state_query::get_state_at_commit(state, &path, &req).await
         }
         (Method::GET, p) if p.starts_with("/.well-known/acme-challenge/") => {
             acme::challenge_response_handler(&state.acme_challenges, &req).await
@@ -726,7 +553,7 @@ pub async fn run() -> anyhow::Result<()> {
     // TLS終端(`OPEN_WEB_SERVER_TLS_BIND`設定時のみ有効)。open-web-server
     // 自体がSNIに応じて複数テナントの証明書を切り替えられるようにする
     // 第一歩(2026-07-16、`docs/tls-tenant.md`参照)。証明書は
-    // `POST /admin/tenants/:host/tls`で登録する(起動時点では未登録でも
+    // `Connect Admin/UpsertTenantTls`で登録する(起動時点では未登録でも
     // 起動自体は失敗しない——証明書0件のリゾルバでリッスンだけ開始し、
     // ハンドシェイクは登録され次第成功するようになる)。
     let mut tls_bind_addr: Option<SocketAddr> = None;
@@ -1027,13 +854,13 @@ mod tests {
         let issue_body = serde_json::json!({ "owner": "ci-test-caller" }).to_string();
         let issue_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/keys")
+            .uri("/open_web_server.admin.v1.Admin/IssueKey")
             .header("x-admin-token", "test-bootstrap-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(issue_body)))
             .unwrap();
         let issue_resp = sender.send_request(issue_req).await.unwrap();
-        assert_eq!(issue_resp.status(), StatusCode::CREATED);
+        assert_eq!(issue_resp.status(), StatusCode::OK);
         let issue_bytes = http_body_util::BodyExt::collect(issue_resp.into_body()).await.unwrap().to_bytes();
         let issued: serde_json::Value = serde_json::from_slice(&issue_bytes).unwrap();
         let issued_key = issued["key"].as_str().expect("response should contain the plaintext key").to_string();
@@ -1043,10 +870,11 @@ mod tests {
         // 管理APIが通ることを確認する。
         let mut sender = connect(addr).await;
         let bearer_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/tenants")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListTenants")
             .header("authorization", format!("Bearer {issued_key}"))
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let bearer_resp = sender.send_request(bearer_req).await.unwrap();
         assert_eq!(bearer_resp.status(), StatusCode::OK, "a freshly issued KeyGuardian key should authorize admin requests without the static secret");
@@ -1056,7 +884,7 @@ mod tests {
         let revoke_body = serde_json::json!({ "owner": "ci-test-caller" }).to_string();
         let revoke_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/keys/revoke")
+            .uri("/open_web_server.admin.v1.Admin/RevokeKey")
             .header("x-admin-token", "test-bootstrap-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(revoke_body)))
@@ -1066,10 +894,11 @@ mod tests {
 
         let mut sender = connect(addr).await;
         let post_revoke_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/tenants")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListTenants")
             .header("authorization", format!("Bearer {issued_key}"))
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let post_revoke_resp = sender.send_request(post_revoke_req).await.unwrap();
         assert_eq!(
@@ -1110,13 +939,13 @@ mod tests {
         let issue_body = serde_json::json!({ "owner": "restricted-caller", "roles": ["developer"] }).to_string();
         let issue_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/keys")
+            .uri("/open_web_server.admin.v1.Admin/IssueKey")
             .header("x-admin-token", "test-bootstrap-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(issue_body)))
             .unwrap();
         let issue_resp = sender.send_request(issue_req).await.unwrap();
-        assert_eq!(issue_resp.status(), StatusCode::CREATED);
+        assert_eq!(issue_resp.status(), StatusCode::OK);
         let issue_bytes = http_body_util::BodyExt::collect(issue_resp.into_body()).await.unwrap().to_bytes();
         let issued: serde_json::Value = serde_json::from_slice(&issue_bytes).unwrap();
         let issued_key = issued["key"].as_str().unwrap().to_string();
@@ -1124,10 +953,11 @@ mod tests {
         // Bearer単独では管理APIが通らない(=フルアクセスを持たない)こと。
         let mut sender = connect(addr).await;
         let bearer_only_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/tenants")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListTenants")
             .header("authorization", format!("Bearer {issued_key}"))
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let bearer_only_resp = sender.send_request(bearer_only_req).await.unwrap();
         assert_eq!(
@@ -1139,10 +969,11 @@ mod tests {
         // 正しい静的シークレットを提示すれば(role制限に関わらず)通ること。
         let mut sender = connect(addr).await;
         let static_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/tenants")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListTenants")
             .header("x-admin-token", "test-bootstrap-secret-2")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let static_resp = sender.send_request(static_req).await.unwrap();
         assert_eq!(static_resp.status(), StatusCode::OK);
@@ -1176,10 +1007,11 @@ mod tests {
             let _ = connection.await;
         });
         let req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/tenants")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListTenants")
             .header("x-admin-token", "test-bootstrap-secret-3")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let resp = sender.send_request(req).await.unwrap();
         assert_eq!(
@@ -1222,9 +1054,10 @@ mod tests {
         // (1) 認証無しでは拒否される。
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/power-profile")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetPowerProfile")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let unauth_resp = sender.send_request(unauth_req).await.unwrap();
         assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
@@ -1232,10 +1065,11 @@ mod tests {
         // (2) 既定値は`normal`。
         let mut sender = connect(addr).await;
         let get_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/power-profile")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let get_resp = sender.send_request(get_req).await.unwrap();
         assert_eq!(get_resp.status(), StatusCode::OK);
@@ -1252,7 +1086,7 @@ mod tests {
         let set_body = serde_json::json!({ "profiles": ["power_save", "memory_saver"] }).to_string();
         let set_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/power-profile")
+            .uri("/open_web_server.admin.v1.Admin/SetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(set_body)))
@@ -1272,10 +1106,11 @@ mod tests {
         //     (これが「途中からでも選択出来る」の実証そのもの)。
         let mut sender = connect(addr).await;
         let get_req2 = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/power-profile")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let get_resp2 = sender.send_request(get_req2).await.unwrap();
         let get_bytes2 = http_body_util::BodyExt::collect(get_resp2.into_body()).await.unwrap().to_bytes();
@@ -1287,13 +1122,115 @@ mod tests {
         let bad_body = serde_json::json!({ "profiles": ["quantum_saver"] }).to_string();
         let bad_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/power-profile")
+            .uri("/open_web_server.admin.v1.Admin/SetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(bad_body)))
             .unwrap();
         let bad_resp = sender.send_request(bad_req).await.unwrap();
         assert_eq!(bad_resp.status(), StatusCode::BAD_REQUEST);
+
+        std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
+    }
+
+    /// Connect の入口の厳格さ(2026-11-04、REST 全廃): POST 以外・JSON 以外・不正な本文・重複キー・
+    /// 上限超過・未知のメソッド・必須フィールド欠落が、すべて Connect 形式のエラーになり、
+    /// 旧 REST の経路(`/admin/...`)はもう管理APIとして応答しないこと。
+    #[tokio::test]
+    async fn connect_entrance_is_strict_and_old_rest_paths_are_gone_over_real_http() {
+        let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-connect-secret");
+        let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, state.clone()));
+
+        async fn call(addr: std::net::SocketAddr, method: Method, path: &str, ct: Option<&str>, auth: bool, body: Vec<u8>) -> (StatusCode, serde_json::Value) {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let mut b = Request::builder().method(method).uri(path);
+            if let Some(ct) = ct {
+                b = b.header("content-type", ct);
+            }
+            if auth {
+                b = b.header("x-admin-token", "test-connect-secret");
+            }
+            let resp = sender.send_request(b.body(http_body_util::Full::new(bytes::Bytes::from(body))).unwrap()).await.unwrap();
+            let status = resp.status();
+            let bytes = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+            (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+        }
+        let svc = "/open_web_server.admin.v1.Admin/";
+        let json = Some("application/json");
+
+        // 認証なし → 401(Connect の形)。
+        let (st, b) = call(addr, Method::POST, &format!("{svc}ListTenants"), json, false, b"{}".to_vec()).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        assert_eq!(b["code"], "unauthenticated");
+        // 認証あり → 200 で配列は items に包まれる。
+        let (st, b) = call(addr, Method::POST, &format!("{svc}ListTenants"), json, true, b"{}".to_vec()).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(b["items"].is_array());
+        // 空の本文も許す(`{}` 扱い)。
+        let (st, _) = call(addr, Method::POST, &format!("{svc}ListTenants"), json, true, Vec::new()).await;
+        assert_eq!(st, StatusCode::OK);
+        // GET は不可。
+        let (st, b) = call(addr, Method::GET, &format!("{svc}ListTenants"), json, true, Vec::new()).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert_eq!(b["code"], "unimplemented");
+        // JSON 以外の content-type は 415。
+        let (st, _) = call(addr, Method::POST, &format!("{svc}ListTenants"), Some("text/plain"), true, b"{}".to_vec()).await;
+        assert_eq!(st, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        // 不正な JSON・オブジェクトでない JSON・重複キーは 400。
+        for bad in [&b"{not json"[..], &b"[1,2]"[..], &br#"{"host":"a","host":"b"}"#[..]] {
+            let (st, b) = call(addr, Method::POST, &format!("{svc}RemoveTenant"), json, true, bad.to_vec()).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(bad));
+            assert_eq!(b["code"], "invalid_argument");
+        }
+        // 深さの上限超過は 400。
+        let deep = format!("{}1{}", "[".repeat(100), "]".repeat(100));
+        let (st, _) = call(addr, Method::POST, &format!("{svc}ListTenants"), json, true, format!(r#"{{"x":{deep}}}"#).into_bytes()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        // サイズの上限超過は 429(resource_exhausted)。
+        let big = format!(r#"{{"x":"{}"}}"#, "a".repeat(connect::MAX_BODY_BYTES + 10));
+        let (st, b) = call(addr, Method::POST, &format!("{svc}ListTenants"), json, true, big.into_bytes()).await;
+        assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(b["code"], "resource_exhausted");
+        // 必須フィールド欠落は 400、存在しないホストは 404。
+        let (st, b) = call(addr, Method::POST, &format!("{svc}RemoveTenant"), json, true, b"{}".to_vec()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert_eq!(b["code"], "invalid_argument");
+        let (st, b) = call(addr, Method::POST, &format!("{svc}RemoveTenant"), json, true, br#"{"host":"nobody.example"}"#.to_vec()).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert_eq!(b["code"], "not_found");
+        // 未知のメソッドは 404 unimplemented。
+        let (st, b) = call(addr, Method::POST, &format!("{svc}NoSuchMethod"), json, true, b"{}".to_vec()).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert_eq!(b["code"], "unimplemented");
+        // 公開API は Idempotency-Key ヘッダが無ければ 400。
+        let (st, _) = call(addr, Method::POST, "/open_web_server.api.v1.Api/GrantItem", json, false, b"{}".to_vec()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        // 旧 REST の経路は、もう管理APIとして応答しない(トークンを付けても 404)。
+        for (m, p) in [
+            (Method::GET, "/admin/tenants"),
+            (Method::POST, "/admin/tenants"),
+            (Method::GET, "/admin/ddns/domains"),
+            (Method::DELETE, "/admin/ddns/domains/alpha"),
+            (Method::GET, "/admin/sftp/connection-info"),
+            (Method::GET, "/admin/power-profile"),
+            (Method::POST, "/api/v1/items/grant"),
+            (Method::GET, "/internal/db/state/a/b/at/c"),
+        ] {
+            let (st, _) = call(addr, m, p, json, true, b"{}".to_vec()).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "old REST path {p} must be gone");
+        }
+        // ヘルスチェックは REST のまま。
+        let (st, _) = call(addr, Method::GET, "/healthz", None, false, Vec::new()).await;
+        assert_eq!(st, StatusCode::OK);
 
         std::env::remove_var("OPEN_WEB_SERVER_ADMIN_TOKEN");
     }
@@ -1325,9 +1262,10 @@ mod tests {
         // (1) 認証ヘッダ無しでは拒否される。
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/sftp/connection-info")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetSftpConnectionInfo")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let unauth_resp = sender.send_request(unauth_req).await.unwrap();
         assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
@@ -1336,10 +1274,11 @@ mod tests {
         // 無しでビルドされている前提)なので`sftp_enabled: false`を正直に返す。
         let mut sender = connect(addr).await;
         let auth_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/sftp/connection-info")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetSftpConnectionInfo")
             .header("x-admin-token", "test-sftp-info-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let auth_resp = sender.send_request(auth_req).await.unwrap();
         assert_eq!(auth_resp.status(), StatusCode::OK);
@@ -1380,10 +1319,11 @@ mod tests {
         });
 
         let req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/sftp/connection-info")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetSftpConnectionInfo")
             .header("x-admin-token", "test-duckdns-priority-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let resp = sender.send_request(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1432,19 +1372,21 @@ mod tests {
         // 認証無しでは拒否される。
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/ddns/domains")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListFreeDomains")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         assert_eq!(sender.send_request(unauth_req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
 
         // 一覧に2件+残り枠18件が反映される。
         let mut sender = connect(addr).await;
         let list_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/ddns/domains")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListFreeDomains")
             .header("x-admin-token", "test-ddns-domains-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let list_resp = sender.send_request(list_req).await.unwrap();
         assert_eq!(list_resp.status(), StatusCode::OK);
@@ -1457,10 +1399,11 @@ mod tests {
         // 削除後、一覧から1件消え、残り枠も1件増える。
         let mut sender = connect(addr).await;
         let del_req = Request::builder()
-            .method(Method::DELETE)
-            .uri("/admin/ddns/domains/alpha")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/RemoveFreeDomain")
             .header("x-admin-token", "test-ddns-domains-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(r#"{"domain":"alpha"}"#)))
             .unwrap();
         assert_eq!(sender.send_request(del_req).await.unwrap().status(), StatusCode::OK);
         assert_eq!(state.free_domains.len().await, 1);
@@ -1468,10 +1411,11 @@ mod tests {
         // 存在しないドメインの削除は404。
         let mut sender = connect(addr).await;
         let del_missing_req = Request::builder()
-            .method(Method::DELETE)
-            .uri("/admin/ddns/domains/alpha")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/RemoveFreeDomain")
             .header("x-admin-token", "test-ddns-domains-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(r#"{"domain":"alpha"}"#)))
             .unwrap();
         assert_eq!(sender.send_request(del_missing_req).await.unwrap().status(), StatusCode::NOT_FOUND);
 
@@ -1588,7 +1532,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let preflight_req = Request::builder()
             .method(Method::OPTIONS)
-            .uri("/admin/tenants")
+            .uri("/open_web_server.admin.v1.Admin/ListTenants")
             .header("origin", "http://allowed.example:5173")
             .header("access-control-request-method", "POST")
             .header("access-control-request-headers", "x-admin-token, content-type")
@@ -1666,12 +1610,12 @@ mod tests {
         }).to_string();
         let register_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/redirects")
+            .uri("/open_web_server.admin.v1.Admin/UpsertRedirect")
             .header("x-admin-token", "test-redirect-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(register_body)))
             .unwrap();
-        assert_eq!(sender.send_request(register_req).await.unwrap().status(), StatusCode::CREATED);
+        assert_eq!(sender.send_request(register_req).await.unwrap().status(), StatusCode::OK);
 
         // 登録後: 任意のパス+クエリが301+正しいLocationへ書き換わる。
         let mut sender = connect(addr).await;
@@ -1707,24 +1651,26 @@ mod tests {
         // 一覧に反映される。
         let mut sender = connect(addr).await;
         let list_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/redirects")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListRedirects")
             .header("x-admin-token", "test-redirect-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let list_resp = sender.send_request(list_req).await.unwrap();
         assert_eq!(list_resp.status(), StatusCode::OK);
         let list_bytes = http_body_util::BodyExt::collect(list_resp.into_body()).await.unwrap().to_bytes();
         let list_body: serde_json::Value = serde_json::from_slice(&list_bytes).unwrap();
-        assert_eq!(list_body.as_array().unwrap().len(), 1);
+        assert_eq!(list_body["items"].as_array().unwrap().len(), 1);
 
         // 削除後は通常のルーティング(404)に戻る。
         let mut sender = connect(addr).await;
         let delete_req = Request::builder()
-            .method(Method::DELETE)
-            .uri("/admin/redirects/www.redirect-test.example")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/RemoveRedirect")
             .header("x-admin-token", "test-redirect-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from(r#"{"host":"www.redirect-test.example"}"#)))
             .unwrap();
         assert_eq!(sender.send_request(delete_req).await.unwrap().status(), StatusCode::OK);
 
@@ -1973,13 +1919,13 @@ mod tests {
         let body = serde_json::json!({ "format": "apache", "config": apache_conf }).to_string();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/web-vhosts/import")
+            .uri("/open_web_server.admin.v1.Admin/ImportWebVhost")
             .header("x-admin-token", "test-import-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
             .unwrap();
         let resp = sender.send_request(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(resp.status(), StatusCode::OK);
 
         // 登録直後、実際にこのホストへのリクエストが処理できることを確認。
         let req = Request::builder()
@@ -2024,7 +1970,7 @@ mod tests {
         let body = serde_json::json!({ "format": "iis", "config": "whatever" }).to_string();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/web-vhosts/import")
+            .uri("/open_web_server.admin.v1.Admin/ImportWebVhost")
             .header("x-admin-token", "test-import-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
@@ -2035,7 +1981,7 @@ mod tests {
         let body = serde_json::json!({ "format": "nginx", "config": "server_name only.example;" }).to_string();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/web-vhosts/import")
+            .uri("/open_web_server.admin.v1.Admin/ImportWebVhost")
             .header("x-admin-token", "test-import-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
@@ -2143,32 +2089,34 @@ mod tests {
         // (1) 認証無しでは拒否される。
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/watchdog/status")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetWatchdogStatus")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         assert_eq!(sender.send_request(unauth_req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
 
         // (2) 最初は何も登録されていない。
         let mut sender = connect(addr).await;
         let list_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/watchdog/expectations")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let list_resp = sender.send_request(list_req).await.unwrap();
         assert_eq!(list_resp.status(), StatusCode::OK);
         let list_bytes = http_body_util::BodyExt::collect(list_resp.into_body()).await.unwrap().to_bytes();
         let list_body: serde_json::Value = serde_json::from_slice(&list_bytes).unwrap();
-        assert_eq!(list_body, serde_json::json!([]));
+        assert_eq!(list_body, serde_json::json!({"items": []}));
 
         // (3) audiocafe.tokyoのSPEC/PASS LABSリンクを期待文字列として登録する。
         let mut sender = connect(addr).await;
-        let set_body = serde_json::json!({ "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"] }).to_string();
+        let set_body = serde_json::json!({ "host": "audiocafe.tokyo", "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"] }).to_string();
         let set_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/watchdog/expectations/audiocafe.tokyo")
+            .uri("/open_web_server.admin.v1.Admin/SetWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(set_body)))
@@ -2179,17 +2127,18 @@ mod tests {
         // (4) 一覧に反映されている。
         let mut sender = connect(addr).await;
         let list_req2 = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/watchdog/expectations")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let list_resp2 = sender.send_request(list_req2).await.unwrap();
         let list_bytes2 = http_body_util::BodyExt::collect(list_resp2.into_body()).await.unwrap().to_bytes();
         let list_body2: serde_json::Value = serde_json::from_slice(&list_bytes2).unwrap();
         assert_eq!(
             list_body2,
-            serde_json::json!([{"host": "audiocafe.tokyo", "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"]}])
+            serde_json::json!({"items": [{"host": "audiocafe.tokyo", "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"]}]})
         );
 
         // (5) 死活状態は監視ループを回していないため空のまま(登録だけでは
@@ -2197,23 +2146,24 @@ mod tests {
         //     ループはopt-inであることの確認)。
         let mut sender = connect(addr).await;
         let status_req = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/watchdog/status")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/GetWatchdogStatus")
             .header("x-admin-token", "test-watchdog-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let status_resp = sender.send_request(status_req).await.unwrap();
         assert_eq!(status_resp.status(), StatusCode::OK);
         let status_bytes = http_body_util::BodyExt::collect(status_resp.into_body()).await.unwrap().to_bytes();
         let status_body: serde_json::Value = serde_json::from_slice(&status_bytes).unwrap();
-        assert_eq!(status_body, serde_json::json!([]));
+        assert_eq!(status_body, serde_json::json!({"items": []}));
 
         // (6) 空配列を送れば解除される。
         let mut sender = connect(addr).await;
-        let clear_body = serde_json::json!({ "expected_substrings": [] }).to_string();
+        let clear_body = serde_json::json!({ "host": "audiocafe.tokyo", "expected_substrings": [] }).to_string();
         let clear_req = Request::builder()
             .method(Method::POST)
-            .uri("/admin/watchdog/expectations/audiocafe.tokyo")
+            .uri("/open_web_server.admin.v1.Admin/SetWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(clear_body)))
@@ -2222,14 +2172,15 @@ mod tests {
 
         let mut sender = connect(addr).await;
         let list_req3 = Request::builder()
-            .method(Method::GET)
-            .uri("/admin/watchdog/expectations")
+            .method(Method::POST)
+            .uri("/open_web_server.admin.v1.Admin/ListWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
-            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
         let list_resp3 = sender.send_request(list_req3).await.unwrap();
         let list_bytes3 = http_body_util::BodyExt::collect(list_resp3.into_body()).await.unwrap().to_bytes();
         let list_body3: serde_json::Value = serde_json::from_slice(&list_bytes3).unwrap();
-        assert_eq!(list_body3, serde_json::json!([]));
+        assert_eq!(list_body3, serde_json::json!({"items": []}));
     }
 }

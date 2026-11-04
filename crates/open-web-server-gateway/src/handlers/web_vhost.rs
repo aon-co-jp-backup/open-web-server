@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 
@@ -121,10 +122,10 @@ fn serve_static_vhost(
     resp
 }
 
-/// `POST /admin/web-vhosts` — 静的ファイル/PHPサイト向けvhostを追加(または
+/// `Connect Admin/UpsertWebVhost` — 静的ファイル/PHPサイト向けvhostを追加(または
 /// 既存ホストを置き換え)る。既存の`tenant_router`(APIバックエンド用途)の
 /// 管理APIと同じ認証(`handlers::tenants::check_admin_auth`)を再利用する。
-pub async fn upsert_web_vhost(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn upsert_web_vhost(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -149,7 +150,7 @@ struct ImportVhostRequest {
     config: String,
 }
 
-/// `POST /admin/web-vhosts/import` — 実際のApache/Nginx設定ファイルから
+/// `Connect Admin/ImportWebVhost` — 実際のApache/Nginx設定ファイルから
 /// vhost定義の基本部分(ホスト名・ドキュメントルート・PHP-FPM接続先)を
 /// 読み取って登録する(2026-08-03新設、改善計画「(3) 実設定ファイルの
 /// パース/インポート」対応、ユーザー指示によりスコープを基本部分のみに
@@ -157,7 +158,7 @@ struct ImportVhostRequest {
 /// (`compat_mode`は既定値〈Nginx互換〉、`rewrite_rules`は空——設定
 /// ファイルの`RewriteRule`/`rewrite`ディレクティブ自体は今回のスコープ外、
 /// 必要なら登録後に`PUT .../compat-mode`や`upsert`で追加設定する)。
-pub async fn import_web_vhost(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn import_web_vhost(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -193,14 +194,14 @@ struct UpdateCompatModeRequest {
     compat_mode: CompatMode,
 }
 
-/// `PUT /admin/web-vhosts/:host/compat-mode` — 既存vhostの
+/// `Connect Admin/UpdateWebVhostCompatMode` — 既存vhostの
 /// Apache互換/Nginx互換モードだけを変更する(2026-08-03新設、ユーザー
 /// 指示「Apache/Nginxのヴァーチャルホストプロファイルはどちらでも
 /// 読めていつでも両方対応可能に」)。`docroot`等の他フィールドを再送する
 /// 必要がなく、稼働中いつでも安全に切り替えられる。ホスト未登録なら404。
 pub async fn update_compat_mode(
     state: Arc<AppState>,
-    req: Request<Incoming>,
+    req: Request<Bytes>,
     host: &str,
 ) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, &req) {
@@ -220,10 +221,10 @@ pub async fn update_compat_mode(
     }
 }
 
-/// `DELETE /admin/web-vhosts/:host`
+/// `Connect Admin/RemoveWebVhost`
 pub async fn remove_web_vhost(
     state: Arc<AppState>,
-    req: &Request<Incoming>,
+    req: &Request<Bytes>,
     host: &str,
 ) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, req) {
@@ -238,8 +239,8 @@ pub async fn remove_web_vhost(
     }
 }
 
-/// `GET /admin/web-vhosts` — 登録済みvhost一覧。
-pub async fn list_web_vhosts(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/ListWebVhosts` — 登録済みvhost一覧。
+pub async fn list_web_vhosts(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, req) {
         return resp;
     }

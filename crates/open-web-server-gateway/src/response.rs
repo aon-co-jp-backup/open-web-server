@@ -89,23 +89,15 @@ pub fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<Bo
     }
 }
 
-/// リクエストボディを読み切って JSON としてデシリアライズする。
+/// リクエストボディ(Connect の入口 `connect.rs` が、サイズ・深さ・重複キーの上限つきで
+/// 検査して読み切ったもの)を JSON としてデシリアライズする。
 ///
-/// ボディの読み取り自体の失敗、あるいは JSON として不正な場合は
-/// `400 Bad Request` レスポンスを `Err` として返す。
+/// JSON として不正、または型が合わない場合は `400 Bad Request` を `Err` として返す。
 pub async fn read_json_body<T: DeserializeOwned>(
-    req: Request<Incoming>,
+    req: Request<Bytes>,
 ) -> Result<T, Response<BoxBody>> {
-    let bytes = match BodyExt::collect(req.into_body()).await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            return Err(text_response(
-                StatusCode::BAD_REQUEST,
-                format!("failed to read request body: {e}"),
-            ))
-        }
-    };
-
-    sonic_rs::from_slice(&bytes)
+    let bytes = req.into_body();
+    let bytes: &[u8] = if bytes.iter().all(|b| b.is_ascii_whitespace()) { b"{}" } else { &bytes };
+    sonic_rs::from_slice(bytes)
         .map_err(|e| text_response(StatusCode::BAD_REQUEST, format!("invalid JSON body: {e}")))
 }

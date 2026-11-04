@@ -404,7 +404,7 @@ async fn check_and_apply_update() {
 /// スキップする(GitHub APIへの無用なポーリングを避ける)。
 async fn check_and_apply_update_gated(state: std::sync::Arc<crate::state::AppState>) {
     if !state.auto_update.is_enabled() {
-        tracing_log_if_available("open-web-server self-update: skipped (disabled at runtime, see GET/POST /admin/auto-update)");
+        tracing_log_if_available("open-web-server self-update: skipped (disabled at runtime, see GET/Connect Admin/SetAutoUpdate)");
         return;
     }
     check_and_apply_update().await;

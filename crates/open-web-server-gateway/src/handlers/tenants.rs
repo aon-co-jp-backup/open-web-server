@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 
 use crate::response::{json_response, read_json_body, text_response, BoxBody};
@@ -36,7 +36,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 /// `OPEN_WEB_SERVER_ADMIN_TOKEN` が設定されている場合のみ検証する
 /// 静的共有シークレット認証(第二引数の`state`は使わない、キー方式との
 /// 呼び出しシグネチャ統一のためだけに受け取る)。
-fn check_static_admin_auth(req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+fn check_static_admin_auth(req: &Request<Bytes>) -> Result<(), Response<BoxBody>> {
     let Ok(expected) = std::env::var("OPEN_WEB_SERVER_ADMIN_TOKEN") else {
         return Ok(());
     };
@@ -86,7 +86,7 @@ fn key_grants_admin_access(roles: &[String]) -> bool {
 /// ——最初のキーを発行する行為自体は、この静的シークレットで権限を
 /// 持つ人が行う想定(ブートストラップの割り切り、`handlers::keys`の
 /// doc comment参照)。
-pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
+pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Bytes>) -> Result<(), Response<BoxBody>> {
     // IPアドレス許可リスト(2026-07-30新設、`ip_allowlist`参照)。
     // `OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS`が設定されている場合のみ有効
     // (既定は無効)。設定時は、正しいトークン/APIキーを持っていても
@@ -106,7 +106,7 @@ pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Res
     match crate::handlers::keys::check_bearer_key(state, req) {
         crate::keyring::KeyDecision::Ok { roles, .. } if key_grants_admin_access(&roles) => Ok(()),
         // 2026-07-30追記: 異常検知(`Suspended`)時、その`owner`が確認済み
-        // TOTP経由の一時オーバーライド(`POST /admin/2fa/verify`)を
+        // TOTP経由の一時オーバーライド(`Connect Admin/Verify2fa`)を
         // 持っていれば通す(`admin-2fa` feature有効時のみ)。無効時は
         // 従来通り常に拒否する。
         #[cfg(feature = "admin-2fa")]
@@ -114,7 +114,7 @@ pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Res
         crate::keyring::KeyDecision::Suspended { .. } => Err(text_response(
             StatusCode::TOO_MANY_REQUESTS,
             "API key temporarily suspended due to anomalous request rate\
-             (if 2FA is enrolled for this owner, verify via POST /admin/2fa/verify to proceed)",
+             (if 2FA is enrolled for this owner, verify via Connect Admin/Verify2fa to proceed)",
         )),
         // レジストリが空・未知のキー・キー未提示・制限付きroleで
         // フルアクセスを持たないキーのいずれの場合も、静的シークレット
@@ -125,8 +125,8 @@ pub(crate) fn check_admin_auth(state: &AppState, req: &Request<Incoming>) -> Res
     }
 }
 
-/// `POST /admin/tenants` — ドメインを1件、無停止で追加する。
-pub async fn add_tenant(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/AddTenant` — ドメインを1件、無停止で追加する。
+pub async fn add_tenant(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
@@ -146,14 +146,14 @@ pub async fn add_tenant(state: Arc<AppState>, req: Request<Incoming>) -> Respons
     }
 }
 
-/// `PUT /admin/tenants/:host` — 既存ドメイン(またはサブドメイン)の設定を
+/// `Connect Admin/UpdateTenant` — 既存ドメイン(またはサブドメイン)の設定を
 /// 変更する。存在しない場合は`404`(誤って新規追加になってしまうのを防ぎ、
-/// 追加は明示的に`POST /admin/tenants`を使わせるため)。
+/// 追加は明示的に`Connect Admin/AddTenant`を使わせるため)。
 /// パス中の`:host`とボディの`host`が食い違う場合は`400`とし、
 /// 意図しないホストの上書きを防ぐ。
 pub async fn update_tenant(
     state: Arc<AppState>,
-    req: Request<Incoming>,
+    req: Request<Bytes>,
     host: &str,
 ) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
@@ -183,25 +183,20 @@ pub async fn update_tenant(
     text_response(StatusCode::OK, "tenant updated")
 }
 
-/// `DELETE /admin/tenants/:host` 相当(パスの末尾セグメントをhostとして扱う)。
+/// `Connect Admin/RemoveTenant` 相当(パスの末尾セグメントをhostとして扱う)。
 /// 任意で `?path_prefix=/blog` クエリを付けると、そのHost配下の該当
 /// `path_prefix`テナントのみを削除する(2026-07-22追記、"分身の術"の
 /// 対象拡大)。クエリ省略時は従来通り`path_prefix`未指定のテナントを
 /// 対象にする(後方互換)。
 pub async fn remove_tenant(
     state: Arc<AppState>,
-    req: &Request<Incoming>,
+    req: &Request<Bytes>,
     host: &str,
+    path_prefix: Option<String>,
 ) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
-
-    let path_prefix = req.uri().query().and_then(|q| {
-        q.split('&')
-            .find_map(|kv| kv.strip_prefix("path_prefix="))
-            .map(|v| urlencoding_lite_decode(v))
-    });
 
     match state
         .tenants
@@ -216,32 +211,8 @@ pub async fn remove_tenant(
     }
 }
 
-/// クエリパラメータ値の最小限のパーセントデコード(`%2F` → `/` 等)。
-/// 本リポジトリは新規に`urlencoding`クレートへ依存させない方針のため、
-/// この用途(`path_prefix`クエリ値のみ)に限定した最小実装とする。
-fn urlencoding_lite_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// `GET /admin/tenants` — 登録済みドメイン一覧。
-pub async fn list_tenants(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/ListTenants` — 登録済みドメイン一覧。
+pub async fn list_tenants(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }

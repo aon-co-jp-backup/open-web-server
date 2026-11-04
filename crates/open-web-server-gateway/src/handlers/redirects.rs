@@ -5,16 +5,16 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 
 use crate::redirects::{RedirectError, RedirectRule};
 use crate::response::{json_response, read_json_body, text_response, BoxBody};
 use crate::state::AppState;
 
-/// `POST /admin/redirects` — リダイレクトルールを追加(または既存ホストを
+/// `Connect Admin/UpsertRedirect` — リダイレクトルールを追加(または既存ホストを
 /// 置き換え)る。
-pub async fn upsert_redirect(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn upsert_redirect(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -28,10 +28,10 @@ pub async fn upsert_redirect(state: Arc<AppState>, req: Request<Incoming>) -> Re
     text_response(StatusCode::CREATED, "redirect rule registered")
 }
 
-/// `DELETE /admin/redirects/:host`
+/// `Connect Admin/RemoveRedirect`
 pub async fn remove_redirect(
     state: Arc<AppState>,
-    req: &Request<Incoming>,
+    req: &Request<Bytes>,
     host: &str,
 ) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, req) {
@@ -46,8 +46,8 @@ pub async fn remove_redirect(
     }
 }
 
-/// `GET /admin/redirects` — 登録済みルール一覧。
-pub async fn list_redirects(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/ListRedirects` — 登録済みルール一覧。
+pub async fn list_redirects(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = crate::handlers::tenants::check_admin_auth(&state, req) {
         return resp;
     }

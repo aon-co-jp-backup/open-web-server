@@ -950,7 +950,7 @@ class MainActivity : AppCompatActivity() {
                 log.appendLine("accel backend requested: ${accelBackendEnvValue(currentProfiles)}")
 
                 // DuckDNS DDNS設定画面(2026-07-24追加)からRust側管理API
-                // (`/admin/ddns/*`)を叩けるようにするため、`SecureDdnsStore`に
+                // (Connect `Admin/*FreeDomain`)を叩けるようにするため、`SecureDdnsStore`に
                 // 保存済みの管理トークンをこのプロセスの`OPEN_WEB_SERVER_
                 // ADMIN_TOKEN`として渡す(未設定ならRust側は無認証のまま起動、
                 // 既存の後方互換動作)。トークン自体はログへ出力しない。

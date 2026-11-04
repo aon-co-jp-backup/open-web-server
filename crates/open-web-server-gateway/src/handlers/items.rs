@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 
@@ -22,13 +22,13 @@ pub struct GrantItemRequest {
     pub quantity: u32,
 }
 
-/// `POST /api/v1/items/grant`
+/// `Connect Api/GrantItem`
 #[tracing::instrument(
     name = "grant_item",
     skip(state, req),
     fields(account_id = tracing::field::Empty, item_id = tracing::field::Empty, quantity = tracing::field::Empty)
 )]
-pub async fn grant_item(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn grant_item(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     let body: GrantItemRequest = match read_json_body(req).await {
         Ok(body) => body,
         Err(resp) => return resp,

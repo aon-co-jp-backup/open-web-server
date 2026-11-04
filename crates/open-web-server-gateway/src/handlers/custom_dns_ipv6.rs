@@ -1,12 +1,12 @@
 //! v6プラス(MAP-E)環境向けIPv6(AAAA)自動更新の管理API群(既存の
 //! `OPEN_WEB_SERVER_ADMIN_TOKEN`/`KeyGuardian`認証を`free_domain.rs`と
 //! 同じパターンで再利用):
-//! - `POST /admin/custom-domain/setup-ipv6-auto-update` — ドメイン名
+//! - `Connect Admin/SetupIpv6AutoUpdate` — ドメイン名
 //!   (現状`aon.co.jp`のみサポート)・サブドメイン名をリクエストボディで
 //!   指定し、AAAA自動更新を有効化する。
-//! - `GET /admin/custom-domain/ipv6-auto-update` — 登録済みエントリ一覧
+//! - `Connect Admin/ListIpv6AutoUpdate` — 登録済みエントリ一覧
 //!   (直近の更新試行結果込み)。
-//! - `DELETE /admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain`
+//! - `Connect Admin/RemoveIpv6AutoUpdate`
 //!   — 登録解除。
 //!
 //! **正直な開示(スコープの境界)**: バリュードメインのAPIキー自体は
@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 
@@ -37,11 +37,11 @@ pub struct SetupIpv6AutoUpdateRequest {
     pub subdomain: String,
 }
 
-/// `POST /admin/custom-domain/setup-ipv6-auto-update` — AAAA自動更新を
+/// `Connect Admin/SetupIpv6AutoUpdate` — AAAA自動更新を
 /// 有効化する。複数回呼べば最大`MAX_IPV6_AUTO_UPDATE_ENTRIES`件まで
 /// 追加登録できる(`free_domain::setup_free_domain`と同じ容量チェック
 /// パターン)。
-pub async fn setup_ipv6_auto_update(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn setup_ipv6_auto_update(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
@@ -93,8 +93,8 @@ pub async fn setup_ipv6_auto_update(state: Arc<AppState>, req: Request<Incoming>
     }
 }
 
-/// `GET /admin/custom-domain/ipv6-auto-update` — 登録済みエントリ一覧。
-pub async fn list_ipv6_auto_update(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/ListIpv6AutoUpdate` — 登録済みエントリ一覧。
+pub async fn list_ipv6_auto_update(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -120,11 +120,11 @@ pub async fn list_ipv6_auto_update(state: Arc<AppState>, req: &Request<Incoming>
     json_response(StatusCode::OK, &body)
 }
 
-/// `DELETE /admin/custom-domain/ipv6-auto-update/:base_domain/:subdomain`
+/// `Connect Admin/RemoveIpv6AutoUpdate`
 /// — 登録解除。
 pub async fn remove_ipv6_auto_update(
     state: Arc<AppState>,
-    req: &Request<Incoming>,
+    req: &Request<Bytes>,
     base_domain: &str,
     subdomain: &str,
 ) -> Response<BoxBody> {

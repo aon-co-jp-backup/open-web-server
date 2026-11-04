@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::Deserialize;
 
@@ -22,13 +22,13 @@ pub struct ChargeRequest {
     pub currency: String,
 }
 
-/// `POST /api/v1/transactions/charge`
+/// `Connect Api/Charge`
 #[tracing::instrument(
     name = "charge",
     skip(state, req),
     fields(account_id = tracing::field::Empty, amount_cents = tracing::field::Empty, currency = tracing::field::Empty)
 )]
-pub async fn charge(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn charge(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     let body: ChargeRequest = match read_json_body(req).await {
         Ok(body) => body,
         Err(resp) => return resp,

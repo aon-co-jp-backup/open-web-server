@@ -37,7 +37,7 @@ public final class ServerBridge: ObservableObject {
 
     /// `bindHost:bindPort`で起動する。`profile`はポーリング間隔にのみ
     /// 影響する(`PowerProfile.healthPollInterval`参照)——サーバー本体の
-    /// 挙動そのものを変えるには、既存の`POST /admin/power-profile`
+    /// 挙動そのものを変えるには、既存のConnect `Admin/SetPowerProfile`
     /// 管理APIを別途呼ぶこと(Windows/Linux/Android版と同じAPI)。
     public func start(bindHost: String = "127.0.0.1", bindPort: UInt16 = 18099, profile: PowerProfile = .normal) {
         guard status == .notStarted else { return }

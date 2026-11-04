@@ -54,7 +54,7 @@
 
     <!--
       DuckDNS DDNSドメイン設定画面への導線(2026-07-24新設)。
-      Rust側`free_domain.rs`の管理API(POST /admin/ddns/setup-free-domain等)
+      Rust側`free_domain.rs`の管理API(Connect Admin/SetupFreeDomain等)
       をこのAndroidアプリ内から使えるようにする。
     -->
     <Button

@@ -1,10 +1,10 @@
-//! `GET /admin/watchdog/status` — ドメイン/URL死活監視の直近状態を返す
+//! `Connect Admin/GetWatchdogStatus` — ドメイン/URL死活監視の直近状態を返す
 //! (2026-07-29追加、`crate::domain_watchdog`参照)。既存の`x-admin-token`/
 //! `KeyGuardian`認証パターンをそのまま再利用する。
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -23,8 +23,8 @@ struct HostHealthView {
     last_ai_diagnosis: Option<String>,
 }
 
-/// `GET /admin/watchdog/status` — 監視対象全ホストの直近の死活状態一覧。
-pub async fn get_watchdog_status(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/GetWatchdogStatus` — 監視対象全ホストの直近の死活状態一覧。
+pub async fn get_watchdog_status(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }
@@ -62,12 +62,12 @@ struct ExpectationsResponse {
     expected_substrings: Vec<String>,
 }
 
-/// `POST /admin/watchdog/expectations/:host` — 死活監視のコンテンツ確認
+/// `Connect Admin/SetWatchdogExpectations` — 死活監視のコンテンツ確認
 /// (ページ本文に含まれているべき文字列)を設定する。audiocafe.tokyoで
 /// 実際に起きた「コードはpush済みだが本番に反映されておらず、期待する
 /// リンクが実際には表示されていなかった」障害を、次回からは死活監視が
 /// 自動検知できるようにするための入口。
-pub async fn set_watchdog_expectations(state: Arc<AppState>, req: Request<Incoming>, host: &str) -> Response<BoxBody> {
+pub async fn set_watchdog_expectations(state: Arc<AppState>, req: Request<Bytes>, host: &str) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, &req) {
         return resp;
     }
@@ -91,9 +91,9 @@ pub async fn set_watchdog_expectations(state: Arc<AppState>, req: Request<Incomi
     )
 }
 
-/// `GET /admin/watchdog/expectations` — 現在設定されているコンテンツ確認
+/// `Connect Admin/ListWatchdogExpectations` — 現在設定されているコンテンツ確認
 /// の一覧。
-pub async fn list_watchdog_expectations(state: Arc<AppState>, req: &Request<Incoming>) -> Response<BoxBody> {
+pub async fn list_watchdog_expectations(state: Arc<AppState>, req: &Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = check_admin_auth(&state, req) {
         return resp;
     }

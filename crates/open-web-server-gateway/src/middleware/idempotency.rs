@@ -1,6 +1,6 @@
 //! `Idempotency-Key` ヘッダの必須化チェック。
 //!
-//! 課金アイテム・金融データを扱うエンドポイント (`/api/v1/items`, `/api/v1/transactions`)
+//! 課金アイテム・金融データを扱うエンドポイント (`open_web_server.api.v1.Api/*`(課金アイテム・決済))
 //! では、クライアントが `Idempotency-Key` ヘッダを付けない限りリクエストを拒否する。
 //! ボディ内の `idempotency_key` と併用することで、Gateway層・アプリ層の二重防御にする。
 //!
@@ -21,7 +21,7 @@ use crate::response::{text_response, BoxBody};
 /// 呼び出し側 (ルータ) はこれを最終レスポンスとしてそのまま返す。
 pub fn check<B>(req: &Request<B>) -> Result<(), Response<BoxBody>> {
     let path = req.uri().path();
-    let needs_key = path.starts_with("/api/v1/items") || path.starts_with("/api/v1/transactions");
+    let needs_key = path.starts_with(crate::connect::API_PREFIX);
 
     if needs_key && !req.headers().contains_key("idempotency-key") {
         return Err(text_response(
@@ -47,14 +47,14 @@ mod tests {
 
     #[test]
     fn rejects_mutating_request_without_idempotency_key() {
-        let req = request("/api/v1/items/grant", None);
+        let req = request("/open_web_server.api.v1.Api/GrantItem", None);
         assert!(check(&req).is_err());
     }
 
     #[test]
     fn allows_mutating_request_with_idempotency_key() {
         let req = request(
-            "/api/v1/items/grant",
+            "/open_web_server.api.v1.Api/GrantItem",
             Some("11111111-1111-1111-1111-111111111111"),
         );
         assert!(check(&req).is_ok());

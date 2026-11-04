@@ -11,14 +11,14 @@
 //! フロー:
 //! 1. 管理者(既存の`x-admin-token`を持つ者)が事前に`POST
 //!    /admin/2fa/enroll`でTOTPを登録(QRコードをスマホの認証アプリで
-//!    撮影)・`POST /admin/2fa/confirm`で初回コードを確認。
-//! 2. 以後のログインは`POST /admin/login/request-otp`(メールOTP送信)→
-//!    `POST /admin/login/verify`(メールOTP+TOTPコードの両方を提示)→
+//!    撮影)・`Connect Admin/Confirm2fa`で初回コードを確認。
+//! 2. 以後のログインは`Connect Admin/RequestLoginOtp`(メールOTP送信)→
+//!    `Connect Admin/VerifyLogin`(メールOTP+TOTPコードの両方を提示)→
 //!    成功すれば新しいBearerキー(既定12時間有効)を1回だけ返す。
 
 use std::sync::Arc;
 
-use hyper::body::Incoming;
+use bytes::Bytes;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -42,10 +42,10 @@ pub struct EnrollResponse {
     pub qr_svg: Option<String>,
 }
 
-/// `POST /admin/2fa/enroll` — 管理者トークンを持つ者のみ実行できる
+/// `Connect Admin/Enroll2fa` — 管理者トークンを持つ者のみ実行できる
 /// ブートストラップ操作(`handlers::tenants::check_admin_auth`と同じ
 /// 権限を要求)。
-pub async fn enroll(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn enroll(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -69,8 +69,8 @@ pub struct ConfirmRequest {
     pub code: String,
 }
 
-/// `POST /admin/2fa/confirm` — 登録直後の初回コード確認。
-pub async fn confirm(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+/// `Connect Admin/Confirm2fa` — 登録直後の初回コード確認。
+pub async fn confirm(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     if let Err(resp) = super::tenants::check_admin_auth(&state, &req) {
         return resp;
     }
@@ -90,11 +90,11 @@ pub struct RequestOtpRequest {
     pub owner: String,
 }
 
-/// `POST /admin/login/request-otp` — **認証不要**(これ自体がログイン
+/// `Connect Admin/RequestLoginOtp` — **認証不要**(これ自体がログイン
 /// フローの入口のため)。存在しない/未登録の`owner`でも常に同じ`200`を
 /// 返す(owner列挙攻撃を避けるため、実際にメールが送られたかどうかを
 /// レスポンスから判別できないようにする)。
-pub async fn request_otp(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn request_otp(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     let body: RequestOtpRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -130,14 +130,14 @@ pub struct SuspensionOverrideRequest {
     pub totp_code: String,
 }
 
-/// `POST /admin/2fa/verify` — **既に有効なBearerキーを持っている
+/// `Connect Admin/Verify2fa` — **既に有効なBearerキーを持っている
 /// owner**が、`KeyGuardian`の異常検知(`KeyDecision::Suspended`)で
 /// 一時停止された際に、TOTPコード単体で一時的な通過オーバーライドを
-/// 得るための経路(`POST /admin/login/verify`のフルログインとは別軸
+/// 得るための経路(`Connect Admin/VerifyLogin`のフルログインとは別軸
 /// ——こちらは「元々有効なキーを持っている人が、異常検知の隔離期間を
 /// 早く抜けたい」場合向け、フルログインは「そもそもキーを持っていない」
 /// 場合向け)。認証は不要(TOTPコード自体が確認済み登録者の証明になる)。
-pub async fn verify_suspension_override(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn verify_suspension_override(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     let body: SuspensionOverrideRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -163,12 +163,12 @@ pub struct VerifyLoginResponse {
     pub expires_in_hours: i64,
 }
 
-/// `POST /admin/login/verify` — **認証不要**(ログインフローの本体)。
+/// `Connect Admin/VerifyLogin` — **認証不要**(ログインフローの本体)。
 /// メールOTP・TOTPコードの両方が正しい場合のみ、既定12時間有効の
 /// `KeyGuardian`Bearerキーを新規発行して返す(以後の管理API呼び出しは
 /// このキーを`Authorization: Bearer`で使う、既存のキー方式をそのまま
 /// 再利用)。
-pub async fn verify_login(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+pub async fn verify_login(state: Arc<AppState>, req: Request<Bytes>) -> Response<BoxBody> {
     let body: VerifyLoginRequest = match read_json_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,

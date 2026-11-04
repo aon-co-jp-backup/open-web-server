@@ -94,7 +94,7 @@ pub struct Ledger {
     /// 関わらず、メールアドレスひとつだけで有効化できる最後の砦。未設定なら
     /// 従来通り(バックアップ無し)動作する。`Ledger`は通常`Arc<Ledger>`として
     /// 共有されるため(`AppState::ledger`)、`RwLock`による実行時後付け設定
-    /// (管理APIから`POST /admin/disaster-email-backup`で呼ぶ想定)を可能にする。
+    /// (管理APIから`Connect Admin/SetDisasterEmailBackup`で呼ぶ想定)を可能にする。
     #[cfg(feature = "disaster_email_backup")]
     disaster_email_backup: std::sync::RwLock<Option<Arc<disaster_email_backup::DisasterEmailBackup>>>,
 }
