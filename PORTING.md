@@ -1081,3 +1081,8 @@ Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms
 - **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
 - Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
 - **Если есть сомнения — выбирайте Connect.**
+
+## 2026-11-05 依存更新 / Dependency update
+- sqlx 0.9（feature `runtime-tokio`+`tls-rustls-ring-webpki`）、russh 0.65・russh-sftp 3（`auth_publickey`が`VerifiedPublicKey`を受ける）、rand 0.10（`rand::rng()`・`Rng`・`RngExt::random_range`）、rcgen 0.14（`CertifiedKey.signing_key`）、reqwest 0.13（`rustls`・`form`・`query`）、sonic-rs 0.5、thiserror 2、toml 1。全featureでビルド成功、既定のworkspaceテストも成功。`rsa`は修正版なし（RUSTSEC-2023-0071）のまま。
+- 既知: `two_factor::tests::confirmed_enrollment_survives_reload_into_a_fresh_instance_via_disk` は`admin-2fa`有効で並列実行すると失敗する（更新前のmainでも同じ。単独では成功）。
+- Bumped sqlx/russh/russh-sftp/rand/rcgen/reqwest/sonic-rs/thiserror/toml; all features build, default workspace tests pass. rsa still has no fix. Known pre-existing flaky test under `admin-2fa`.

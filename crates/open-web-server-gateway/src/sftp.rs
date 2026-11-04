@@ -188,8 +188,8 @@ struct SshSession {
 impl Handler for SshSession {
     type Error = russh::Error;
 
-    fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
-        let accept = self.authorized_keys.iter().any(|allowed| allowed == key);
+    fn auth_publickey(&mut self, _user: &str, key: russh::server::VerifiedPublicKey<'_>) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        let accept = self.authorized_keys.iter().any(|allowed| allowed == key.public_key);
         async move { Ok(if accept { Auth::Accept } else { Auth::Reject { proceed_with_methods: None, partial_success: false } }) }
     }
 

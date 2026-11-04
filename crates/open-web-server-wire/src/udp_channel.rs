@@ -71,7 +71,7 @@ impl UdpChannelKeys {
             aead_key: PayloadCipher::generate_key(),
             mac_key: {
                 let mut k = vec![0u8; 32];
-                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut k);
+                rand::Rng::fill_bytes(&mut rand::rng(), &mut k);
                 k
             },
         }

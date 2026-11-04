@@ -9,7 +9,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
-use rand::RngCore;
+use rand::Rng;
 
 pub struct PayloadCipher {
     cipher: ChaCha20Poly1305,
@@ -25,14 +25,14 @@ impl PayloadCipher {
 
     pub fn generate_key() -> [u8; 32] {
         let mut key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
+        rand::rng().fill_bytes(&mut key);
         key
     }
 
     /// 平文を暗号化し、`nonce || ciphertext` を返す。
     pub fn encrypt(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = self

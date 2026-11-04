@@ -485,7 +485,7 @@ mod tests {
             .upsert_pem(
                 "watchdog-test.example.test",
                 cert.cert.pem().as_bytes(),
-                cert.key_pair.serialize_pem().as_bytes(),
+                cert.signing_key.serialize_pem().as_bytes(),
             )
             .unwrap();
 
@@ -591,7 +591,7 @@ mod tests {
             .upsert_pem(
                 "recovers.example.test",
                 cert.cert.pem().as_bytes(),
-                cert.key_pair.serialize_pem().as_bytes(),
+                cert.signing_key.serialize_pem().as_bytes(),
             )
             .unwrap();
         let server_config = open_web_server_wire::build_tenant_server_config(resolver);
@@ -668,7 +668,7 @@ mod tests {
             .upsert_pem(
                 "content-check.example.test",
                 cert.cert.pem().as_bytes(),
-                cert.key_pair.serialize_pem().as_bytes(),
+                cert.signing_key.serialize_pem().as_bytes(),
             )
             .unwrap();
         let server_config = open_web_server_wire::build_tenant_server_config(resolver);
@@ -738,7 +738,7 @@ mod tests {
             .upsert_pem(
                 "content-ok.example.test",
                 cert.cert.pem().as_bytes(),
-                cert.key_pair.serialize_pem().as_bytes(),
+                cert.signing_key.serialize_pem().as_bytes(),
             )
             .unwrap();
         let server_config = open_web_server_wire::build_tenant_server_config(resolver);

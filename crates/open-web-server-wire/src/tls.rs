@@ -311,7 +311,7 @@ mod tests {
     /// 別途のファイルI/Oテストは不要と判断)。
     fn self_signed_pem(subject_alt_name: &str) -> (Vec<u8>, Vec<u8>) {
         let cert = rcgen::generate_simple_self_signed(vec![subject_alt_name.to_string()]).unwrap();
-        (cert.cert.pem().into_bytes(), cert.key_pair.serialize_pem().into_bytes())
+        (cert.cert.pem().into_bytes(), cert.signing_key.serialize_pem().into_bytes())
     }
 
     #[test]

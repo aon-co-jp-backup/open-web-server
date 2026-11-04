@@ -18,7 +18,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Key, Nonce,
 };
-use rand::RngCore;
+use rand::Rng;
 
 /// タイムスタンプの許容ずれ幅 (秒)。これを超えて古い/未来のパケットは拒否する。
 pub const FRESHNESS_WINDOW_SECS: u64 = 30;
@@ -97,7 +97,7 @@ impl SecureChannel {
         let timestamp = now_secs();
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let mut aad = Vec::with_capacity(16);

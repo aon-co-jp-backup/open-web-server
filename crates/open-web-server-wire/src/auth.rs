@@ -5,7 +5,7 @@
 //! 事前共有した長期鍵から、通信ごとに使い捨てのセッション鍵を HKDF で導出する。
 
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
@@ -20,7 +20,7 @@ impl MutualAuthConfig {
     /// チャレンジ生成 (呼び出し側)
     pub fn generate_challenge() -> [u8; 32] {
         let mut challenge = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut challenge);
+        rand::rng().fill_bytes(&mut challenge);
         challenge
     }
 

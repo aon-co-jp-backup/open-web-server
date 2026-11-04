@@ -26,7 +26,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 
@@ -203,7 +203,7 @@ pub fn send_otp_email(config: &SmtpConfig, to: &str, code: &str) -> Result<(), S
 
 fn generate_numeric_code(digits: u32) -> String {
     let max = 10u32.pow(digits);
-    let value: u32 = rand::thread_rng().gen_range(0..max);
+    let value: u32 = rand::rng().random_range(0..max);
     format!("{value:0width$}", width = digits as usize)
 }
 

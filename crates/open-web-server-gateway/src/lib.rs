@@ -945,7 +945,7 @@ mod tests {
         // 呼ばれる。
         let cert = rcgen::generate_simple_self_signed(vec!["tls-test-tenant.example.test".to_string()]).unwrap();
         let cert_pem = cert.cert.pem();
-        let key_pem = cert.key_pair.serialize_pem();
+        let key_pem = cert.signing_key.serialize_pem();
         state
             .tls_resolver
             .upsert_pem("tls-test-tenant.example.test", cert_pem.as_bytes(), key_pem.as_bytes())

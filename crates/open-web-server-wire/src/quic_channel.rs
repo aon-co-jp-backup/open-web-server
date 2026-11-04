@@ -63,7 +63,7 @@ impl QuicServerConfig {
         ensure_crypto_provider_installed();
         let cert = rcgen::generate_simple_self_signed(vec![subject_alt_name.to_string()])?;
         let cert_der = cert.cert.der().to_vec();
-        let key_der = cert.key_pair.serialize_der();
+        let key_der = cert.signing_key.serialize_der();
 
         let cert_chain = vec![rustls_pki_types::CertificateDer::from(cert_der.clone())];
         let priv_key = rustls_pki_types::PrivateKeyDer::try_from(key_der)
