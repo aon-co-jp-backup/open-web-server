@@ -36,6 +36,13 @@ Android `DdnsSetupActivity.kt`、`open-easy-web`(`src/api_free_domain.rs`・`ser
 `admin-2fa-hardening` ブランチ(未マージ)は `tenants.rs`・`tls.rs`・`lib.rs` のルートと認証、上記フックを変更しているため、マージ時に衝突する(`x-tls-token` と `/admin/2fa/reset` は未取り込み)。
 **本文中の旧REST名(`POST /admin/tenants` 等)の記述は、上の対応表で読み替えること。**
 
+**検証結果と本番反映(2026-11-05)**: `cargo test --workspace`(`--test-threads=1`)全通過、実サーバーへ curl で全メソッド(401/400/重複キー400/200、旧REST 404)、
+open-easy-web の画面(WASM)をローカルで起動し、ビルトインブラウザで「無料ドメイン」パネルの一覧・SFTP情報・登録ボタンを実操作して、
+OPTIONS(204)→ POST `Admin/ListFreeDomains`・`Admin/GetSftpConnectionInfo`・`Admin/SetupFreeDomain` が通ることをネットワークログで確認(登録は `ddns` feature 無しのビルドのため設計どおり 503)。
+本番(VPS)へは別ポートの試験起動→入れ替え→自動ロールバック付きで反映済み(glibc 2.39 以下、`--features fastcgi-client,domain-watchdog`、本番は従来から `ddns` 無し)。
+証明書更新フック(`/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)も同時に Connect 版へ差し替えた。退避: `*.before-connect-20261105084151`。
+未確認: パネルからの実際の `RemoveFreeDomain`(`ddns` ビルドでの画面操作)、証明書の実更新でのフック発火。
+
 > 📌 **更新(2026-08-25): セキュリティ監査で`russh`/`h2`の既知脆弱性を
 > 修正**。組み込みSFTPサーバー(`sftp`feature、既定オフ)が使う
 > `russh`にHigh(CVSS 7.5)の脆弱性2件があり、0.63.1へアップグレード
