@@ -346,6 +346,30 @@ fn file_attributes_for(path: &Path) -> FileAttributes {
     attrs
 }
 
+/// SFTPのsetstatで受けた属性(サイズ・権限・更新日時)をファイルへ反映する。
+/// 権限はUnixのみ(下位12ビット)。
+fn apply_attributes(path: &Path, attrs: &FileAttributes) -> Result<(), StatusCode> {
+    if let Some(size) = attrs.size {
+        if path.is_file() {
+            let f = std::fs::OpenOptions::new().write(true).open(path).map_err(|_| StatusCode::PermissionDenied)?;
+            f.set_len(size).map_err(|_| StatusCode::Failure)?;
+        }
+    }
+    #[cfg(unix)]
+    if let Some(mode) = attrs.permissions {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777)).map_err(|_| StatusCode::Failure)?;
+    }
+    if let Some(mtime) = attrs.mtime {
+        if path.is_file() {
+            let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime));
+            let f = std::fs::OpenOptions::new().write(true).open(path).map_err(|_| StatusCode::PermissionDenied)?;
+            f.set_modified(t).map_err(|_| StatusCode::Failure)?;
+        }
+    }
+    Ok(())
+}
+
 impl russh_sftp::server::Handler for SftpSubsystem {
     type Error = StatusCode;
 
@@ -509,20 +533,19 @@ impl russh_sftp::server::Handler for SftpSubsystem {
     }
 
     /// 属性の変更(権限・更新日時)。アップロード後に多くのクライアントが送ってくる。
-    /// 非対応として失敗を返すとクライアントが転送を失敗扱いにするため、
-    /// ルート内であることだけ確認して成功を返す(権限・日時は**反映しない**)。
-    async fn setstat(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
+    ///     /// ルート内であることを確認した上で、サイズ・権限(Unix)・更新日時を反映する。
+    async fn setstat(&mut self, id: u32, path: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
         let resolved = self.resolve_within_root(&path)?;
         if !resolved.exists() {
             return Err(StatusCode::NoSuchFile);
         }
+        apply_attributes(&resolved, &attrs)?;
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
     }
 
-    async fn fsetstat(&mut self, id: u32, handle: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
-        if !self.handles.lock().await.contains_key(&handle) {
-            return Err(StatusCode::NoSuchFile);
-        }
+    async fn fsetstat(&mut self, id: u32, handle: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
+        let path = self.handles.lock().await.get(&handle).cloned().ok_or(StatusCode::NoSuchFile)?;
+        apply_attributes(&path, &attrs)?;
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
     }
 

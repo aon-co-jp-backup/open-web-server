@@ -376,6 +376,15 @@ async fn sftp_end_to_end_against_real_binary() {
     assert_eq!(sftp.read("d/big.bin").await.unwrap(), big);
     sftp.rename("d/big.bin", "d/big2.bin").await.unwrap();
     assert!(root.join("d/big2.bin").exists());
+    // setstat: 更新日時とサイズ(切り詰め)が実ファイルへ反映される
+    let mut attrs = sftp.metadata("d/big2.bin").await.unwrap();
+    attrs.mtime = Some(1_700_000_000);
+    attrs.size = Some(10);
+    sftp.set_metadata("d/big2.bin", attrs).await.unwrap();
+    let meta = std::fs::metadata(root.join("d/big2.bin")).unwrap();
+    assert_eq!(meta.len(), 10, "setstat size must truncate");
+    let secs = meta.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    assert_eq!(secs, 1_700_000_000, "setstat mtime must be applied");
     // ルート外への脱出は拒否
     assert!(sftp.read("../secret-outside.txt").await.is_err(), "traversal must be refused");
     assert!(sftp.write("../escaped.txt", b"x").await.is_err());
