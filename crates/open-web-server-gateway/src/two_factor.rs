@@ -160,6 +160,26 @@ pub struct SmtpConfig {
     pub username: String,
     pub password: String,
     pub from: String,
+    /// `starttls`(既定・587番) / `tls`(暗黙TLS・465番) / `none`(平文。同一ホストのローカル中継専用)
+    pub security: SmtpSecurity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmtpSecurity {
+    StartTls,
+    ImplicitTls,
+    None,
+}
+
+impl SmtpSecurity {
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "starttls" => Some(Self::StartTls),
+            "tls" => Some(Self::ImplicitTls),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
 }
 
 impl SmtpConfig {
@@ -170,6 +190,7 @@ impl SmtpConfig {
             username: std::env::var("OPEN_WEB_SERVER_SMTP_USERNAME").ok()?,
             password: std::env::var("OPEN_WEB_SERVER_SMTP_PASSWORD").ok()?,
             from: std::env::var("OPEN_WEB_SERVER_SMTP_FROM").ok()?,
+            security: std::env::var("OPEN_WEB_SERVER_SMTP_SECURITY").ok().and_then(|v| SmtpSecurity::parse(&v)).unwrap_or(SmtpSecurity::StartTls),
         })
     }
 }
@@ -192,11 +213,12 @@ pub fn send_otp_email(config: &SmtpConfig, to: &str, code: &str) -> Result<(), S
         .map_err(|e| format!("failed to build message: {e}"))?;
 
     let creds = Credentials::new(config.username.clone(), config.password.clone());
-    let mailer = SmtpTransport::starttls_relay(&config.host)
-        .map_err(|e| format!("failed to configure SMTP relay: {e}"))?
-        .port(config.port)
-        .credentials(creds)
-        .build();
+    let builder = match config.security {
+        SmtpSecurity::StartTls => SmtpTransport::starttls_relay(&config.host).map_err(|e| format!("failed to configure SMTP relay: {e}"))?,
+        SmtpSecurity::ImplicitTls => SmtpTransport::relay(&config.host).map_err(|e| format!("failed to configure SMTP relay: {e}"))?,
+        SmtpSecurity::None => SmtpTransport::builder_dangerous(&config.host),
+    };
+    let mailer = builder.port(config.port).credentials(creds).build();
     mailer.send(&email).map_err(|e| format!("failed to send email: {e}"))?;
     Ok(())
 }
@@ -227,7 +249,11 @@ impl TwoFactorStore {
     /// 開始する)。これが無いと、プロセス再起動のたびに全ユーザーが
     /// TOTP再登録(QRコード再撮影)を強いられてしまう。
     pub fn load_from_env() -> Self {
-        let persistence_path = std::env::var("OPEN_WEB_SERVER_2FA_STORE_PATH").ok().map(PathBuf::from);
+        Self::load_from_path(std::env::var("OPEN_WEB_SERVER_2FA_STORE_PATH").ok().map(PathBuf::from))
+    }
+
+    /// 保存先を引数で受け取る版(環境変数を介さないので、並列テストでも干渉しない)。
+    pub fn load_from_path(persistence_path: Option<PathBuf>) -> Self {
         let enrollments = match &persistence_path {
             Some(path) => load_enrollments_from_path(path),
             None => HashMap::new(),
@@ -520,14 +546,8 @@ mod tests {
     fn confirmed_enrollment_survives_reload_into_a_fresh_instance_via_disk() {
         let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-test-{}", uuid::Uuid::new_v4()));
         let path = tmp_dir.join("2fa-store.json");
-        // SAFETY: このプロセス内で他のテストと環境変数名が衝突しないよう
-        // 一意な一時パスを使う(並列テスト実行下でも安全)。
-        unsafe {
-            std::env::set_var("OPEN_WEB_SERVER_2FA_STORE_PATH", &path);
-        }
-
         let now = Utc::now();
-        let store1 = TwoFactorStore::load_from_env();
+        let store1 = TwoFactorStore::load_from_path(Some(path.clone()));
         store1.enroll("carol", None, None);
         let secret = store1.enrollments.read().unwrap().get("carol").unwrap().secret.clone();
         let real_code = format!("{:06}", totp_at(&secret, now));
@@ -536,12 +556,9 @@ mod tests {
 
         // 独立した第二のインスタンスが、同じディスク上のファイルから
         // 確認済み状態を復元できることを確認する。
-        let store2 = TwoFactorStore::load_from_env();
+        let store2 = TwoFactorStore::load_from_path(Some(path.clone()));
         assert!(store2.has_confirmed_enrollment("carol"), "confirmed enrollment must survive reload from disk");
 
-        unsafe {
-            std::env::remove_var("OPEN_WEB_SERVER_2FA_STORE_PATH");
-        }
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -549,13 +566,7 @@ mod tests {
     fn missing_persistence_file_starts_empty_without_crashing() {
         let tmp_dir = std::env::temp_dir().join(format!("owsrv-2fa-missing-{}", uuid::Uuid::new_v4()));
         let path = tmp_dir.join("does-not-exist.json");
-        unsafe {
-            std::env::set_var("OPEN_WEB_SERVER_2FA_STORE_PATH", &path);
-        }
-        let store = TwoFactorStore::load_from_env();
+        let store = TwoFactorStore::load_from_path(Some(path));
         assert!(!store.has_confirmed_enrollment("nobody"));
-        unsafe {
-            std::env::remove_var("OPEN_WEB_SERVER_2FA_STORE_PATH");
-        }
     }
 }

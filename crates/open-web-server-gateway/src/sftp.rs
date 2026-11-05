@@ -119,6 +119,40 @@ pub fn spawn_if_configured() {
     });
 }
 
+/// ホスト鍵の保存先(`OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE`、既定`./sftp_host_key`)。
+/// SFTPルート配下には置かない(クライアントから取得できてしまうため)。
+fn host_key_path() -> PathBuf {
+    PathBuf::from(std::env::var("OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE").unwrap_or_else(|_| "./sftp_host_key".to_string()))
+}
+
+/// ホスト鍵をファイルから読む。無ければ生成して保存する。
+/// 再起動のたびに鍵が変わると、クライアントに「ホスト鍵が変わった(中間者攻撃の恐れ)」
+/// 警告が毎回出るため、永続化する。
+fn load_or_create_host_key(path: &Path) -> anyhow::Result<PrivateKey> {
+    if path.exists() {
+        let text = std::fs::read_to_string(path)?;
+        return PrivateKey::from_openssh(text.trim()).map_err(|e| anyhow::anyhow!("failed to parse SFTP host key {}: {e}", path.display()));
+    }
+    let key = {
+        let mut rng = russh::keys::key::safe_rng();
+        PrivateKey::random(&mut rng, Algorithm::Ed25519).map_err(|e| anyhow::anyhow!("failed to generate SFTP host key: {e}"))?
+    };
+    let pem = key.to_openssh(russh::keys::ssh_key::LineEnding::LF).map_err(|e| anyhow::anyhow!("failed to encode SFTP host key: {e}"))?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, pem.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    tracing::info!(path = %path.display(), "generated and saved a new SFTP host key");
+    Ok(key)
+}
+
 async fn run(
     bind_addr: String,
     root: PathBuf,
@@ -130,10 +164,7 @@ async fn run(
     // `.await`をまたいで生かしたままにするとこの`async fn`全体が
     // `Send`でなくなり`tokio::spawn`できなくなる。ブロックへ閉じ込めて
     // 鍵生成が終わった時点で確実にdropさせる。
-    let keypair = {
-        let mut rng = russh::keys::key::safe_rng();
-        PrivateKey::random(&mut rng, Algorithm::Ed25519).map_err(|e| anyhow::anyhow!("failed to generate SFTP host key: {e}"))?
-    };
+    let keypair = load_or_create_host_key(&host_key_path())?;
 
     let config = russh::server::Config {
         auth_rejection_time: std::time::Duration::from_secs(1),
@@ -454,6 +485,44 @@ impl russh_sftp::server::Handler for SftpSubsystem {
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
         self.handles.lock().await.remove(&handle);
         self.exhausted_dirs.lock().await.remove(&handle);
+        Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
+    }
+
+    /// 名前変更。WinSCP/FileZilla等は「一時名でアップロード→改名」を行うため必須。
+    /// 移動元・移動先の両方をルート配下に閉じ込める。既存の移動先は上書きしない(SFTP v3の規定)。
+    async fn rename(&mut self, id: u32, oldpath: String, newpath: String) -> Result<Status, Self::Error> {
+        let from = self.resolve_within_root(&oldpath)?;
+        let to = self.resolve_within_root(&newpath)?;
+        if !from.exists() {
+            return Err(StatusCode::NoSuchFile);
+        }
+        if to.exists() {
+            return Err(StatusCode::Failure);
+        }
+        std::fs::rename(&from, &to).map_err(|_| StatusCode::Failure)?;
+        Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+        let path = self.handles.lock().await.get(&handle).cloned().ok_or(StatusCode::NoSuchFile)?;
+        Ok(Attrs { id, attrs: file_attributes_for(&path) })
+    }
+
+    /// 属性の変更(権限・更新日時)。アップロード後に多くのクライアントが送ってくる。
+    /// 非対応として失敗を返すとクライアントが転送を失敗扱いにするため、
+    /// ルート内であることだけ確認して成功を返す(権限・日時は**反映しない**)。
+    async fn setstat(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
+        let resolved = self.resolve_within_root(&path)?;
+        if !resolved.exists() {
+            return Err(StatusCode::NoSuchFile);
+        }
+        Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
+    }
+
+    async fn fsetstat(&mut self, id: u32, handle: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
+        if !self.handles.lock().await.contains_key(&handle) {
+            return Err(StatusCode::NoSuchFile);
+        }
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
     }
 

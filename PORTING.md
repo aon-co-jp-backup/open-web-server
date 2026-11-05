@@ -1129,3 +1129,14 @@ Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms
 - sqlx 0.9（feature `runtime-tokio`+`tls-rustls-ring-webpki`）、russh 0.65・russh-sftp 3（`auth_publickey`が`VerifiedPublicKey`を受ける）、rand 0.10（`rand::rng()`・`Rng`・`RngExt::random_range`）、rcgen 0.14（`CertifiedKey.signing_key`）、reqwest 0.13（`rustls`・`form`・`query`）、sonic-rs 0.5、thiserror 2、toml 1。全featureでビルド成功、既定のworkspaceテストも成功。`rsa`は修正版なし（RUSTSEC-2023-0071）のまま。
 - 既知: `two_factor::tests::confirmed_enrollment_survives_reload_into_a_fresh_instance_via_disk` は`admin-2fa`有効で並列実行すると失敗する（更新前のmainでも同じ。単独では成功）。
 - Bumped sqlx/russh/russh-sftp/rand/rcgen/reqwest/sonic-rs/thiserror/toml; all features build, default workspace tests pass. rsa still has no fix. Known pre-existing flaky test under `admin-2fa`.
+
+## 2026-11-05 実バイナリでの結合試験(SFTP・2FA・証明書更新) / End-to-end tests against the real binary
+
+**日本語**: `crates/open-web-server-gateway/tests/e2e_real_binary.rs`(`cargo test -p open-web-server-gateway --features sftp,admin-2fa --test e2e_real_binary`)。実バイナリを子プロセスで起動し、外から実プロトコルで検証する。
+- **2FA**: 登録(管理者トークン必須)→TOTP確認→メールOTPを**実SMTP**(テスト内の最小SMTPサーバー)で受信→OTP+TOTPでログイン→発行キーで管理API→OTPの使い捨て→再起動後も登録が残る。
+- **SFTP**: 公開鍵(登録済み/未登録)・パスワード(正誤)・1MiB往復・rename・ルート外への脱出拒否・**再起動後もホスト鍵が同じ**。
+- 試験で見つけて直したもの: SFTPに`rename`/`fstat`/`setstat`/`fsetstat`が無かった(WinSCP/FileZillaの「一時名で送って改名」が失敗する)、SFTPのホスト鍵が起動のたびに変わっていた(`OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE`、既定`./sftp_host_key`に保存)、メール送信がSTARTTLS固定だった(`OPEN_WEB_SERVER_SMTP_SECURITY=starttls|tls|none`を追加。`none`は同一ホストの中継専用)、`two_factor`の単体テストが環境変数を共有して並列で落ちていた(`load_from_path`へ)。
+- **証明書の自動更新(VPS実機)**: 新バイナリ稼働中に`certbot renew --dry-run`を実行し、全14証明書が成功。`certbot-renew.timer`は稼働中。ACMEのHTTP-01自前実装は、モックCA相手の単体試験のみ(実Let's Encryptでの発行は未実施=certbot経由が本番の更新手段)。
+- **注意**: `setstat`/`fsetstat`は成功を返すだけで、権限・日時は反映しない。VPSではSFTPを有効にしていない(`OPEN_WEB_SERVER_SFTP_BIND`未設定)。
+
+**English**: `tests/e2e_real_binary.rs` spawns the real binary and drives 2FA (enroll → TOTP confirm → e-mail OTP received over a real SMTP socket → login → issued key opens the admin API → OTP is single-use → enrollment survives restart) and SFTP (public key / password, 1 MiB round trip, rename, traversal refused, host key stable across restarts). Found and fixed: missing SFTP `rename`/`fstat`/`setstat`/`fsetstat`, a host key regenerated on every start (now `OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE`), STARTTLS-only SMTP (new `OPEN_WEB_SERVER_SMTP_SECURITY`), and an env-var race in the `two_factor` unit tests. On the VPS, `certbot renew --dry-run` succeeded for all 14 certificates under the new binary; the built-in ACME client is only unit-tested against a mock CA.
