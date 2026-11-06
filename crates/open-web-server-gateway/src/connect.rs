@@ -307,6 +307,10 @@ async fn admin(
         #[cfg(feature = "admin-2fa")]
         "Enroll2fa" => handlers::admin_login::enroll(state, req).await,
         #[cfg(feature = "admin-2fa")]
+        "Reset2fa" => handlers::admin_login::reset_enrollment(state, req).await,
+        #[cfg(feature = "admin-2fa")]
+        "Reset2fa" => handlers::admin_login::reset_enrollment(state, req).await,
+        #[cfg(feature = "admin-2fa")]
         "Confirm2fa" => handlers::admin_login::confirm(state, req).await,
         #[cfg(feature = "admin-2fa")]
         "Verify2fa" => handlers::admin_login::verify_suspension_override(state, req).await,
