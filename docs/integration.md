@@ -16,7 +16,7 @@
 - 応答は必ず `MutationReceipt { idempotency_key, committed, db_commit_id, committed_at }`
   の形で返し、`db_commit_id` が入って初めて「確定」とみなす
 - **open-web-server → open-runo(読み出し、2026-07-14実装)**:
-  `GET /internal/db/state/:target/:key/at/:commit_id` — VersionLessAPI +
+  `Connect Admin/GetStateAtCommit` — VersionLessAPI +
   Git-on-SQLハイブリッドの読み出し側。拡張要件(1)がこれまで書き込み側
   (`db_commit_id`の配線)のみ実質完成しており、「commit_idを指定して
   過去状態を問い合わせる」読み出し側が`open-web-server`に一切存在

@@ -41,7 +41,7 @@ open-easy-web の画面(WASM)をローカルで起動し、ビルトインブラ
 OPTIONS(204)→ POST `Admin/ListFreeDomains`・`Admin/GetSftpConnectionInfo`・`Admin/SetupFreeDomain` が通ることをネットワークログで確認(登録は `ddns` feature 無しのビルドのため設計どおり 503)。
 本番(VPS)へは別ポートの試験起動→入れ替え→自動ロールバック付きで反映済み(glibc 2.39 以下、`--features fastcgi-client,domain-watchdog`、本番は従来から `ddns` 無し)。
 証明書更新フック(`/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)も同時に Connect 版へ差し替えた。退避: `*.before-connect-20261105084151`。
-未確認: パネルからの実際の `RemoveFreeDomain`(`ddns` ビルドでの画面操作)、証明書の実更新でのフック発火。
+確認済み(追補): `ddns` 付きビルドで画面から登録→一覧→削除(`Admin/RemoveFreeDomain` 200)を実操作、更新フックは VPS 上で手動実行して `UpsertTenantTls` が 200 で反映されることを確認。未確認: 証明書の実更新(certbot が実際に呼ぶ瞬間)、Android/iOS の実機。
 
 > 🎯 **移植時の前提(2026-08-29)**: aruaru-dbはRPoemとのSETで初めて
 > 「REST API不要・Cosmo有料版互換」の価値が成立する(正本:

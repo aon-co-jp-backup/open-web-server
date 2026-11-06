@@ -41,7 +41,7 @@ open-easy-web の画面(WASM)をローカルで起動し、ビルトインブラ
 OPTIONS(204)→ POST `Admin/ListFreeDomains`・`Admin/GetSftpConnectionInfo`・`Admin/SetupFreeDomain` が通ることをネットワークログで確認(登録は `ddns` feature 無しのビルドのため設計どおり 503)。
 本番(VPS)へは別ポートの試験起動→入れ替え→自動ロールバック付きで反映済み(glibc 2.39 以下、`--features fastcgi-client,domain-watchdog`、本番は従来から `ddns` 無し)。
 証明書更新フック(`/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)も同時に Connect 版へ差し替えた。退避: `*.before-connect-20261105084151`。
-未確認: パネルからの実際の `RemoveFreeDomain`(`ddns` ビルドでの画面操作)、証明書の実更新でのフック発火。
+確認済み(追補): `ddns` 付きビルドで画面から登録→一覧→削除(`Admin/RemoveFreeDomain` 200)を実操作、更新フックは VPS 上で手動実行して `UpsertTenantTls` が 200 で反映されることを確認。未確認: 証明書の実更新(certbot が実際に呼ぶ瞬間)、Android/iOS の実機。
 
 > **2026-07-25 更新**: 開発方針ファイル(`CLAUDE.md`)の見出しを
 > 「開発方針＆開発環境ルール」から「設計思想＆開発方針＆開発環境ルール」
@@ -257,7 +257,7 @@ VersionLessAPI+Gitバージョン管理のハイブリッドは、書き込み�
 (PHP製の既存サイト)を本サーバー経由で配信できることを実HTTP経由で
 検証済み(詳細は本ファイルのHANDOFF節参照)。設定は`web_vhosts.toml`
 (TOML宣言、`domains.toml`と同じ作法)または管理API
-(`POST /admin/web-vhosts`)から動的に追加できる。
+(`Connect Admin/UpsertWebVhost`)から動的に追加できる。
 
 ---
 

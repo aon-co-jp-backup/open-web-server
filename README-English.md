@@ -258,7 +258,7 @@ subprocess. This was verified end-to-end by actually serving
 `audiocafe.tokyo` (an existing PHP site) through this server over real
 HTTP (see this file's HANDOFF section for details). Vhosts can be
 declared via `web_vhosts.toml` (same TOML convention as `domains.toml`)
-or added dynamically via the admin API (`POST /admin/web-vhosts`).
+or added dynamically via the admin API (`Connect Admin/UpsertWebVhost`).
 
 ### 8. Embedded SFTP server + UPnP auto port-forwarding, and free DDNS domain automation (up to 20 domains, 2026-07-23)
 
@@ -287,12 +287,12 @@ without depending on an external `sshd` or a paid domain:
     domains can be added/removed at runtime, no restart required. A
     21st distinct domain is rejected with an explicit `400 Bad Request`
     (never a silent failure).
-  - `POST /admin/ddns/setup-free-domain` registers one domain and
+  - `Connect Admin/SetupFreeDomain` registers one domain and
     verifies connectivity immediately; call it again to register more
-    domains (up to the cap). `GET /admin/ddns/domains` lists registered
-    domains and remaining capacity. `DELETE /admin/ddns/domains/:domain`
+    domains (up to the cap). `Connect Admin/ListFreeDomains` lists registered
+    domains and remaining capacity. `Connect Admin/RemoveFreeDomain`
     deregisters one.
-  - `GET /admin/sftp/connection-info` prefers a registered DuckDNS
+  - `Connect Admin/GetSftpConnectionInfo` prefers a registered DuckDNS
     hostname over a freshly-detected raw IP (optionally picked via
     `?host=<domain>` when multiple domains are registered), so the
     example SFTP command stays stable once set up.

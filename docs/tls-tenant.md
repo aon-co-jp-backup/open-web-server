@@ -31,10 +31,10 @@ vhost経由)に依存**しており、「open-web-server自体がApache+Nginx
   未設定時は従来通りプレーンHTTPのみで動作する(既存動作を壊さない)。
 - 管理API(`crates/open-web-server-gateway/src/handlers/tls.rs`、
   既存の`OPEN_WEB_SERVER_ADMIN_TOKEN`認証を再利用):
-  - `POST /admin/tenants/:host/tls` `{"cert_pem": "...", "key_pem": "..."}`
+  - `Connect Admin/UpsertTenantTls` `{"cert_pem": "...", "key_pem": "..."}`
     — 証明書チェーン+秘密鍵を登録・更新(冪等、証明書ローテーションにも
     使う)。
-  - `DELETE /admin/tenants/:host/tls` — 登録済み証明書を削除(未登録でも
+  - `Connect Admin/RemoveTenantTls` — 登録済み証明書を削除(未登録でも
     冪等に成功)。
   - 証明書登録(`/tls`)とHTTPルーティング登録(`/admin/tenants`本体)は
     意図的に独立した操作——TLS終端だけ先に有効化してからルーティングを
@@ -97,7 +97,7 @@ curl -k --resolve tls-smoketest.local:8443:127.0.0.1 https://tls-smoketest.local
   新規`obtain_certificate_http01(directory_url, domain, contact_email,
   &ChallengeStore) -> Result<(cert_pem, key_pem)>`と、それを呼んで
   成功時に`TenantCertResolver::upsert_pem`へ自動登録する管理API
-  `POST /admin/tenants/:host/tls/acme`
+  `Connect Admin/ObtainTenantTlsViaAcme`
   (`{"directory_url": "...", "contact_email": "..."}`、`acme` feature
   有効時のみルート登録)を追加。
   **検証**: `cargo test -p open-web-server-gateway --features acme`
@@ -125,7 +125,7 @@ curl -k --resolve tls-smoketest.local:8443:127.0.0.1 https://tls-smoketest.local
 - **HTTP/2・WebSocketアップグレードのTLS越し対応**: 現状`accept_tls_loop`
   は`http1::Builder`のみ(既存プレーンHTTPリスナーと同じ制約を踏襲)。
 - **`tenant_router::TenantConfig`とTLS証明書登録の統合**: 現状は
-  `POST /admin/tenants`(HTTPルーティング)と`POST /admin/tenants/:host/tls`
+  `Connect Admin/AddTenant`(HTTPルーティング)と`Connect Admin/UpsertTenantTls`
   (証明書)が別々のAPI。将来的に`TenantConfig`へ証明書パス/自動ACME
   フラグを持たせ、1回のテナント追加でHTTP+TLS+証明書取得まで一気通貫に
   できるようにする余地がある。
