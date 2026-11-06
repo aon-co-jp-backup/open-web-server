@@ -24,10 +24,11 @@ rc=0
 for name in $RENEWED_DOMAINS; do
   install -m 644 "$RENEWED_LINEAGE/fullchain.pem" "$certdir/$name.pem"
   install -m 600 "$RENEWED_LINEAGE/privkey.pem" "$certdir/$name.key"
-  if [ -n "" ]; then
-    # 2026-11-04: REST から Connect の単純呼び出し(POST + JSON)へ。host は本文に入れる。
-    body=
-    res=
+  if [ -n "$tlstok" ]; then
+    # 2026-11-04: REST(POST /admin/tenants/:host/tls)から Connect の単純呼び出し(POST + JSON)へ。host は本文に入れる。
+    body=$(jq -n --arg h "$name" --rawfile c "$RENEWED_LINEAGE/fullchain.pem" --rawfile k "$RENEWED_LINEAGE/privkey.pem" '{host:$h, cert_pem:$c, key_pem:$k}')
+    res=$(curl -s -w ' [HTTP %{http_code}]' -X POST "http://127.0.0.1/open_web_server.admin.v1.Admin/UpsertTenantTls" \
+      -H "$hdr" -H 'content-type: application/json' --data-binary "$body")
     case "$res" in *"[HTTP 200]") log "$name: 反映しました" ;; *) log "$name: 登録に失敗 $res"; rc=1 ;; esac
   else
     log "$name: 管理トークンが無いためファイルのみ更新(次回の再起動で反映)"
