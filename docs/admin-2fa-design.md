@@ -1,3 +1,5 @@
+> 注記(2026-11-06): 本文のREST表記(`/admin/...`)は Connect の `POST /open_web_server.admin.v1.Admin/<Method>` に移行済み。読み替えは README の対応表を参照。
+
 # 管理API 2段階認証 設計書
 
 **状態: 設計のみ(実装・コミット・本番変更なし)** / 作成日: 2026-10-28
@@ -21,8 +23,8 @@ Recommendation (details below):
 |---|---|---|
 | 認証の入口 | `check_admin_auth` が (a) 送信元IP許可リスト(`OPEN_WEB_SERVER_ADMIN_ALLOWED_IPS`、設定時のみ)、(b) `Authorization: Bearer`(KeyGuardian発行、`roles` 空または `admin` ならフルアクセス)、(c) 上記で通らなければ静的トークン `x-admin-token` にフォールバック、の順 | `handlers/tenants.rs` `check_admin_auth` |
 | **静的トークン未設定時** | `OPEN_WEB_SERVER_ADMIN_TOKEN` が無いと `check_static_admin_auth` は **無条件で通す(fail-open)** | 同 `check_static_admin_auth` |
-| 2段階ログイン | `POST /admin/login/request-otp`(認証不要・メールOTP送信)→ `POST /admin/login/verify`(メールOTP+TOTP 両方正しければ 12時間有効の Bearer キー発行、`roles=["admin"]`) | `handlers/admin_login.rs` |
-| 2FA登録 | `POST /admin/2fa/enroll`・`/confirm` は `check_admin_auth` 必須 | 同 |
+| 2段階ログイン | `Connect Admin/RequestLoginOtp`(認証不要・メールOTP送信)→ `Connect Admin/VerifyLogin`(メールOTP+TOTP 両方正しければ 12時間有効の Bearer キー発行、`roles=["admin"]`) | `handlers/admin_login.rs` |
+| 2FA登録 | `Connect Admin/Enroll2fa`・`/confirm` は `check_admin_auth` 必須 | 同 |
 | feature | `admin-2fa` は既定オフ。ルートは `#[cfg(feature="admin-2fa")]` のため、**feature無しバイナリでは `/admin/login/*` 自体が存在しない** | `Cargo.toml`、`lib.rs` 225-233行 |
 | 機械の呼び出し元 | certbot deploy hook が `http://127.0.0.1/admin/tenants/$name/tls` を静的トークンで呼ぶ。トークンは `systemctl show` の Environment / EnvironmentFiles から実行時に読む | `scripts/certbot-deploy-hook-open-web-server.sh` |
 | 公式リリースのビルド | `.github/workflows/release.yml` は `cargo build --release --bin open-web-server`(**feature無し**)を `ubuntu-latest` で実行 | 同ファイル 38行 |
@@ -50,7 +52,7 @@ Recommendation (details below):
 | 種別 | 用途 | 認証方法 | 到達できる範囲 | 到達元 |
 |---|---|---|---|---|
 | **人用** | 管理者が行うテナント追加・vhost変更・キー管理など全て | メールOTP + TOTP → Bearer キー(有効期限は現行12時間。推奨は**2時間**に短縮) | `/admin/*` 全体 | 公開側から可(IP許可リストで絞れれば尚良い) |
-| **機械用(新設)** | certbot hook の TLS登録のみ | 専用トークン `OPEN_WEB_SERVER_TLS_TOKEN`(ヘッダは `x-admin-token` とは別名の `x-tls-token` を推奨) | `POST/DELETE /admin/tenants/:host/tls` **のみ** | **ループバックのみ**(送信元が 127.0.0.1/::1 以外なら拒否) |
+| **機械用(新設)** | certbot hook の TLS登録のみ | 専用トークン `OPEN_WEB_SERVER_TLS_TOKEN`(ヘッダは `x-admin-token` とは別名の `x-tls-token` を推奨) | `POST/Connect Admin/RemoveTenantTls` **のみ** | **ループバックのみ**(送信元が 127.0.0.1/::1 以外なら拒否) |
 | **非常用(break-glass)** | ロックアウト時の復旧、初回2FA登録 | 既存の静的トークン `OPEN_WEB_SERVER_ADMIN_TOKEN`(ローテーション後) | `/admin/*` 全体 | **ループバックのみ**(SSH / ConoHaコンソール経由) |
 
 ### 3.2 機械用の選択肢比較と推奨
@@ -91,8 +93,8 @@ Recommendation (details below):
 5. 旧トークンが401になることを確認。
 
 ### 4.3 漏えい期間中に作られた可能性のあるものの監査
-- `GET /admin/tenants`(未知のホストがないか)、`domains.toml` を直近のバックアップ/git履歴と差分比較。
-- `GET /admin/keys`(件数のみ返る)で想定外のキーが無いか。**不審な場合は `POST /admin/keys/revoke` で owner ごとに失効**(キーはownerごとにしか失効できない。想定外のownerが見えない場合は、キーストアファイルを退避して空から始めるのが確実。ただし全員再ログインになる)。
+- `Connect Admin/ListTenants`(未知のホストがないか)、`domains.toml` を直近のバックアップ/git履歴と差分比較。
+- `Connect Admin/KeyStatus`(件数のみ返る)で想定外のキーが無いか。**不審な場合は `Connect Admin/RevokeKey` で owner ごとに失効**(キーはownerごとにしか失効できない。想定外のownerが見えない場合は、キーストアファイルを退避して空から始めるのが確実。ただし全員再ログインになる)。
 - 2FAストア(`OPEN_WEB_SERVER_2FA_STORE_PATH`)の owner 一覧を確認。想定外の owner/メールアドレスがあれば削除(APIに削除手段がないため、ファイルを直接編集 → 再起動)。
 - TLS: 登録済み証明書の発行元・期限を確認(`openssl s_client` で各ホストを確認)。
 - 同じトークンを他の環境(`open-english` 等)で使い回していないか。
@@ -115,7 +117,7 @@ strings /root/open-web-server/target/release/open-web-server | grep -c 'admin/lo
   - **glibc互換**: `ubuntu-latest` は glibc が新しく、AlmaLinux 8/9 では `GLIBC_2.xx not found` で起動しない可能性が高い。対策は (1) `almalinux:<本番と同じ版>` コンテナ内でビルドする、または (2) `cargo zigbuild --target x86_64-unknown-linux-gnu.2.28` 等で glibc 下限を指定する。本番のglibc版は `ldd --version` で確認(未確認)。
   - 成果物は SHA-256 を添えて Artifact/Release(非公開または下書き)に置く。
 - VPSへは `scp` で `open-web-server.new` として置き、`sha256sum` で照合 → 起動前検証(`./open-web-server.new --version`)→ 差し替え時に旧バイナリを `open-web-server.bak-<日付>` として残す。
-- **自動アップデートに注意**: `auto-update` が有効だと、公式リリース(feature無し)で自前バイナリが上書きされ、`/admin/login/*` が消える。段階1の前に `GET /admin/auto-update` で状態を確認し、必要なら無効化するか、リリースの成果物自体を `admin-2fa` 入りに揃える。
+- **自動アップデートに注意**: `auto-update` が有効だと、公式リリース(feature無し)で自前バイナリが上書きされ、`/admin/login/*` が消える。段階1の前に `Connect Admin/GetAutoUpdate` で状態を確認し、必要なら無効化するか、リリースの成果物自体を `admin-2fa` 入りに揃える。
 - どうしてもVPS上でビルドする場合の最終手段: 別マシンで作った `target` ディレクトリは持ち込まず、スワップ増設 + `cargo build -j1` + 本番プロセスのメモリ上限確認が前提。OOM リスクがあるため非推奨。
 
 ### 必要な環境変数(機密値は文書に書かない)
@@ -151,7 +153,7 @@ strings /root/open-web-server/target/release/open-web-server | grep -c 'admin/lo
 人用経路(2FA)は、メール不達・スマホ紛失・SMTP障害・ストア破損で使えなくなりうる。復旧は**サーバーのコンソールに入れること**を前提にする(SSH、または ConoHa のコントロールパネルのコンソール)。
 
 1. 非常用(break-glass): 静的トークンはループバックでのみ有効。サーバーに入り `curl http://127.0.0.1/admin/...`(ヘッダは `x-admin-token`)で操作する。
-2. 2FAの再登録: ループバックで `POST /admin/2fa/enroll`(新設の reset 経路)→ QR(`qr_svg`)は**ローカルPCに保存して表示**する(例: `ssh vps 'curl ...' | jq -r .qr_svg > qr.svg` をローカルで実行し、手元で開く)。サーバー側のシェル履歴や画面に秘密鍵を残さない。完了後に `confirm`。
+2. 2FAの再登録: ループバックで `Connect Admin/Enroll2fa`(新設の reset 経路)→ QR(`qr_svg`)は**ローカルPCに保存して表示**する(例: `ssh vps 'curl ...' | jq -r .qr_svg > qr.svg` をローカルで実行し、手元で開く)。サーバー側のシェル履歴や画面に秘密鍵を残さない。完了後に `confirm`。
 3. 最悪の場合: `ADMIN_STATIC_TOKEN_MODE=any` に戻して再起動(再ビルド不要)、または §5 で残した旧バイナリへ戻す。
 4. 事前準備として、**今のうちに**ConoHaコンソールでログインできること(rootパスワード/SSH鍵の所在)を確認しておく(未確認)。復旧手段そのものが使えないと、二重のロックアウトになる。
 5. 復旧用に 2 人目の管理者(別owner・別メール・別スマホ)を登録しておくと、1人の端末紛失で詰まない(推奨)。
@@ -164,16 +166,16 @@ strings /root/open-web-server/target/release/open-web-server | grep -c 'admin/lo
 
 | 段階 | 内容 | 実機確認 | ロールバック |
 |---|---|---|---|
-| 0 | 事前確認: §1の未確認事項、バックアップ、呼び出し元棚卸し、ConoHaコンソールの確認、`auto-update` 状態確認、TOTPファイル権限確認 | 手順0(`strings`)、`ldd --version`、`GET /admin/auto-update` | 変更なし |
+| 0 | 事前確認: §1の未確認事項、バックアップ、呼び出し元棚卸し、ConoHaコンソールの確認、`auto-update` 状態確認、TOTPファイル権限確認 | 手順0(`strings`)、`ldd --version`、`Connect Admin/GetAutoUpdate` | 変更なし |
 | 1 | 静的トークンのローテーション + 監査(§4)。コード変更なし | 旧トークン 401、新トークン 200、certbot hook の `--dry-run`(`certbot renew --dry-run`)が成功、全ドメインHTTPS | 旧値を `EnvironmentFile` に戻して再起動(ただし旧値は漏えい扱いなので短時間のみ) |
 | 2 | 新バイナリ(`admin-2fa` + 経路分離 + fail-closed + レート制限)をCIでビルドし、**ステージング(別ポート/別環境)**で単体検証。本番へはまだ入れない | テストスイート、ループバック限定・範囲限定トークンの拒否/許可の自動テスト、OTP送信の実メール到達確認 | 本番に触れていないので不要 |
 | 3 | 本番へバイナリ差し替え。`STATIC_TOKEN_MODE=any`(現行互換)のまま起動し、新エンドポイントの存在だけ確認。TLS用の新トークンを設定 | `/admin/login/request-otp` が200、旧挙動(静的トークン)が引き続き通る、全ドメインHTTPS、`tls-certs/` 件数不変 | 旧バイナリ `.bak-<日付>` に戻して再起動 |
 | 4 | certbot hook を新しい範囲限定トークンへ切替(`x-tls-token`)。`renewal-hooks/deploy` を更新 | `certbot renew --force-renewal --cert-name <テスト用1ドメイン>` で実際に反映されること、`POST /admin/tenants/.../tls` が非ループバックから401/403 | hook を旧版に戻す(静的トークンはまだ有効) |
-| 5 | 2FA登録: 管理者(+予備管理者)を enroll → confirm、実際に `request-otp` → `verify` でログインして Bearer キーで `GET /admin/tenants` が通ることを確認 | メール到達、スマホのTOTP一致、間違いコードで401、レート制限の発動 | 登録を削除(ファイル編集 + 再起動) |
+| 5 | 2FA登録: 管理者(+予備管理者)を enroll → confirm、実際に `request-otp` → `verify` でログインして Bearer キーで `Connect Admin/ListTenants` が通ることを確認 | メール到達、スマホのTOTP一致、間違いコードで401、レート制限の発動 | 登録を削除(ファイル編集 + 再起動) |
 | 6 | `STATIC_TOKEN_MODE=loopback` に切替して再起動 | 公開側から静的トークンで 401/403、ループバックでは 200、2FAログインは引き続き可、certbot hook は成功、全ドメインHTTPS | `STATIC_TOKEN_MODE=any` に戻して再起動(再ビルド不要) |
 | 7 | 数日〜1か月運用して問題がなければ `STATIC_TOKEN_MODE=off`(break-glassも停止)を検討。ただし復旧手段の喪失を意味するため**推奨しない**(ループバック限定で常に残す) | — | `loopback` に戻す |
 
-**共通の再起動チェック**: 再起動後すぐに (1) `ls tls-certs | wc -l` が再起動前と一致、(2) `GET /admin/tenants`(約90件)の件数一致、(3) 代表ドメインへの HTTPS 200、(4) systemd ログに起動エラーなし、を確認する。再起動中の瞬断は避けられない(数秒)ので、時間帯を選ぶ。
+**共通の再起動チェック**: 再起動後すぐに (1) `ls tls-certs | wc -l` が再起動前と一致、(2) `Connect Admin/ListTenants`(約90件)の件数一致、(3) 代表ドメインへの HTTPS 200、(4) systemd ログに起動エラーなし、を確認する。再起動中の瞬断は避けられない(数秒)ので、時間帯を選ぶ。
 
 ---
 

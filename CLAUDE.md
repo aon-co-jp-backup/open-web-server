@@ -43,6 +43,14 @@ OPTIONS(204)→ POST `Admin/ListFreeDomains`・`Admin/GetSftpConnectionInfo`・`
 証明書更新フック(`/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)も同時に Connect 版へ差し替えた。退避: `*.before-connect-20261105084151`。
 確認済み(追補): `ddns` 付きビルドで画面から登録→一覧→削除(`Admin/RemoveFreeDomain` 200)を実操作、更新フックは VPS 上で手動実行して `UpsertTenantTls` が 200 で反映されることを確認。未確認: 証明書の実更新(certbot が実際に呼ぶ瞬間)、Android/iOS の実機。
 
+**管理者の認証強化(admin-2fa-hardening)を Connect 版 main へ統合・本番反映(2026-11-06)**:
+- 経路別の資格: `UpsertTenantTls`/`RemoveTenantTls`/`ObtainTenantTlsViaAcme` だけ `x-tls-token`(`OPEN_WEB_SERVER_TLS_TOKEN`、ループバック限定)を受ける。誤った TLS トークンは静的トークンにフォールバックしない。TLS トークンは他のメソッドでは使えない。
+- 静的トークンは fail-closed: `OPEN_WEB_SERVER_ADMIN_TOKEN` 未設定なら管理APIは 503(開発用に `OPEN_WEB_SERVER_ADMIN_INSECURE_DEV=true`)。`OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE` は `any`(既定)/`loopback`/`off`。本番の `/etc/open-web-server/admin.env` には `ADMIN_TOKEN`・`TLS_TOKEN`・SMTP・`KEY_STORE_PATH` が設定済みで、既定の `any` のため従来の呼び出しは変わらない。
+- 2FA: `Admin/Reset2fa`(静的トークン+ループバック)、ログインキーTTL 2時間、`RequestLoginOtp`/`VerifyLogin` のレート制限、**失敗した検証はそのメールOTPを失効させる**(請求し直す)、**同じ30秒ステップの TOTP は再利用不可**(確認直後のログインは次のステップまで待つ)、2FAストアは 0600。
+- 本番機能セットは `admin-2fa,domain-watchdog,fastcgi-client,ddns,sftp`(`.github/workflows/prod-build.yml`)。VPS は 2026-11-06 に glibc 2.39 のこのビルドへ入れ替え済み(退避: `open-web-server.before-connect-20261106111238`)。
+- 統合で見つけた不具合: マージ後の証明書フックが変数展開を失って壊れていた(`if [ -n "" ]`)ため、配備スクリプトの自動検査で自動ロールバックされ、修正後に再配備した(本番は一度も止まっていない)。
+- 手元の `F:\open-web-server` は `main-connect`(`origin/main` 追従)へ切り替えた。`admin-2fa-hardening` ブランチは main に含まれており、削除していない。
+
 > ## 🎯 aruaru-db×RPoem SET連携方針(2026-08-29、全リポジトリ横展開)
 > **正本はaruaru-db/CLAUDE.md冒頭「🎯最重要・最優先で常に念頭に置く
 > こと」**: aruaru-dbはRPoemとSET(対)で使うことで初めて「REST API
