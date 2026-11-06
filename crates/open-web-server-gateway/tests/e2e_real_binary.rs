@@ -132,6 +132,13 @@ fn base32_decode(s: &str) -> Vec<u8> {
     out
 }
 
+/// TOTP は使い回し(同じ30秒ステップの再利用)を拒否する設計(admin-2fa-hardening)なので、
+/// 成功で消費した後に再度成功させるテストは、次のステップまで待つ。
+fn wait_next_totp_step() {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    std::thread::sleep(Duration::from_secs(30 - now % 30 + 1));
+}
+
 fn totp_now(secret_b32: &str) -> String {
     let secret = base32_decode(secret_b32);
     let step = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / 30;
@@ -262,6 +269,26 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
     let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"xxxxxx","totp_code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 401, "wrong email OTP must be rejected");
 
+    // 失敗した検証は、そのメールOTPを失効させる(総当たり対策、admin-2fa-hardening)。
+    // よって成功ケースの前にメールOTPを請求し直し、新しく届いたものを使う。
+    let before = mails.lock().unwrap().len();
+    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/RequestLoginOtp", &[], r#"{"owner":"alice"}"#);
+    assert_eq!(st, 200);
+    let end = Instant::now() + Duration::from_secs(10);
+    let otp = loop {
+        {
+            let g = mails.lock().unwrap();
+            if g.len() > before {
+                let text = decode_mail_body(g.last().unwrap());
+                if let Some(c) = text.split(|c: char| !c.is_ascii_digit()).filter(|s| s.len() == 6).next() {
+                    break c.to_string();
+                }
+            }
+        }
+        assert!(Instant::now() < end, "second OTP mail did not arrive");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    wait_next_totp_step(); // 確認(Confirm2fa)で消費したステップの再利用は拒否されるため
     // 両方正しければBearerキーが発行され、それで管理APIに入れる
     let (st, body) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 200, "{body}");
@@ -273,6 +300,7 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
     assert!(st == 401 || st == 403, "no credential must be rejected, got {st}");
 
     // メールOTPは使い捨て
+    wait_next_totp_step(); // TOTP が新しいステップでも、メールOTPの使い捨てで拒否されることを確かめる
     let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 401, "email OTP must be single-use");
 
@@ -288,6 +316,7 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
         ],
     );
     wait_port(port2);
+    wait_next_totp_step();
     let (st, body) = http(port2, "POST", "/open_web_server.admin.v1.Admin/Confirm2fa", &auth, &format!(r#"{{"owner":"alice","code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 200, "enrollment must survive restart: {body}");
     let _ = std::fs::remove_dir_all(&dir);
