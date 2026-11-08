@@ -10,7 +10,7 @@
 
 ## 連携インターフェース
 
-- open-web-server → open-runo(書き込み): `POST /internal/db/mutate` (JSON, `MutationRequest`)
+- open-web-server → open-runo(書き込み): `POST /open_runo.admin.v1.Admin/DbMutate` (Connect、JSON本文は`MutationRequest`、`x-api-key`は環境変数`OPEN_RUNO_API_KEY`。旧`/internal/db/mutate`は廃止)
 - open-runo → aruaru-db: `aruaru-wire` (pgwire互換) 経由でSQL実行、または
   `aruaru-graphql` 経由でGraphQL Mutation実行
 - 応答は必ず `MutationReceipt { idempotency_key, committed, db_commit_id, committed_at }`

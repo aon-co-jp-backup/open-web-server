@@ -331,11 +331,19 @@ impl Ledger {
     }
 
     async fn forward_once(&self, req: &MutationRequest) -> anyhow::Result<String> {
-        let url = format!("{}/internal/db/mutate", self.config.open_runo_endpoint);
-        let resp = self
-            .http
-            .post(url)
-            .json(req)
+        // REST全廃: 旧`POST /internal/db/mutate`は、RPoemの管理用`Admin/DbMutate`(Connectの単純呼び出し、
+        // JSON本文)へ移った。認証は`x-api-key`(環境変数`OPEN_RUNO_API_KEY`、未設定なら付けない=401になる)。
+        let url = format!(
+            "{}/open_runo.admin.v1.Admin/DbMutate",
+            self.config.open_runo_endpoint
+        );
+        let mut rb = self.http.post(url).json(req);
+        if let Ok(key) = std::env::var("OPEN_RUNO_API_KEY") {
+            if !key.is_empty() {
+                rb = rb.header("x-api-key", key);
+            }
+        }
+        let resp = rb
             .send()
             .await
             .context("open-runo request failed")?
