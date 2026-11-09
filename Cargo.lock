@@ -2231,6 +2231,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-runo-appserver"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sonic-rs",
+ "tokio",
+]
+
+[[package]]
 name = "open-web-server-core"
 version = "0.1.0"
 dependencies = [
@@ -2258,6 +2268,7 @@ dependencies = [
  "hyper-util",
  "igd-next",
  "lettre",
+ "open-runo-appserver",
  "open-web-server-core",
  "open-web-server-ledger",
  "open-web-server-wire",
@@ -2278,7 +2289,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
- "sonic-rs 0.5.10",
+ "sonic-rs",
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
@@ -2317,7 +2328,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sonic-rs 0.5.10",
+ "sonic-rs",
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
@@ -2350,7 +2361,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sonic-rs 0.5.10",
+ "sonic-rs",
  "subtle",
  "tokio",
  "tokio-rustls",
@@ -3387,8 +3398,8 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "sonic-rs 0.3.17",
- "thiserror 1.0.69",
+ "sonic-rs",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3830,26 +3841,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c350a05f295f922fc153a3af8b443c10db70904a9291a624ddb6058c6110d0"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "sonic-rs"
-version = "0.3.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0275f9f2f07d47556fe60c2759da8bc4be6083b047b491b2d476aa0bfa558eb1"
-dependencies = [
- "bumpalo",
- "bytes",
- "cfg-if",
- "faststr",
- "itoa",
- "ref-cast",
- "ryu",
- "serde",
- "simdutf8",
- "sonic-number",
- "sonic-simd",
- "thiserror 2.0.21",
 ]
 
 [[package]]

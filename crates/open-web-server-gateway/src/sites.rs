@@ -86,6 +86,30 @@ pub struct SiteConfig {
     /// 既定true(`TenantConfig::strip_prefix`と同じ)。
     #[serde(default)]
     pub strip_prefix: Option<bool>,
+    /// processサイトの起動コマンド。指定すると`site-fleet`で本体が起動・監視する
+    /// (`PORT`環境変数にポートを渡す)。省略時は外部で起動済みのアプリへ転送するだけ。
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub workdir: Option<PathBuf>,
+    #[serde(default)]
+    pub health_path: Option<String>,
+}
+
+/// 本体が起動・監視するprocessサイトの起動仕様。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessSpec {
+    pub id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: std::collections::HashMap<String, String>,
+    pub workdir: String,
+    pub port: u16,
+    pub health_path: Option<String>,
 }
 
 /// 展開結果。
@@ -95,6 +119,8 @@ pub struct Expanded {
     pub vhosts: Vec<WebVhostConfig>,
     /// 自動割当したポート(site id, port)。ログ用。
     pub assigned_ports: Vec<(String, u16)>,
+    /// `command`付きprocessサイト(起動・監視の対象)。
+    pub processes: Vec<ProcessSpec>,
 }
 
 /// 自動割当ポートが使えるかの判定(実際にbindできるか)。
@@ -205,6 +231,22 @@ pub fn parse_and_expand(
                     }
                     None => return Err(format!("site '{}': process には port が必要", s.id)),
                 };
+                if let Some(cmd) = &s.command {
+                    out.processes.push(ProcessSpec {
+                        id: s.id.clone(),
+                        command: cmd.clone(),
+                        args: s.args.clone(),
+                        env: s.env.clone(),
+                        workdir: s
+                            .workdir
+                            .as_ref()
+                            .or(s.root.as_ref())
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| ".".to_string()),
+                        port,
+                        health_path: s.health_path.clone(),
+                    });
+                }
                 for h in &s.hosts {
                     out.tenants.push(TenantConfig {
                         host: h.to_ascii_lowercase(),
@@ -260,6 +302,51 @@ pub fn parse_and_expand(
     Ok(out)
 }
 
+/// `command`付きprocessサイトを起動・監視する。`site-fleet`が無効なら、
+/// 黙って無視せずエラーを返す。
+#[cfg(feature = "site-fleet")]
+pub fn start_processes(specs: Vec<ProcessSpec>) -> Result<(), String> {
+    use open_runo_appserver::fleet::SiteFleet;
+    use open_runo_appserver::{RestartPolicy, RuntimeProfile, Stack};
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    static FLEET: OnceLock<SiteFleet> = OnceLock::new();
+    if specs.is_empty() {
+        return Ok(());
+    }
+    let fleet = FLEET.get_or_init(|| SiteFleet::start(Duration::from_millis(500)));
+    for sp in specs {
+        let mut p = RuntimeProfile::template(Stack::Custom("site".into()), &sp.id, &sp.workdir, sp.port);
+        p.command = sp.command;
+        p.args = sp.args;
+        p.env = sp.env;
+        p.health_path = sp.health_path;
+        match fleet.add(&sp.id, p, RestartPolicy::default()) {
+            Ok(()) => {}
+            // 設定の再読込みで既にある場合は一旦外して入れ直す。
+            Err(open_runo_appserver::fleet::FleetError::AlreadyExists(_)) => {
+                let _ = fleet.remove(&sp.id);
+                return Err(format!("site '{}' は起動済み(再読込みは未対応)", sp.id));
+            }
+            Err(e) => return Err(format!("{e:?}")),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "site-fleet"))]
+pub fn start_processes(specs: Vec<ProcessSpec>) -> Result<(), String> {
+    if specs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "site '{}' に command がありますが、site-fleet feature なしでビルドされています",
+            specs[0].id
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +381,7 @@ php = { fastcgi_addr = "127.0.0.1:9000" }
         assert_eq!(e.tenants[0].host, "app1.example.com");
         assert_eq!(e.tenants[0].max_concurrent, Some(4));
         assert_eq!(e.tenants[0].managed_by.as_deref(), Some("app1"));
+        assert!(e.processes.is_empty(), "commandなしは起動対象にならない");
         assert_eq!(e.vhosts.len(), 2);
         assert!(!e.vhosts[0].php_enabled);
         assert!(e.vhosts[1].php_enabled);
@@ -346,5 +434,25 @@ port = 20001
         assert!(parse_and_expand(noport, ALL_FREE).is_err());
         let badid = "[[site]]\nid='a b'\nhosts=['x.com']\nkind='static'\nroot='/r'\n";
         assert!(parse_and_expand(badid, ALL_FREE).is_err());
+    }
+
+    #[test]
+    fn command_makes_a_process_spec_with_port() {
+        let t = "[[site]]
+id='a'
+hosts=['a.com']
+kind='process'
+port='auto'
+command='./app'
+args=['--x']
+workdir='/srv/a'
+health_path='/health'
+";
+        let e = parse_and_expand(t, ALL_FREE).unwrap();
+        assert_eq!(e.processes.len(), 1);
+        let sp = &e.processes[0];
+        assert_eq!((sp.command.as_str(), sp.workdir.as_str()), ("./app", "/srv/a"));
+        assert_eq!(sp.port, e.assigned_ports[0].1);
+        assert_eq!(e.tenants[0].backend_addr, format!("127.0.0.1:{}", sp.port));
     }
 }

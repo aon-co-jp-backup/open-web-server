@@ -33,6 +33,7 @@ flate2 = "1.0"
 serde_json.workspace = true
 sonic-rs = "0.5"
 rust-json = { path = "../../../RS-JSON", features = ["fast"] }
+open-runo-appserver = { path = "../../../RPoem/crates/open-runo-appserver", features = ["fleet"], optional = true }
 toml.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -102,6 +103,10 @@ custom_domain = ["dep:reqwest"]
 # `custom_domain` featureのみで検証できるよう分離した)。
 custom_domain_db = ["custom_domain", "dep:sqlx"]
 fastcgi-client = ["dep:fastcgi-client"]
+# 分身の術ホスティング段階2(2026-11-09): `sites.toml`のprocessサイト(command指定あり)を
+# RPoemの`open-runo-appserver::fleet::SiteFleet`(1つのtokioタスクで全サイトを監督)で
+# 起動・監視する。既定オフ。オフのときcommand付きサイトは設定エラーにする(黙って無視しない)。
+site-fleet = ["dep:open-runo-appserver"]
 # スタンドアロンのメール・ディザスタバックアップ(`handlers::disaster_email_backup`)。
 # `open-web-server-ledger`側の同名featureをそのまま伝播させるだけ
 # (この既存の「サブクレートのfeatureをゲートウェイ側へ透過させる」パターンは

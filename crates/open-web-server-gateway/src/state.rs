@@ -249,6 +249,8 @@ impl AppState {
         for (id, port) in &ex.assigned_ports {
             tracing::info!(site = %id, port, "sites: auto-assigned port");
         }
+        crate::sites::start_processes(ex.processes.clone())
+            .map_err(|e| anyhow::anyhow!("sites file '{path}': {e}"))?;
         let (nt, nv) = (ex.tenants.len(), ex.vhosts.len());
         self.tenants.load_managed(ex.tenants).await;
         for v in ex.vhosts {
