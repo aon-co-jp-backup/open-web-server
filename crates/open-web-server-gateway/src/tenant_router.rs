@@ -98,6 +98,17 @@ pub struct TenantConfig {
     /// 指定してストリップを無効化できるようにした。
     #[serde(default = "default_true")]
     pub strip_prefix: bool,
+    /// このテナントの同時リクエスト上限(2026-11-09追記、`sites.toml`の
+    /// `limits.max_concurrent`)。`None`(既定)=無制限で従来動作と同じ。
+    /// 超過分は待たせず503+`Retry-After`で即応答する(1サイトの暴走が
+    /// 他サイトを飢えさせないため)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<u32>,
+    /// `sites.toml`由来のテナントのサイトID(2026-11-09追記)。`Some`の
+    /// ものは`domains.toml`へ永続化しない(正本は`sites.toml`のため、
+    /// 再起動時の二重登録を防ぐ)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -108,6 +119,28 @@ fn default_true() -> bool {
 #[derive(Debug, Clone)]
 pub struct TenantHandle {
     pub config: TenantConfig,
+    /// `config.max_concurrent`があるときだけ作る同時リクエスト用セマフォ。
+    pub limiter: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl TenantHandle {
+    pub fn new(config: TenantConfig) -> Self {
+        let limiter = config
+            .max_concurrent
+            .map(|n| Arc::new(tokio::sync::Semaphore::new(n.max(1) as usize)));
+        Self { config, limiter }
+    }
+
+    /// 同時リクエスト枠を取る。上限なしなら`Ok(None)`、枠があれば
+    /// `Ok(Some(permit))`(転送完了までdropしないこと)、満杯なら`Err`。
+    pub fn try_acquire(
+        &self,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, ()> {
+        match &self.limiter {
+            None => Ok(None),
+            Some(sem) => sem.clone().try_acquire_owned().map(Some).map_err(|_| ()),
+        }
+    }
 }
 
 /// 全ドメインの登録・検索を担う共有レジストリ。
@@ -166,6 +199,7 @@ impl TenantRegistry {
         let domains: Vec<TenantConfig> = tenants
             .values()
             .flatten()
+            .filter(|h| h.config.managed_by.is_none())
             .map(|h| h.config.clone())
             .collect();
         let file = DomainsFile { domains };
@@ -205,9 +239,24 @@ impl TenantRegistry {
             guard
                 .entry(config.host.clone())
                 .or_default()
-                .push(Arc::new(TenantHandle { config }));
+                .push(Arc::new(TenantHandle::new(config)));
         }
         Ok(count)
+    }
+
+    /// `sites.toml`由来のテナントを一括登録する(永続化しない)。同じ
+    /// `managed_by`の既存登録は先に取り除くので、再読込みで入れ替えられる。
+    pub async fn load_managed(&self, configs: Vec<TenantConfig>) {
+        let mut guard = self.tenants.write().await;
+        for entries in guard.values_mut() {
+            entries.retain(|h| h.config.managed_by.is_none());
+        }
+        guard.retain(|_, v| !v.is_empty());
+        for config in configs {
+            let entries = guard.entry(config.host.clone()).or_default();
+            entries.retain(|h| h.config.path_prefix != config.path_prefix);
+            entries.push(Arc::new(TenantHandle::new(config)));
+        }
     }
 
     /// ドメインを1件追加する(ノーダウンタイム、既存接続には影響しない)。
@@ -234,7 +283,7 @@ impl TenantRegistry {
         {
             return Err(TenantError::AlreadyExists(config.host));
         }
-        entries.push(Arc::new(TenantHandle { config }));
+        entries.push(Arc::new(TenantHandle::new(config)));
         self.persist(&guard).await;
         Ok(())
     }
@@ -245,7 +294,7 @@ impl TenantRegistry {
         let mut guard = self.tenants.write().await;
         let entries = guard.entry(config.host.clone()).or_default();
         entries.retain(|h| h.config.path_prefix != config.path_prefix);
-        entries.push(Arc::new(TenantHandle { config }));
+        entries.push(Arc::new(TenantHandle::new(config)));
         self.persist(&guard).await;
     }
 
@@ -379,6 +428,8 @@ mod tests {
             path_prefix: None,
             override_host: None,
             strip_prefix: true,
+            max_concurrent: None,
+            managed_by: None,
         }
     }
 
@@ -391,7 +442,22 @@ mod tests {
             path_prefix: Some(prefix.to_string()),
             override_host: None,
             strip_prefix: true,
+            max_concurrent: None,
+            managed_by: None,
         }
+    }
+
+    #[test]
+    fn max_concurrent_limits_and_releases_permits() {
+        let mut c = sample("limited.example.com");
+        c.max_concurrent = Some(2);
+        let h = TenantHandle::new(c);
+        let p1 = h.try_acquire().unwrap();
+        let _p2 = h.try_acquire().unwrap();
+        assert!(h.try_acquire().is_err(), "3つ目は拒否");
+        drop(p1);
+        assert!(h.try_acquire().is_ok(), "解放後は取れる");
+        assert!(TenantHandle::new(sample("x.example.com")).try_acquire().unwrap().is_none());
     }
 
     #[tokio::test]

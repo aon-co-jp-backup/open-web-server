@@ -49,6 +49,7 @@ pub(crate) mod self_update;
 mod two_factor;
 #[cfg(feature = "sftp")]
 mod sftp;
+mod sites;
 mod state;
 mod static_files;
 mod telemetry;
@@ -196,6 +197,10 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
                 None => None,
             };
             if let Some(tenant) = prefix_tenant {
+                let _permit = match tenant.try_acquire() {
+                    Ok(p) => p,
+                    Err(()) => return site_busy_response(),
+                };
                 let strip = if tenant.config.strip_prefix {
                     tenant.config.path_prefix.as_deref()
                 } else {
@@ -229,6 +234,10 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
 
             match tenant {
                 Some(tenant) => {
+                    let _permit = match tenant.try_acquire() {
+                        Ok(p) => p,
+                        Err(()) => return site_busy_response(),
+                    };
                     proxy::forward_to_stripped_with_host_override(
                         &tenant.config.backend_addr,
                         tenant.config.path_prefix.as_deref(),
@@ -245,6 +254,14 @@ async fn dispatch_inner(state: Arc<AppState>, req: Request<Incoming>) -> Respons
             }
         }
     }
+}
+
+/// サイトの同時リクエスト上限を超えたときの応答(待たせず即503)。
+fn site_busy_response() -> Response<BoxBody> {
+    let mut r = text_response(StatusCode::SERVICE_UNAVAILABLE, "site busy");
+    r.headers_mut()
+        .insert("retry-after", hyper::header::HeaderValue::from_static("1"));
+    r
 }
 
 /// 1リクエスト分の処理を、リクエストログ用の `tracing` スパンで包む。
@@ -445,6 +462,7 @@ pub async fn run() -> anyhow::Result<()> {
     let state = Arc::new(AppState::from_env()?);
     state.load_domains_from_env().await?;
     state.load_web_vhosts_from_env().await?;
+    state.load_sites_from_env().await?;
     state.load_redirects_from_env().await?;
 
     // 固定IPを持たない自宅サーバー等向け(`ddns` feature時のみ、
@@ -1747,6 +1765,8 @@ mod tests {
                 path_prefix: Some("/aruaru".to_string()),
                 override_host: Some("audiocafe.tokyo".to_string()),
                 strip_prefix: true,
+                max_concurrent: None,
+                managed_by: None,
             })
             .await
             .unwrap();

@@ -235,6 +235,29 @@ impl AppState {
         Ok(())
     }
 
+    /// `OPEN_WEB_SERVER_SITES_FILE`の`sites.toml`(1サイト1宣言、分身の術
+    /// ホスティング段階1)を読み、既存のテナント/vhostへ展開して登録する。
+    /// 未設定なら何もしない。設定に誤りがあれば起動を止める(黙って落とさない)。
+    pub async fn load_sites_from_env(&self) -> anyhow::Result<()> {
+        let Ok(path) = std::env::var("OPEN_WEB_SERVER_SITES_FILE") else {
+            return Ok(());
+        };
+        let toml_str = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("failed to read sites file '{path}': {e}"))?;
+        let ex = crate::sites::parse_and_expand(&toml_str, &crate::sites::port_is_free)
+            .map_err(|e| anyhow::anyhow!("sites file '{path}': {e}"))?;
+        for (id, port) in &ex.assigned_ports {
+            tracing::info!(site = %id, port, "sites: auto-assigned port");
+        }
+        let (nt, nv) = (ex.tenants.len(), ex.vhosts.len());
+        self.tenants.load_managed(ex.tenants).await;
+        for v in ex.vhosts {
+            self.web_vhosts.upsert(v).await;
+        }
+        tracing::info!(tenants = nt, vhosts = nv, path, "loaded sites from file");
+        Ok(())
+    }
+
     /// `OPEN_WEB_SERVER_WEB_VHOSTS_FILE` で指定された `web_vhosts.toml` が
     /// あれば起動時に一括ロードする(静的ファイル/PHPサイト向けvhost)。
     pub async fn load_web_vhosts_from_env(&self) -> anyhow::Result<()> {
