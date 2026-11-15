@@ -1153,3 +1153,12 @@ Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms
 `open-web-server`(Connect版)から`e2e_stub_app`(RPoem)へHostルーティングで3回連続 HTTP 200 + `X-Served-By: RPoem-appserver` を確認。
 注意: スタブが登録するテナントは`e2e-rpoem.test`のみ。`domains.toml`のhostを別名(例 shop.test)にするとHost不一致でスタブが接続を閉じ502になる(不具合ではなく試験設定ミス)。`domains.toml`には`db_uri`が必須。
 *Re-verified: 3/3 requests returned 200 with X-Served-By; a 502 appears only if the Host does not match the stub's tenant `e2e-rpoem.test`.*
+
+
+## 2026-11-15 RPoem「分身の術」ホスティング(別アカウントでの再開用) / Bunshin hosting (resume on another account)
+
+### 日本語
+RPoem「分身の術」ホスティング(1VPSに1回入れ、全サイトを分身で非同期・マルチスレッド収容)の仕様・到達点・未了・**再開用メッセージ**は、正本の `open-easy-web/CLAUDE.md` と `open-easy-web/PORTING.md` 末尾の同名節、および `open-easy-web/docs/RPOEM_BUNSHIN_HOSTING_SPEC.md` にある。このリポジトリの該当部分: `crates/open-web-server-gateway/src/sites.rs`(`sites.toml`展開・ポート自動割当)、`tenant_router.rs`(`max_concurrent`・`managed_by`・セマフォ)、`state.rs`(`load_sites_from_env`)、feature `site-fleet`(コミット `a862f61`・`c971a38`、push済み)。
+
+### English
+The spec, status, open items and the **resume message** for RPoem "bunshin" hosting (install once per VPS, host every site with shadow-clone workers, async and multi-threaded) live in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`, and in `open-easy-web/docs/RPOEM_BUNSHIN_HOSTING_SPEC.md`. This repository's part: `crates/open-web-server-gateway/src/sites.rs` (`sites.toml` expansion, auto ports), `tenant_router.rs` (`max_concurrent`, `managed_by`, semaphore), `state.rs` (`load_sites_from_env`), feature `site-fleet` (commits `a862f61`, `c971a38`, pushed).
