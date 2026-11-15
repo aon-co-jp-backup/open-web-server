@@ -1148,3 +1148,8 @@ Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms
 - **注意**: `setstat`/`fsetstat`はサイズ(切り詰め)・更新日時・権限(Unixのみ)を実ファイルへ反映する(WindowsとLinux(WSL)の両方で結合試験済み)。VPSではSFTPを有効にしていない(`OPEN_WEB_SERVER_SFTP_BIND`未設定)。
 
 **English**: `tests/e2e_real_binary.rs` spawns the real binary and drives 2FA (enroll → TOTP confirm → e-mail OTP received over a real SMTP socket → login → issued key opens the admin API → OTP is single-use → enrollment survives restart) and SFTP (public key / password, 1 MiB round trip, rename, traversal refused, host key stable across restarts). Found and fixed: missing SFTP `rename`/`fstat`/`setstat`/`fsetstat`, a host key regenerated on every start (now `OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE`), STARTTLS-only SMTP (new `OPEN_WEB_SERVER_SMTP_SECURITY`), and an env-var race in the `two_factor` unit tests. On the VPS, `certbot renew --dry-run` succeeded for all 14 certificates under the new binary; the built-in ACME client is only unit-tested against a mock CA.
+
+## 2026-11-15 実プロセスE2E再確認(open-web-server → RPoem appserver)
+`open-web-server`(Connect版)から`e2e_stub_app`(RPoem)へHostルーティングで3回連続 HTTP 200 + `X-Served-By: RPoem-appserver` を確認。
+注意: スタブが登録するテナントは`e2e-rpoem.test`のみ。`domains.toml`のhostを別名(例 shop.test)にするとHost不一致でスタブが接続を閉じ502になる(不具合ではなく試験設定ミス)。`domains.toml`には`db_uri`が必須。
+*Re-verified: 3/3 requests returned 200 with X-Served-By; a 502 appears only if the Host does not match the stub's tenant `e2e-rpoem.test`.*
