@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server; do
+          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server vps-tidy; do
             [ "$r" = "${GITHUB_REPOSITORY#*/}" ] && continue
             [ -d "../$r" ] || git clone --depth=1 https://github.com/aon-co-jp/$r.git ../$r
           done
@@ -40,10 +40,6 @@ jobs:
       # 相対位置(`$GITHUB_WORKSPACE`の1つ上=`../RS-SmartTCP`)にsibling
       # リポジトリをcheckoutする(2026-07-23、v0.1.0タグでの初回リリースで
       # 発覚したビルド失敗の修正)。
-      - name: Checkout RS-SmartTCP (sibling path dependency)
-        run: '[ -d "../RS-SmartTCP" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP'
-      - name: Checkout RS-JSON (sibling path dependency)
-        run: '[ -d "../RS-JSON" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON'
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -70,14 +66,10 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server; do
+          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server vps-tidy; do
             [ "$r" = "${GITHUB_REPOSITORY#*/}" ] && continue
             [ -d "../$r" ] || git clone --depth=1 https://github.com/aon-co-jp/$r.git ../$r
           done
-      - name: Checkout RS-SmartTCP (sibling path dependency)
-        run: '[ -d "../RS-SmartTCP" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP'
-      - name: Checkout RS-JSON (sibling path dependency)
-        run: '[ -d "../RS-JSON" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON'
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -104,14 +96,10 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server; do
+          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server vps-tidy; do
             [ "$r" = "${GITHUB_REPOSITORY#*/}" ] && continue
             [ -d "../$r" ] || git clone --depth=1 https://github.com/aon-co-jp/$r.git ../$r
           done
-      - name: Checkout RS-SmartTCP (sibling path dependency)
-        run: '[ -d "../RS-SmartTCP" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP'
-      - name: Checkout RS-JSON (sibling path dependency)
-        run: '[ -d "../RS-JSON" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON'
       - name: Build
         run: cargo build --release --bin open-web-server
       - name: Package
@@ -142,14 +130,10 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server; do
+          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server vps-tidy; do
             [ "$r" = "${GITHUB_REPOSITORY#*/}" ] && continue
             [ -d "../$r" ] || git clone --depth=1 https://github.com/aon-co-jp/$r.git ../$r
           done
-      - name: Checkout RS-SmartTCP (sibling path dependency)
-        run: '[ -d "../RS-SmartTCP" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP'
-      - name: Checkout RS-JSON (sibling path dependency)
-        run: '[ -d "../RS-JSON" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON'
       - name: Add Apple Silicon target
         run: rustup target add aarch64-apple-darwin
       - name: Build (x86_64-apple-darwin, ネイティブランナーアーキ)
@@ -197,14 +181,10 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server; do
+          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server vps-tidy; do
             [ "$r" = "${GITHUB_REPOSITORY#*/}" ] && continue
             [ -d "../$r" ] || git clone --depth=1 https://github.com/aon-co-jp/$r.git ../$r
           done
-      - name: Checkout RS-SmartTCP (sibling path dependency)
-        run: '[ -d "../RS-SmartTCP" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP'
-      - name: Checkout RS-JSON (sibling path dependency)
-        run: '[ -d "../RS-JSON" ] || git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON'
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
