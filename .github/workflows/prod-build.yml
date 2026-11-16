@@ -43,6 +43,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling path dependencies (sibling-all)
+        shell: bash
+        run: |
+          for r in RS-JSON RPoem RS-SmartTCP open-cpu open-raid-z open-web-server; do
+            [ "$r" = "${GITHUB_REPOSITORY#*/}" ] && continue
+            [ -d "../$r" ] || git clone --depth=1 https://github.com/aon-co-jp/$r.git ../$r
+          done
       # open-web-server-wire が RS-SmartTCP を path 依存(../RS-SmartTCP)で参照。
       - name: Checkout RS-SmartTCP (sibling path dependency)
         run: git clone --depth=1 https://github.com/aon-co-jp/RS-SmartTCP.git ../RS-SmartTCP
