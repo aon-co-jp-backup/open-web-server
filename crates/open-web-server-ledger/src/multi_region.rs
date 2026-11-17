@@ -69,69 +69,90 @@
 //! 全件保持して返す。
 
 use open_web_server_core::MutationRequest;
-use sqlx::SqlitePool;
+use std::collections::HashSet;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-/// 各「リージョン」用の最小スキーマ。①PostgreSQL WAL (`postgres_wal.rs`)と
-/// 同じ形状に揃えた (idempotency_keyに一意制約 → 冪等な再送に強い)。
-pub const REGION_SCHEMA_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS region_mutations (
-    idempotency_key TEXT PRIMARY KEY,
-    account_id      TEXT NOT NULL,
-    target          TEXT NOT NULL,
-    payload         TEXT NOT NULL,
-    requested_at    TEXT NOT NULL
-)
-"#;
-
-/// 1つの「リージョン」(実体は独立したSQLiteインスタンス)。
+/// 1つの「リージョン」(実体は独立した追記専用のJSON Linesファイル)。
+///
+/// 2026-11-18: 旧実装は`sqlx`のSQLite(Cの`libsqlite3-sys`に依存、
+/// RUSTSEC-2026-0459)だったが、sqlxが修正版を許さない範囲に固定して
+/// いるため、純Rustの追記専用ファイルへ置き換えた(C依存なし)。
+/// 1行=1ミューテーション(`idempotency_key`が一意、同じキーの再送は
+/// 追記せず無視=冪等)。本番のリージョンを`aruaru-db`(pgwire)にする
+/// 実装はこの構造体の次の段階で、まだ無い。
 #[derive(Clone)]
 pub struct Region {
     pub name: String,
-    pool: SqlitePool,
+    path: PathBuf,
+    /// 書き込み済みの`idempotency_key`(起動時にファイルから復元)。
+    seen: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Region {
-    /// `sqlite_path` (例: `region-tokyo.sqlite3`) に接続し、スキーマを
-    /// 用意する。`sqlite://path?mode=rwc` でファイルが無ければ新規作成する。
-    pub async fn connect(name: impl Into<String>, sqlite_path: &str) -> anyhow::Result<Self> {
-        let url = format!("sqlite://{sqlite_path}?mode=rwc");
-        let pool = SqlitePool::connect(&url).await?;
-        sqlx::query(REGION_SCHEMA_SQL).execute(&pool).await?;
-        Ok(Self { name: name.into(), pool })
+    /// `path`(例: `region-tokyo.jsonl`)を開く(無ければ作る)。既存の行から
+    /// 書き込み済みキーを復元する。
+    pub async fn connect(name: impl Into<String>, path: &str) -> anyhow::Result<Self> {
+        let path = PathBuf::from(path);
+        let mut seen = HashSet::new();
+        if path.exists() {
+            for line in std::fs::read_to_string(&path)?.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let v: serde_json::Value = serde_json::from_str(line)?;
+                if let Some(k) = v.get("idempotency_key").and_then(|k| k.as_str()) {
+                    seen.insert(k.to_string());
+                }
+            }
+        } else {
+            std::fs::File::create(&path)?;
+        }
+        Ok(Self { name: name.into(), path, seen: Arc::new(Mutex::new(seen)) })
     }
 
     async fn write(&self, req: &MutationRequest) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO region_mutations (idempotency_key, account_id, target, payload, requested_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5) \
-             ON CONFLICT (idempotency_key) DO NOTHING",
-        )
-        .bind(&req.idempotency_key.0)
-        .bind(&req.account_id)
-        .bind(&req.target)
-        .bind(req.payload.to_string())
-        .bind(req.requested_at.to_rfc3339())
-        .execute(&self.pool)
-        .await?;
+        let mut seen = self.seen.lock().map_err(|_| anyhow::anyhow!("region state poisoned"))?;
+        if seen.contains(&req.idempotency_key.0) {
+            return Ok(());
+        }
+        let line = serde_json::json!({
+            "idempotency_key": req.idempotency_key.0,
+            "account_id": req.account_id,
+            "target": req.target,
+            "payload": req.payload.to_string(),
+            "requested_at": req.requested_at.to_rfc3339(),
+        });
+        // 既存ファイルにだけ追記する(ファイルが消えていれば本物のI/Oエラーになる)。
+        let mut f = std::fs::OpenOptions::new().append(true).open(&self.path)?;
+        writeln!(f, "{line}")?;
+        f.sync_all()?;
+        seen.insert(req.idempotency_key.0.clone());
         Ok(())
     }
 
-    /// テスト専用: 障害注入 (e.g. `DROP TABLE`) のため生の`SqlitePool`を
-    /// 露出する。本番コードから呼ぶ用途ではない。
+    /// テスト専用: リージョンのファイルを消して同じ場所にディレクトリを置き、
+    /// 以降の書き込みが本物のI/Oエラーで失敗するようにする(障害注入)。
     #[doc(hidden)]
-    pub fn pool_for_test(&self) -> &SqlitePool {
-        &self.pool
+    pub fn break_for_test(&self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::create_dir_all(&self.path);
     }
 
-    /// 検証用: このリージョンに実際に着地した値を読み出す。
+    /// 検証用: このリージョンに実際に着地した値(payload)を読み出す。
     pub async fn get(&self, idempotency_key: &str) -> anyhow::Result<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT payload FROM region_mutations WHERE idempotency_key = ?1",
-        )
-        .bind(idempotency_key)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|(payload,)| payload))
+        let text = std::fs::read_to_string(&self.path)?;
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(line)?;
+            if v.get("idempotency_key").and_then(|k| k.as_str()) == Some(idempotency_key) {
+                return Ok(v.get("payload").and_then(|p| p.as_str()).map(String::from));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -245,7 +266,7 @@ mod tests {
     fn temp_sqlite_path(label: &str) -> String {
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "open-web-server-ledger-region-{label}-{}-{}.sqlite3",
+            "open-web-server-ledger-region-{label}-{}-{}.jsonl",
             std::process::id(),
             label
         ));
@@ -264,7 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn happy_path_writes_land_in_every_real_sqlite_region() {
+    async fn happy_path_writes_land_in_every_real_file_region() {
         let path_a = temp_sqlite_path("a");
         let path_b = temp_sqlite_path("b");
         let region_a = Region::connect("region-a", &path_a).await.unwrap();
@@ -281,7 +302,7 @@ mod tests {
                 .get("mr-happy-1")
                 .await
                 .unwrap()
-                .expect("value must actually be present in this region's real sqlite file");
+                .expect("value must actually be present in this region's real region file");
             assert!(stored.contains("sword"));
         }
 
@@ -297,13 +318,10 @@ mod tests {
         // Simulate a realistic mid-flight region failure (disk full, table
         // dropped out from under it, permissions revoked, etc.) concretely
         // and honestly: connect a real sqlite pool, then drop its table so
-        // the next INSERT genuinely fails against a real sqlite file.
+        // the next INSERT genuinely fails against a real region file.
         let path_b_flaky = temp_sqlite_path("d");
         let region_b_flaky = Region::connect("region-b", &path_b_flaky).await.unwrap();
-        sqlx::query("DROP TABLE region_mutations")
-            .execute(&region_b_flaky.pool)
-            .await
-            .unwrap();
+        region_b_flaky.break_for_test();
 
         let replicator = MultiRegionReplicator::new(vec![region_a, region_b_flaky]);
         let req = sample_request("mr-fail-1");
@@ -323,7 +341,7 @@ mod tests {
         let region_a_ref = replicator.region("region-a").unwrap();
         assert!(region_a_ref.get("mr-fail-1").await.unwrap().is_some());
 
-        let _ = std::fs::remove_file(&path_b_flaky);
+        let _ = std::fs::remove_dir_all(&path_b_flaky);
     }
 
     #[tokio::test]
@@ -332,10 +350,7 @@ mod tests {
         let path_b = temp_sqlite_path("f");
         let region_a = Region::connect("region-a", &path_a).await.unwrap();
         let region_b = Region::connect("region-b", &path_b).await.unwrap();
-        sqlx::query("DROP TABLE region_mutations")
-            .execute(&region_b.pool)
-            .await
-            .unwrap();
+        region_b.break_for_test();
 
         // Opt-in degrade to 1-of-2.
         let replicator = MultiRegionReplicator::new(vec![region_a, region_b]).with_min_acks(1);
@@ -347,6 +362,6 @@ mod tests {
             .expect("1-of-2 should be tolerated once explicitly opted into");
 
         let _ = std::fs::remove_file(&path_a);
-        let _ = std::fs::remove_file(&path_b);
+        let _ = std::fs::remove_dir_all(&path_b);
     }
 }

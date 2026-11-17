@@ -65,7 +65,7 @@ ring = "0.17"
 
 # DB書き込みの四重化 第1永続化先: PostgreSQL (ACIDトランザクション保証)
 # + 第3永続化先: マルチリージョン同期レプリケーション (sqliteをリージョン代替として使用)
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "sqlite", "chrono", "uuid"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid", "json"] }
 
 # 可観測性 (OpenTelemetry)
 opentelemetry = { version = "0.33", features = ["trace"] }

@@ -637,9 +637,9 @@ mod tests {
         let wal = Arc::new(MockWal::default());
 
         let mut path_a = std::env::temp_dir();
-        path_a.push(format!("open-web-server-ledger-mr-a-{}.sqlite3", std::process::id()));
+        path_a.push(format!("open-web-server-ledger-mr-a-{}.jsonl", std::process::id()));
         let mut path_b = std::env::temp_dir();
-        path_b.push(format!("open-web-server-ledger-mr-b-{}.sqlite3", std::process::id()));
+        path_b.push(format!("open-web-server-ledger-mr-b-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&path_a);
         let _ = std::fs::remove_file(&path_b);
         let path_a_str = path_a.to_string_lossy().replace('\\', "/");
@@ -691,9 +691,9 @@ mod tests {
         let wal = Arc::new(MockWal::default());
 
         let mut path_ok = std::env::temp_dir();
-        path_ok.push(format!("open-web-server-ledger-mr-ok-{}.sqlite3", std::process::id()));
+        path_ok.push(format!("open-web-server-ledger-mr-ok-{}.jsonl", std::process::id()));
         let mut path_flaky = std::env::temp_dir();
-        path_flaky.push(format!("open-web-server-ledger-mr-flaky-{}.sqlite3", std::process::id()));
+        path_flaky.push(format!("open-web-server-ledger-mr-flaky-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&path_ok);
         let _ = std::fs::remove_file(&path_flaky);
         let path_ok_str = path_ok.to_string_lossy().replace('\\', "/");
@@ -703,10 +703,7 @@ mod tests {
         let region_flaky = Region::connect("region-flaky", &path_flaky_str).await.unwrap();
         // Force a genuine write failure on one region (real sqlite file, its
         // table has been dropped out from under it).
-        sqlx::query("DROP TABLE region_mutations")
-            .execute(region_flaky.pool_for_test())
-            .await
-            .unwrap();
+        region_flaky.break_for_test();
         let replicator = MultiRegionReplicator::new(vec![region_ok, region_flaky]);
 
         let ledger = Ledger::new(
