@@ -5473,3 +5473,5 @@ The spec, status, open items and the **resume message** for RPoem "bunshin" host
 
 ### English
 The real-process E2E (start, forward, 503 limit, crash recovery) is done. Details, limits, next steps and the **latest resume message** are in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`. This repository's part: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs` (new; run in WSL with `cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture`).
+
+- **2026-11-17 別アカウントでの再開用 / Resume on another account**: 到達点・未了・再開用メッセージは`PORTING.md`末尾「2026-11-17 別アカウントでの再開用メモ」(日英)。*Status, open items and the resume message are at the end of PORTING.md (JA/EN).*

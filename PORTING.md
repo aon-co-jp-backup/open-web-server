@@ -1177,3 +1177,17 @@ The spec, status, open items and the **resume message** for RPoem "bunshin" host
 
 ### English
 The real-process E2E (start, forward, 503 limit, crash recovery) is done. Details, limits, next steps and the **latest resume message** are in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`. This repository's part: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs` (new; run in WSL with `cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture`).
+
+## 2026-11-17 別アカウントでの再開用メモ(open-web-server⇔RPoem 実プロセスE2E・aruaru-vpn) / Resume memo for another account
+
+### 日本語
+- **到達点**: (1) open-web-server(Connect版)→RPoem `e2e_stub_app` の実プロセスE2Eを再確認(Host=`e2e-rpoem.test`、3/3で200+`X-Served-By: RPoem-appserver`)。502は`domains.toml`のhostがスタブのテナントと不一致だった試験設定ミスで、不具合ではない(`db_uri`も必須)。(2) aruaru-vpn: 証明書クローン・Mux・Chrome風フィンガープリント(RPoemの共有クレート`open-runo-tls-fingerprint`)まで実装・push済み。
+- **未了**: aruaru-vpn固定key_shareのプライバシー面のトレードオフ、翻訳のネイティブ検証(人手)、`PORTING.md` §20ロードマップ。RPoemの未追跡`RPoem/`・`target-crossui/`は別作業なのでコミットしない。
+- **注意**: cargoはPATHに`%USERPROFILE%\.cargo\bin`が必要。`cargo fmt --all`禁止(`-p <crate>`)。書き換え済みリポジトリで`git pull`しない。VPSは`/root/open-web-server`・`/root/RPoem`を`git pull --ff-only`(`/root/mirror-cache`は存在しない)。
+- **再開用メッセージ(そのまま貼り付け)**: 「再開するリポジトリは `F:\aruaru-vpn`・`F:\RPoem`・`F:\open-web-server`・`F:\runo`。各`PORTING.md`末尾『2026-11-17 別アカウントでの再開用メモ』を読み、未了(aruaru-vpnのプライバシー面・翻訳検証・§20)から着手してください。open-web-server→RPoemのE2Eは`RPoem/crates/open-runo-appserver/examples/e2e_stub_app.rs`をHost=`e2e-rpoem.test`で再現できます。」
+
+### English
+- **Status**: (1) The real-process E2E open-web-server (Connect) → RPoem `e2e_stub_app` was re-verified (Host `e2e-rpoem.test`, 3/3 returned 200 + `X-Served-By: RPoem-appserver`). The earlier 502 was a test-setup mistake (host in `domains.toml` did not match the stub's tenant; `db_uri` is required), not a bug. (2) aruaru-vpn: cert cloning, Mux and the Chrome-like fingerprint (shared RPoem crate `open-runo-tls-fingerprint`) are implemented and pushed.
+- **Open**: privacy trade-off of aruaru-vpn's fixed key_share, native-speaker translation review (human), `PORTING.md` §20 roadmap. Do not commit RPoem's untracked `RPoem/` and `target-crossui/` (other work).
+- **Pitfalls**: cargo needs `%USERPROFILE%\.cargo\bin` on PATH; never `cargo fmt --all` (use `-p <crate>`); never `git pull` in rewritten repos. On the VPS, `git pull --ff-only` in `/root/open-web-server` and `/root/RPoem` (`/root/mirror-cache` does not exist).
+- **Resume message (paste as-is)**: "Resume in `F:\aruaru-vpn`, `F:\RPoem`, `F:\open-web-server`, `F:\runo`. Read the section '2026-11-17 別アカウントでの再開用メモ' at the end of each `PORTING.md`, and start with the open items (aruaru-vpn privacy trade-off, translation review, §20). The open-web-server→RPoem E2E can be reproduced with `RPoem/crates/open-runo-appserver/examples/e2e_stub_app.rs` using Host `e2e-rpoem.test`."
