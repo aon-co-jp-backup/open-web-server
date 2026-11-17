@@ -1262,7 +1262,6 @@ version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "337d46834ee672ab3e48caca2cb0c78cc174fb12b3a68d0d88f99a0519a5e36e"
 dependencies = [
- "generic-array 0.14.9",
  "rustversion",
  "typenum",
 ]
@@ -1744,18 +1743,6 @@ checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
 dependencies = [
  "block-padding",
  "hybrid-array",
-]
-
-[[package]]
-name = "internal-russh-num-bigint"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae8e22120c32fb4d19ec55fba35015f57095cd95a2e3b732e44457f5915b2ee8"
-dependencies = [
- "num-integer",
- "num-traits",
- "rand 0.10.3",
- "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -2268,6 +2255,7 @@ dependencies = [
  "hyper-util",
  "igd-next",
  "lettre",
+ "open-cpu",
  "open-runo-appserver",
  "open-web-server-core",
  "open-web-server-ledger",
@@ -2282,8 +2270,8 @@ dependencies = [
  "regex",
  "reqwest",
  "ring",
- "russh 0.65.1",
- "russh-sftp 3.0.1",
+ "russh",
+ "russh-sftp",
  "rust-json",
  "serde",
  "serde_json",
@@ -2377,12 +2365,12 @@ dependencies = [
  "bitflags",
  "flate2",
  "lettre",
- "russh 0.62.7",
- "russh-sftp 2.4.0",
+ "russh",
+ "russh-sftp",
  "serde",
  "serde_json",
- "sha2 0.10.9",
- "thiserror 1.0.69",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
  "tokio",
  "toml",
  "tracing",
@@ -3188,77 +3176,6 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.62.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9decb68e4e44e1079700e54f17c8f23806ec53d7e0db73ab1c71d9dabc666812"
-dependencies = [
- "aes",
- "bitflags",
- "block-padding",
- "byteorder",
- "bytes",
- "cbc",
- "cipher",
- "crypto-bigint",
- "ctr",
- "curve25519-dalek",
- "data-encoding",
- "delegate",
- "der",
- "digest 0.11.3",
- "ecdsa",
- "ed25519-dalek",
- "elliptic-curve",
- "enum_dispatch",
- "futures",
- "generic-array 1.4.5",
- "getrandom 0.4.3",
- "ghash",
- "hex-literal",
- "hmac",
- "inout",
- "internal-russh-num-bigint",
- "keccak",
- "log",
- "md5",
- "ml-kem",
- "module-lattice",
- "num-bigint 0.4.8",
- "p256",
- "p384",
- "p521",
- "pageant",
- "pbkdf2",
- "pkcs1",
- "pkcs5",
- "pkcs8",
- "polyval",
- "rand 0.10.3",
- "rand_core 0.10.1",
- "ring",
- "rsa",
- "russh-cryptovec",
- "russh-util",
- "salsa20",
- "scrypt",
- "sec1",
- "sha1",
- "sha2 0.11.1",
- "sha3",
- "signature",
- "spki",
- "ssh-encoding",
- "ssh-key",
- "subtle",
- "thiserror 2.0.21",
- "tokio",
- "typenum",
- "universal-hash",
- "zeroize",
-]
-
-[[package]]
-name = "russh"
 version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94be3d86c71b9ed220a675c405e35c7a02565a009bf8da2e9cc13a700320a5c5"
@@ -3307,6 +3224,7 @@ dependencies = [
  "polyval",
  "rand 0.10.3",
  "rand_core 0.10.1",
+ "ring",
  "rsa",
  "russh-cryptovec",
  "russh-util",
@@ -3338,26 +3256,6 @@ dependencies = [
  "nix",
  "ssh-encoding",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "russh-sftp"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9de67aace74530a29086db0671fa200c470a58eb380081f28ad512ffb0c5356b"
-dependencies = [
- "bitflags",
- "bytes",
- "chrono",
- "dashmap",
- "gloo-timers",
- "log",
- "serde",
- "serde_bytes",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
