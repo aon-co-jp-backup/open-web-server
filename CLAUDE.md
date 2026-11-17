@@ -5465,3 +5465,11 @@ RPoem「分身の術」ホスティング(1VPSに1回入れ、全サイトを分
 
 ### English
 The spec, status, open items and the **resume message** for RPoem "bunshin" hosting (install once per VPS, host every site with shadow-clone workers, async and multi-threaded) live in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`, and in `open-easy-web/docs/RPOEM_BUNSHIN_HOSTING_SPEC.md`. This repository's part: `crates/open-web-server-gateway/src/sites.rs` (`sites.toml` expansion, auto ports), `tenant_router.rs` (`max_concurrent`, `managed_by`, semaphore), `state.rs` (`load_sites_from_env`), feature `site-fleet` (commits `a862f61`, `c971a38`, pushed).
+
+## 2026-11-17 追記: 実プロセス通し確認の完了・再開用メッセージ更新(別アカウントでの再開用) / Real-process E2E done, resume message updated (resume on another account)
+
+### 日本語
+実プロセス通し確認(起動・転送・503上限・crash復帰)は完了。詳細・限界・次にやること・**最新の再開用メッセージ**は、正本の `open-easy-web/CLAUDE.md` と `open-easy-web/PORTING.md` 末尾の同名節にある。このリポジトリの該当部分: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs`(新規。`cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture` をWSLで)。
+
+### English
+The real-process E2E (start, forward, 503 limit, crash recovery) is done. Details, limits, next steps and the **latest resume message** are in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`. This repository's part: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs` (new; run in WSL with `cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture`).
