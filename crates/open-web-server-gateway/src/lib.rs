@@ -17,6 +17,7 @@
 //! 用意する設計に変更)。
 
 mod access_log;
+mod bytescan;
 mod acme;
 mod app_proxy;
 mod compression;
@@ -458,6 +459,7 @@ async fn wait_optional_tls_task(
 /// `tokio::runtime::Runtime`上からこれを呼ぶ)。
 pub async fn run() -> anyhow::Result<()> {
     let telemetry_guard = telemetry::init()?;
+    tracing::info!("{}", open_cpu::runtime_summary());
 
     let state = Arc::new(AppState::from_env()?);
     state.load_domains_from_env().await?;

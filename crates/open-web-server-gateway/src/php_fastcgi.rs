@@ -202,11 +202,9 @@ pub async fn proxy_fastcgi(
 /// `Response<BoxBody>`を組み立てる。`Status:`ヘッダが無ければ`200 OK`を
 /// 既定とする(CGI/1.1仕様通り)。
 fn build_response_from_cgi_output(raw: &[u8]) -> Response<BoxBody> {
-    let separator = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
+    let separator = crate::bytescan::find_subslice(raw, b"\r\n\r\n")
         .map(|i| (i, 4))
-        .or_else(|| raw.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2)));
+        .or_else(|| crate::bytescan::find_subslice(raw, b"\n\n").map(|i| (i, 2)));
 
     let (header_bytes, body_bytes) = match separator {
         Some((idx, len)) => (&raw[..idx], &raw[idx + len..]),

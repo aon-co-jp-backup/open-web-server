@@ -33,6 +33,8 @@ flate2 = "1.0"
 serde_json.workspace = true
 sonic-rs = "0.5"
 rust-json = { path = "../../../RS-JSON", features = ["fast"] }
+# CPU命令セットの自動検出(AVX-512BW > AVX2 > NEON > スカラー)。バイト探索などを使える最も幅の広い命令で行う
+open-cpu = { path = "../../../open-cpu" }
 open-runo-appserver = { path = "../../../RPoem/crates/open-runo-appserver", features = ["fleet"], optional = true }
 toml.workspace = true
 thiserror.workspace = true

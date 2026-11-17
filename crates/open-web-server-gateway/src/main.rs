@@ -16,5 +16,10 @@ async fn main() -> anyhow::Result<()> {
         println!("open-web-server {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // `--cpu`: 検出した命令セットと、バイト探索などに選ばれる実装(AVX-512BW > AVX2 > NEON > スカラー)を表示
+    if std::env::args().nth(1).as_deref() == Some("--cpu") {
+        println!("{}", open_cpu::runtime_report());
+        return Ok(());
+    }
     open_web_server_gateway::run().await
 }
