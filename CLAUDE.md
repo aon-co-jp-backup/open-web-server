@@ -5475,3 +5475,9 @@ The spec, status, open items and the **resume message** for RPoem "bunshin" host
 The real-process E2E (start, forward, 503 limit, crash recovery) is done. Details, limits, next steps and the **latest resume message** are in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`. This repository's part: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs` (new; run in WSL with `cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture`).
 
 - **2026-11-17 別アカウントでの再開用 / Resume on another account**: 到達点・未了・再開用メッセージは`PORTING.md`末尾「2026-11-17 別アカウントでの再開用メモ」(日英)。*Status, open items and the resume message are at the end of PORTING.md (JA/EN).*
+
+## 2026-11-17 Ledger の書き込み先を Admin/DbMutate へ変更 / Ledger now writes through Admin/DbMutate
+
+**日本語**: `open-web-server-ledger::Ledger` の送信先を、旧 `POST /internal/db/mutate` から RPoem の `POST /open_runo.admin.v1.Admin/DbMutate`(Connect、JSON本文は `MutationRequest`)へ変更した。認証は環境変数 `OPEN_RUNO_API_KEY` を `x-api-key` ヘッダに付ける(未設定だと401)。旧経路は認証なしだったので、`Ledger` を動かす全環境で設定が必要。`docs/integration.md` も更新。`cargo test -p open-web-server-ledger` 20件成功、RPoem 側の `ledger_fusion` で本物の `Ledger` から新経路への書き込みを確認。
+
+**English**: `open-web-server-ledger::Ledger` now posts to RPoem's `POST /open_runo.admin.v1.Admin/DbMutate` (Connect; the JSON body is `MutationRequest`) instead of the old `POST /internal/db/mutate`. Auth: the env var `OPEN_RUNO_API_KEY` is sent as the `x-api-key` header (unset gives 401). The old route needed no auth, so every environment that runs a `Ledger` must set it. `docs/integration.md` is updated. `cargo test -p open-web-server-ledger` passes (20), and RPoem's `ledger_fusion` verifies the real `Ledger` writing through the new route.
