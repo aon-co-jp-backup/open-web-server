@@ -1062,6 +1062,10 @@ mod tests {
     #[tokio::test]
     async fn power_profile_switches_live_and_is_reflected_immediately_over_real_http() {
         let _env_guard = ADMIN_TOKEN_ENV_LOCK.lock().await;
+        // レート制限テストが一時的に設定する環境変数を`from_env`が読んで429になる競合を避ける。
+        let _rate_guard = RATE_LIMIT_ENV_LOCK.lock().await;
+        std::env::remove_var("OPEN_WEB_SERVER_RATE_LIMIT_RPS");
+        std::env::remove_var("OPEN_WEB_SERVER_RATE_LIMIT_BURST");
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "test-power-profile-secret");
 
         let state = Arc::new(AppState::from_env().expect("AppState::from_env should succeed with defaults"));
