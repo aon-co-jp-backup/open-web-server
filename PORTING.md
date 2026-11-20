@@ -1,0 +1,1206 @@
+# PORTING.md — open-web-server お引越しファイル
+
+## 管理API・公開API: REST 全廃 → Connect(POST、RS-JSON)(2026-11-04)
+
+旧 `GET/POST/PUT/DELETE /admin/...`・`/api/v1/...`・`/internal/db/state/...` はすべて削除した。呼び方は
+`POST /open_web_server.admin.v1.Admin/<Method>`(公開APIは `open_web_server.api.v1.Api/<Method>`)、
+`content-type: application/json`、本文は JSON オブジェクト(空でも可)。認証は従来どおり `x-admin-token` または
+`Authorization: Bearer <KeyGuardianのキー>`。本文は RS-JSON の `parse_secure`(2MiB・深さ32・重複キー拒否)で検査する。
+成功は常に 200(配列は `{"items":[…]}`、文字だけの応答は `{"message":"…"}`)、失敗は `{"code":"…","message":"…"}`。
+旧パスパラメータ・クエリは本文のフィールドへ(`host`・`domain`・`base_domain`・`subdomain`・`path_prefix`・`target`・`key`・`commit_id`)。
+実装は `crates/open-web-server-gateway/src/connect.rs`。REST のまま残すのは `/healthz`・`/healthz/ddns`・ACME チャレンジ・`/demo`・静的配信・テナントへの素通しのみ。
+
+| 旧REST | Connect(`Admin/…`) | 本文の主なフィールド |
+|---|---|---|
+| POST/GET `/admin/tenants` | `AddTenant` / `ListTenants` | TenantConfig |
+| PUT `/admin/tenants/:host` | `UpdateTenant` | `host` + TenantConfig |
+| DELETE `/admin/tenants/:host[?path_prefix=]` | `RemoveTenant` | `host`, `path_prefix` |
+| POST/DELETE `/admin/tenants/:host/tls` | `UpsertTenantTls` / `RemoveTenantTls` | `host`, `cert_pem`, `key_pem` |
+| POST `/admin/tenants/:host/tls/acme` | `ObtainTenantTlsViaAcme`(acme) | `host`, `directory_url`, `contact_email` |
+| POST/GET/DELETE `/admin/web-vhosts[...]` | `UpsertWebVhost` / `ListWebVhosts` / `RemoveWebVhost` / `ImportWebVhost` / `UpdateWebVhostCompatMode` | `host` ほか |
+| POST/GET/DELETE `/admin/redirects[...]` | `UpsertRedirect` / `ListRedirects` / `RemoveRedirect` | `host` |
+| GET/POST `/admin/power-profile` | `GetPowerProfile` / `SetPowerProfile` | `profiles` |
+| GET/POST `/admin/auto-update` | `GetAutoUpdate` / `SetAutoUpdate`(auto-update) | `enabled` |
+| GET `/admin/watchdog/status`・`expectations`、POST `.../expectations/:host` | `GetWatchdogStatus` / `ListWatchdogExpectations` / `SetWatchdogExpectations` | `host`, `expected_substrings` |
+| POST/GET/DELETE `/admin/keys[...]` | `IssueKey` / `KeyStatus` / `RevokeKey` | `owner` |
+| `/admin/2fa/*`・`/admin/login/*` | `Enroll2fa` / `Confirm2fa` / `Verify2fa` / `RequestLoginOtp` / `VerifyLogin`(admin-2fa) | 従来どおり |
+| `/admin/disaster-email-backup[/verify]` | `SetDisasterEmailBackup` / `VerifyDisasterEmailBackup` | 従来どおり |
+| GET `/admin/sftp/connection-info[?host=]` | `GetSftpConnectionInfo` | `host`(任意) |
+| POST/GET/DELETE `/admin/ddns/...` | `SetupFreeDomain` / `ListFreeDomains` / `RemoveFreeDomain` | `domain`, `token` |
+| POST/GET/DELETE `/admin/custom-domain/ipv6-auto-update[...]` | `SetupIpv6AutoUpdate` / `ListIpv6AutoUpdate` / `RemoveIpv6AutoUpdate` | `base_domain`, `subdomain` |
+| GET `/internal/db/state/:target/:key/at/:commit_id` | `GetStateAtCommit` | `target`, `key`, `commit_id` |
+| POST `/api/v1/items/grant`・`/transactions/charge` | `Api/GrantItem` / `Api/Charge`(`Idempotency-Key` ヘッダ必須) | 従来どおり |
+
+呼び出し元: 証明書更新フック `scripts/certbot-deploy-hook-open-web-server.sh`(VPS では `/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)、
+Android `DdnsSetupActivity.kt`、`open-easy-web`(`src/api_free_domain.rs`・`server/src/appserver_registration.rs`)を Connect へ移行済み。
+`admin-2fa-hardening` ブランチ(未マージ)は `tenants.rs`・`tls.rs`・`lib.rs` のルートと認証、上記フックを変更しているため、マージ時に衝突する(`x-tls-token` と `/admin/2fa/reset` は未取り込み)。
+**本文中の旧REST名(`POST /admin/tenants` 等)の記述は、上の対応表で読み替えること。**
+
+**検証結果と本番反映(2026-11-05)**: `cargo test --workspace`(`--test-threads=1`)全通過、実サーバーへ curl で全メソッド(401/400/重複キー400/200、旧REST 404)、
+open-easy-web の画面(WASM)をローカルで起動し、ビルトインブラウザで「無料ドメイン」パネルの一覧・SFTP情報・登録ボタンを実操作して、
+OPTIONS(204)→ POST `Admin/ListFreeDomains`・`Admin/GetSftpConnectionInfo`・`Admin/SetupFreeDomain` が通ることをネットワークログで確認(登録は `ddns` feature 無しのビルドのため設計どおり 503)。
+本番(VPS)へは別ポートの試験起動→入れ替え→自動ロールバック付きで反映済み(glibc 2.39 以下、`--features fastcgi-client,domain-watchdog`、本番は従来から `ddns` 無し)。
+証明書更新フック(`/etc/letsencrypt/renewal-hooks/deploy/50-open-web-server.sh`)も同時に Connect 版へ差し替えた。退避: `*.before-connect-20261105084151`。
+確認済み(追補): `ddns` 付きビルドで画面から登録→一覧→削除(`Admin/RemoveFreeDomain` 200)を実操作、更新フックは VPS 上で手動実行して `UpsertTenantTls` が 200 で反映されることを確認。未確認: 証明書の実更新(certbot が実際に呼ぶ瞬間)、Android/iOS の実機。
+
+**管理者の認証強化(admin-2fa-hardening)を Connect 版 main へ統合・本番反映(2026-11-06)**:
+- 経路別の資格: `UpsertTenantTls`/`RemoveTenantTls`/`ObtainTenantTlsViaAcme` だけ `x-tls-token`(`OPEN_WEB_SERVER_TLS_TOKEN`、ループバック限定)を受ける。誤った TLS トークンは静的トークンにフォールバックしない。TLS トークンは他のメソッドでは使えない。
+- 静的トークンは fail-closed: `OPEN_WEB_SERVER_ADMIN_TOKEN` 未設定なら管理APIは 503(開発用に `OPEN_WEB_SERVER_ADMIN_INSECURE_DEV=true`)。`OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE` は `any`(既定)/`loopback`/`off`。本番の `/etc/open-web-server/admin.env` には `ADMIN_TOKEN`・`TLS_TOKEN`・SMTP・`KEY_STORE_PATH` が設定済みで、既定の `any` のため従来の呼び出しは変わらない。
+- 2FA: `Admin/Reset2fa`(静的トークン+ループバック)、ログインキーTTL 2時間、`RequestLoginOtp`/`VerifyLogin` のレート制限、**失敗した検証はそのメールOTPを失効させる**(請求し直す)、**同じ30秒ステップの TOTP は再利用不可**(確認直後のログインは次のステップまで待つ)、2FAストアは 0600。
+- 本番機能セットは `admin-2fa,domain-watchdog,fastcgi-client,ddns,sftp`(`.github/workflows/prod-build.yml`)。VPS は 2026-11-06 に glibc 2.39 のこのビルドへ入れ替え済み(退避: `open-web-server.before-connect-20261106111238`)。
+- 統合で見つけた不具合: マージ後の証明書フックが変数展開を失って壊れていた(`if [ -n "" ]`)ため、配備スクリプトの自動検査で自動ロールバックされ、修正後に再配備した(本番は一度も止まっていない)。
+- 手元の `F:\open-web-server` は `main-connect`(`origin/main` 追従)へ切り替えた。`admin-2fa-hardening` ブランチは main に含まれており、削除していない。
+
+> 🎯 **移植時の前提(2026-08-29)**: aruaru-dbはRPoemとのSETで初めて
+> 「REST API不要・Cosmo有料版互換」の価値が成立する(正本:
+> aruaru-db/CLAUDE.md冒頭)。本リポジトリの管理REST APIをGraphQLへ
+> 移行する場合も、必ずこのSET連携の価値強化になるか確認すること。
+
+> **2026-07-25 更新**: 開発方針ファイル(`CLAUDE.md`)の見出しを
+> 「設計思想＆開発方針＆開発環境ルール」へ改名しました
+> (設計思想・開発方針・開発環境ルールを明確に区別)。移設先でも
+> `CLAUDE.md`の内容を必ず確認してください。
+
+
+> このファイル1枚で、他プロジェクトへ `open-web-server` を導入・移設できます。
+> 対象バージョン: workspace 0.1.0(4クレート。2026-07-20時点でgateway 46 /
+> ledger 20[+1件は要ライブPostgreSQLの`#[ignore]`] / wire 18の計84テスト
+> green。open-web-server-wireにQUIC(`quinn`)伝送路、MPTCP/SCTPのユーザー
+> 空間代替(`aggligator`)伝送路、open-web-server-ledgerにPostgreSQL WAL
+> [`sqlx`]、open-web-server-gatewayに静的ファイル+PHP配信[§4.7]を追加)。
+> 最新のクレート数・テスト数は `CLAUDE.md` の「現状」節を参照
+> (この節自体も更新のたび古くなるため、都度そちらを正とする)。
+> 最終更新: 2026-07-20
+
+## -1.5 最近の更新(2026-08-19) / Recent update
+
+自己アップデート機構(`crates/open-web-server-gateway/src/self_update.rs`、
+`auto-update` feature)・`installer/open-web-server-install.iss`(Inno
+Setup)を追加。移植先では: (1) `auto-update` featureを有効にする場合は
+`install.ps1`/`install.sh`が実行ファイルの隣に`version.json`を配置する
+実装になっているか確認する(無いと自己アップデートが常に無効判定される)、
+(2) `.iss`は既存`install.ps1`/`uninstall.ps1`をラップするだけの薄い
+インストーラーであり、Inno Setup(`ISCC.exe`)自体はこの開発機に無く
+未ビルド、(3) Windows版は`SO_REUSEPORT`によるゼロダウンタイム切り替えは
+実装しておらず、サービス停止→上書き→再開という逐次切り替え。
+
+*English*: Added a self-update mechanism
+(`crates/open-web-server-gateway/src/self_update.rs`, `auto-update`
+feature) and `installer/open-web-server-install.iss` (Inno Setup). When
+porting: (1) confirm `install.ps1`/`install.sh` place `version.json`
+next to the executable if using the `auto-update` feature (otherwise
+self-update is always disabled), (2) the `.iss` is a thin wrapper around
+the existing `install.ps1`/`uninstall.ps1` and has not been built on
+this dev machine (no `ISCC.exe`), (3) the Windows path is a sequential
+stop/replace/restart, not a true zero-downtime `SO_REUSEPORT` swap.
+
+## -1. 最近の更新(2026-08-07) / Recent update
+
+Androidタブレット向けレイアウト(`layout-sw600dp/activity_main.xml`)の
+`maxWidth`が`layout_width="match_parent"`と組み合わさって機能していない
+実バグを修正(`wrap_content`へ変更)。移設先でも同じパターンが他の
+`layout-sw600dp`ファイルに残っていないか確認すること。
+
+*English*: Fixed a real bug where `maxWidth` on the tablet layout had no
+effect because it was combined with `layout_width="match_parent"`
+(changed to `wrap_content`). Check other `layout-sw600dp` files for the
+same pattern when porting.
+
+## 0. セキュリティ監査: 非公開エンドポイントの認証漏れ(2026-07-30追加、重要)
+
+`aruaru-server`側で「`/admin/*`の大半が無認証だった」という重大な
+ギャップが見つかったのをきっかけに本リポジトリも監査した。
+`/admin/*`自体は既に`handlers::tenants::check_admin_auth`
+(`x-admin-token`+`KeyGuardian`Bearerキー)で保護済みだったが、
+**`GET /internal/db/state/:target/:key/at/:commit_id`
+(VersionLessAPI+Git版管理ハイブリッドの読み出し側)が無認証のまま
+残っていた**。`/api/v1/*`(公開の決済API)とは異なり`/internal/*`は
+内部照会用途のため認証を追加した。**移植先で`/internal/*`や管理系の
+新規エンドポイントを追加する際は、`/api/v1/*`(公開API)と同列に
+扱わず、必ず`check_admin_auth`を明示的に呼ぶこと**(このパターンの
+見落としが今回のギャップの原因だった)。あわせて`check_static_admin_auth`
+のトークン比較を素の`==`から定数時間比較(`constant_time_eq`、
+CWE-208対策)へ変更した——新規crate依存を追加しない最小実装のため、
+他リポジトリへそのままコピーできる。
+
+**既知の残課題(2026-07-30続き)**: `KeyGuardian`が発行するキーの
+`roles`フィールドは保持のみで実際のアクセス制御には使われておらず、
+有効なキーであれば`owner`/`roles`を問わず`/admin/*`全体へ同一権限を
+持つ。移植先でこのキー方式を使う場合は、role単位の最小権限チェックを
+別途実装することを推奨する(詳細は`CLAUDE.md`の同日HANDOFF参照)。
+
+---
+
+## 1. open-web-server とは(30秒版)
+
+3Dオンラインゲームの課金アイテムや金融/クレジットカードデータを扱う
+ミッションクリティカルなWebサーバー。**Rust + Poem**(`open-web-server-gateway`
+はまだPoem依存、tokio/hyper直接実装への移行は未着手 — `CLAUDE.md`参照)で、
+4層防御通信・冪等WAL + 3ホップコミット・UDP-IP冗長経路により、
+ネットワーク瞬断やリトライがあっても二重課金・データ消失が起きないことを
+目指す。単体では動かず、`open-runo`(Federation Gateway)・`aruaru-db`
+(分散Git-on-SQL DB)との連携が前提。
+
+## 2. 持っていくもの(ファイル一覧)
+
+```
+open-web-server/
+├── Cargo.toml / Cargo.lock      ← workspace定義(バージョン固定)
+├── crates/
+│   ├── open-web-server-core/     ← ドメインモデル・エラー型
+│   ├── open-web-server-wire/     ← 4層防御通信 + UDP-IP冗長経路(udp_channel) + QUIC冗長経路(quic_channel) + MPTCP/SCTP代替冗長経路(mptcp_channel、aggligatorベース)
+│   ├── open-web-server-ledger/   ← 冪等WAL + 3ホップコミット + PostgreSQL WAL実装(postgres_wal)
+│   └── open-web-server-gateway/  ← Poem製ゲートウェイ(実行バイナリ)
+├── docs/                        ← architecture.md / integration.md
+├── scripts/                     ← detect-wireguard-bind.sh/.ps1(2026-08-06新設、
+│                                   ロリポップ!固定IPアクセス等のWireGuard型
+│                                   固定IPサービス向けバインドIP検出ヘルパー)
+└── PORTING.md                   ← 本ファイル
+```
+
+**正直な開示**: 上記ファイル一覧は2026-07-20時点のスナップショットのまま
+更新が追いついておらず、`android/`(Android版クライアント)・`site/`
+(紹介ページ)・`install*.sh`/`install*.ps1`/`install-macos.sh`等の
+インストーラー群は含まれていない(実際にはこれらも本番運用に必要な
+構成要素)。移設時は本ファイルの一覧だけでなく`git ls-files`等で実際の
+リポジトリ構成を確認することを推奨する。
+
+丸ごと移設する場合はフォルダごとコピーして `cargo test --workspace`
+(2026-07-20時点で84テストが通れば移設成功)。以下はライブラリとして個別に使う場合。
+
+## 3. 依存の書き方(新プロジェクトのCargo.toml)
+
+```toml
+[dependencies]
+open-web-server-core   = { path = "../open-web-server/crates/open-web-server-core" }
+open-web-server-wire   = { path = "../open-web-server/crates/open-web-server-wire" }
+open-web-server-ledger = { path = "../open-web-server/crates/open-web-server-ledger" }
+
+tokio = { version = "1", features = ["full"] }
+```
+
+`open-web-server-gateway`(バイナリ)自体を移設したい場合は
+`crates/open-web-server-gateway`ごとコピーし、`OPEN_RUNO_ENDPOINT`を
+環境変数で指定して起動する。
+
+## 4. 組み込みレシピ
+
+### 4.1 冪等WAL + 3ホップコミット(TCP経由、権威パス)
+
+```rust
+use open_web_server_ledger::{Ledger, LedgerConfig};
+use std::{sync::Arc, time::Duration};
+
+let ledger = Ledger::new(
+    LedgerConfig {
+        open_runo_endpoint: "https://runo.internal:8443".to_string(),
+        max_retries: 3,
+        retry_backoff: Duration::from_millis(200),
+    },
+    wal, // Arc<dyn open_web_server_ledger::WriteAheadLog>
+);
+
+let receipt = ledger.commit(mutation_request).await?;
+```
+
+### 4.2 UDP-IP冗長経路を追加する(2026-07-11新設、任意)
+
+```rust
+use open_web_server_wire::udp_channel::UdpChannelKeys;
+
+let keys = UdpChannelKeys::generate_for_testing(); // 本番はHKDF導出鍵を使う
+let ledger = ledger
+    .enable_udp_redundant_path(
+        "0.0.0.0:0".parse()?,      // 送信元
+        udp_dest_addr,              // 受信側 (open-runo等が実装する想定)
+        &keys,
+    )
+    .await?;
+```
+
+呼び出さなければ従来通りTCP経路のみで動作する。**スコープの限界**:
+UDP側は再送なしのfire-and-forget、受信側の実配置(open-runo側での
+listener実装)は別スコープ。詳細は `docs/architecture.md`
+「冗長化された伝送経路」節を参照。
+
+### 4.3 QUIC冗長経路を追加する(2026-07-12新設、任意)
+
+```rust
+use open_web_server_wire::{QuicServer, QuicServerConfig, insecure_client_config_trusting, send_mutation_over_quic};
+
+// サーバ側 (開発/検証用の自己署名証明書。本番は正規CA証明書に差し替え)
+let config = QuicServerConfig::self_signed("example.internal")?;
+let cert_der = config.cert_der.clone();
+let server = QuicServer::bind("0.0.0.0:4433".parse()?, config)?;
+let req = server.accept_one_mutation().await?; // 1接続=1 MutationRequestの単純往復
+
+// クライアント側
+let client_config = insecure_client_config_trusting(&cert_der)?;
+let ack = send_mutation_over_quic(
+    client_config,
+    "0.0.0.0:0".parse()?,
+    server_addr,
+    "example.internal",
+    &mutation_request,
+).await?;
+```
+
+**スコープの限界**: Multipath QUIC(MPQUIC)ではなく単一経路QUIC。
+1コネクション1双方向ストリームの単純往復のみサポート。受信側の実配置
+(open-runo側での実運用listener)は別スコープ。
+
+### 4.4 MPTCP/SCTP代替冗長経路(mptcp_channel)を追加する(2026-07-13新設、任意)
+
+```rust
+use open_web_server_wire::{MptcpServer, send_mutation_over_mptcp};
+
+// サーバ側 (1接続=1 MutationRequestの単純往復)
+let server = MptcpServer::bind_and_accept_one("0.0.0.0:4434".parse()?).await?;
+let server_addr = server.local_addr();
+let req = server.recv_one().await?;
+
+// クライアント側
+send_mutation_over_mptcp(server_addr, &mutation_request).await?;
+```
+
+**正直な注意(重要)**: これは本物のカーネルMPTCP/SCTPではない。
+Windowsにはネイティブカーネル MPTCP が無く、主要な Rust SCTP クレートは
+Linuxの`lksctp-tools`前提であるため、このWindows開発環境ではカーネル
+MPTCP/SCTPの実装・検証が不可能と判断した(調査の詳細は
+`mptcp_channel`モジュールdoc参照)。代わりに`aggligator`
+(公式docで"serves the same purpose as Multipath TCP and SCTP...
+completely implemented in user space"と明記)により、複数の物理TCPリンクを
+1つの論理ストリームへ集約する**ユーザー空間の代替**を提供する。
+**スコープの限界**: 1接続1メッセージの単純往復のみサポート。単一NIC
+環境での検証のみ(複数物理NICでの真のマルチホーミング効果は未検証)。
+
+### 4.5 PostgreSQL WALを使う(2026-07-12新設、任意)
+
+```rust
+use open_web_server_ledger::PostgresWal;
+use std::sync::Arc;
+
+let wal = PostgresWal::connect("postgres://user:pass@host/dbname").await?;
+wal.ensure_schema().await?; // CREATE TABLE IF NOT EXISTS (冪等)
+
+let ledger = Ledger::new(config, Arc::new(wal));
+```
+
+`append`/`mark_committed` はいずれも実`BEGIN`/`COMMIT`トランザクション
+境界を持つ。**スコープの限界(正直な記載)**: このリポジトリの開発環境には
+到達可能なライブPostgreSQLが無いため、実DB接続での検証は未実施
+(SQL構築ロジックの単体テストと、`DATABASE_URL`設定時のみ動く
+`#[ignore]`統合テストのみ提供)。導入先で実PostgreSQLに接続して
+`cargo test -p open-web-server-ledger -- --ignored` を実行することで
+実際のトランザクション動作を検証できる。
+
+### 4.55 独立監査ログを使う(2026-07-13新設、任意)
+
+```rust
+use open_web_server_ledger::{Ledger, FileAuditLog};
+
+let ledger = Ledger::new(config, wal)
+    .enable_audit_log("/var/log/open-web-server/audit.log");
+
+// commit() のたびに WAL先行書き込み直後、SHA-256チェックサム付きの
+// 1レコードが追記される。権威パス(TCP経由3ホップコミット)には
+// 一切影響しない (書き込み失敗は警告ログのみ)。
+
+let audit = ledger.audit_log().unwrap();
+let report = audit.reconcile(&committed_keys)?; // 突き合わせ
+audit.scan_and_verify()?; // 破損検知(チェックサム再計算)
+```
+
+PostgreSQL/aruaru-db/マルチリージョン同期レプリケーションのいずれとも
+技術的に独立した追記専用ファイル(`open-web-server-ledger::audit_log::
+FileAuditLog`)。金融機関の「主系とは別システムの冗長トランザクション
+ログによる二重処理検知」パターンの最小実装。
+
+### 4.56 マルチリージョン同期レプリケーションを使う(2026-07-13新設、任意)
+
+```rust
+use open_web_server_ledger::{Ledger, MultiRegionReplicator, RegionPolicy};
+
+let regions = MultiRegionReplicator::new(vec![
+    "sqlite:///data/region-tokyo.db",
+    "sqlite:///data/region-osaka.db",
+])
+.with_policy(RegionPolicy::Quorum(1)) // 2系統中1系統成功でOK(縮退モード)
+.await?;
+// デフォルト(RegionPolicy::Strict)は1系統でも失敗すればコミット全体を失敗させる
+
+let ledger = Ledger::new(config, wal).enable_multi_region(regions);
+
+// commit() は全リージョンへの書き込みが完了する(または縮退条件を満たす)まで
+// 待ってから成功を返す — UDP冗長経路のfire-and-forgetとは対照的な
+// 「同期」レプリケーション。
+```
+
+本番では2つの`sqlite:///...`パスを実際の地理的リージョンのDB接続
+文字列(PostgreSQL等)に置き換える想定。障害ポリシーは用途に応じて
+`Strict`(既定、厳格)か`Quorum(n)`(縮退許容)を選択する。
+
+### 4.6 4層防御通信を単体で使う
+
+```rust
+use open_web_server_wire::{PayloadCipher, MutualAuthConfig, TlsServerConfig, SecureChannel};
+
+// 第3層のみ(AEAD暗号化、リプレイ対策なし)
+let cipher = PayloadCipher::new(&PayloadCipher::generate_key());
+let encrypted = cipher.encrypt(b"payload")?;
+
+// 第3層+第4層(AEAD暗号化 + seq/timestampリプレイ対策込み、
+// 課金/決済確定など非冪等操作にはこちらを推奨)
+let mut channel = SecureChannel::new(&PayloadCipher::generate_key());
+let frame = channel.encrypt(b"charge:100yen")?;
+```
+
+### 4.7 静的ファイル/PHPサイト配信(Apache+Nginxハイブリッド配信エンジン、2026-07-20)
+
+`open-web-server-gateway`の新規モジュール`static_files`/`php_server`/
+`web_vhost`は、既存のAPIバックエンド用途(`tenant_router`)とは独立した
+「ホスト名 → docroot」のvhost機構で、静的ファイル配信とPHP実行
+(PHPビルトインdevサーバへのリバースプロキシ)の両方を提供する。
+これは他プロジェクトへの移植価値が高い(PHP資産を持つ他のドメイン
+[例: aruaru.tokyo/PHP版、その他のレガシーPHPサイト]をopen-web-server配下
+へ統合する際にそのまま使える):
+
+```toml
+# web_vhosts.toml
+[[webvhost]]
+host = "example.com"
+docroot = "/var/www/example"
+php_enabled = true
+```
+
+```bash
+OPEN_WEB_SERVER_WEB_VHOSTS_FILE=./web_vhosts.toml ./open-web-server
+```
+
+管理APIでの動的追加/削除も可能: `POST /admin/web-vhosts` /
+`DELETE /admin/web-vhosts/:host` / `GET /admin/web-vhosts`
+(既存の`x-admin-token`/`KeyGuardian`認証を共用)。
+
+**移植時の注意**: `php_server::PhpServerPool`はデフォルトで
+`OPEN_WEB_SERVER_PHP_BINARY`環境変数(未設定時はこの開発環境固有の
+WinGet配布パス)からPHP実行ファイルを探す — 他環境へ移植する際は必ず
+この環境変数を設定すること。本番運用では`php -S`(開発用ビルトイン
+サーバ)ではなくPHP-FPM + FastCGIへの置き換えを推奨(`php_server.rs`
+のモジュールdocに明記)。
+
+### 4.8 組み込みSFTPサーバー + UPnP自動ポート開放(2026-07-23新設、任意)
+
+固定IPを持たない自宅サーバー等でも、外部の`sshd`/`vsftpd`に頼らず
+`open-web-server`単体でSFTP接続を受けられるようにする2つの独立した
+opt-in機能。既定は両方オフ(単一バイナリでの完結・オプトイン設計という
+既存方針を踏襲)。
+
+```toml
+# Cargo.toml
+open-web-server-gateway = { ..., features = ["sftp", "upnp"] }
+```
+
+```bash
+# authorized_keys(OpenSSH形式)を用意した上で起動
+OPEN_WEB_SERVER_SFTP_BIND=0.0.0.0:2222 \
+OPEN_WEB_SERVER_SFTP_ROOT=./sftp-root \
+OPEN_WEB_SERVER_SFTP_AUTHORIZED_KEYS_FILE=./authorized_keys \
+OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true \
+./open-web-server
+```
+
+- `sftp.rs` — `russh` + `russh-sftp`(pure-Rust)によるSFTPサーバー本体。
+  公開鍵認証が基本(パスワード認証は`OPEN_WEB_SERVER_SFTP_ALLOW_PASSWORD_AUTH=true`
+  + `OPEN_WEB_SERVER_SFTP_PASSWORD`で明示opt-in)。`OPEN_WEB_SERVER_SFTP_ROOT`
+  配下へのパストラバーサル対策は`static_files.rs`と同じ
+  canonicalize + starts_this方針。
+- `upnp.rs` — `igd-next`によるUPnP IGD自動ポート開放の**補助機能**。
+  失敗してもSFTPサーバー起動自体はブロックしない(`ddns.rs`/`acme.rs`と
+  同じ「補助系の失敗は権威パスをブロックしない」設計)。UPnP非対応
+  ルーターでは失敗する旨を正直に`tracing::warn!`で案内する。
+- `GET /admin/sftp/connection-info` — 既存の`x-admin-token`/`KeyGuardian`
+  認証で保護された、接続情報確認ヘルパー(ホスト・ポート・
+  `sftp -P <port> user@<host>`形式のコマンド例をJSONで返す)。
+
+**移植時の注意**: `authorized_keys`ファイルは他の多くのSSHサーバーと同じ
+OpenSSH形式(`ssh-ed25519 AAAA... comment`)がそのまま使える。UPnPは
+実ルーターの無い開発環境では実機検証できない(このリポジトリの検証も
+API呼び出しの型・ロジックレベルに留まる、正直な開示は`upnp.rs`の
+モジュールdoc参照)。
+
+### 4.9 無料DDNS(DuckDNS)自動ドメイン取得〜自動更新(2026-07-23新設、`ddns` feature配下)
+
+固定IPを持たない環境向けに、**無料で・有効期限切れの心配無く**使える
+サブドメインを本ソフトウェア側で完結して運用する機能。第一候補として
+DuckDNS(https://www.duckdns.org/)を採用した理由(裏取り込み):
+
+- 無料、更新APIは`GET`リクエスト1本(`https://www.duckdns.org/update?
+  domains=<name>&token=<token>&ip=<ip>`)。
+- **有効期限切れの概念が無い**——No-IP無料プランのような「30日ごとに
+  メール内リンクを手動クリックしないと失効する」制約が無いため、今回の
+  「自動更新で永久に使える」要件に合致する(No-IPはこの理由で候補から
+  除外した)。
+
+```bash
+OPEN_WEB_SERVER_DUCKDNS_DOMAIN=myhost \
+OPEN_WEB_SERVER_DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+./open-web-server
+```
+
+上記2環境変数のみで、既存`ddns.rs`と同じ「5分間隔でグローバルIP変化を
+検知し自動更新」ループが起動する(`free_domain.rs`)。既存の汎用URL
+テンプレート方式(`OPEN_WEB_SERVER_DDNS_UPDATE_URL`)とは独立して併存
+可能。
+
+#### 複数ドメイン対応(2026-07-23追記、最大20ドメイン)
+
+1インスタンスにつき最大`free_domain::MAX_DUCKDNS_DOMAINS`(=20)件まで、
+DuckDNSサブドメインを動的に登録・自動更新できる。設計は既存の
+`tenant_router::TenantRegistry`と同じ`RwLock<HashMap<..>>`パターン
+(`free_domain::DomainRegistry`)。上記の環境変数は1件目のドメインとして
+起動時にシードされる(後方互換)。
+
+- `POST /admin/ddns/setup-free-domain`(`x-admin-token`認証、
+  `{"domain": "myhost", "token": "..."}`)は**複数回呼べば複数ドメインを
+  追加登録**できる。1回の呼び出しは1ドメインの登録+即時疎通確認。
+  21件目以降は`400 Bad Request`+理由付きメッセージで明示的に拒否される
+  (無言で失敗しない)。
+- `GET /admin/ddns/domains` — 登録済みドメイン一覧+残り登録可能件数。
+- `DELETE /admin/ddns/domains/:domain` — 登録解除(自動更新ループの対象
+  から即座に外れる)。
+
+**正直な開示**: DuckDNSアカウント自体(トークン発行)はduckdns.orgへの
+ユーザー自身のOAuthログインが必要で、これは本ソフトウェアから自動化
+しない(他社サービスの認証情報を代行取得しない既存方針)。またこの
+APIは登録+疎通確認のみを行い、環境変数自体の永続化(設定ファイル
+書き込み等)は行わない——恒久的な自動更新には上記環境変数を設定した
+上での再起動が必要(ただし動的登録経由のドメインはプロセス再起動不要で
+即座に自動更新ループへ組み込まれる)。
+
+`GET /admin/sftp/connection-info`は、登録済みDuckDNSドメインがあれば
+(`OPEN_WEB_SERVER_SFTP_PUBLIC_HOST`の次に)その場で取得した生グローバル
+IPより優先してホスト名として使う——DDNSで確保した「一度設定すれば
+変わらない」永続ホスト名の方が、固定IPが無い環境のSFTP接続コマンドと
+して実用上ずっと有用なため。複数ドメイン登録時は`?host=<domain>`
+クエリパラメータでどのドメインを使うか選べる(未指定時は登録済み
+ドメインのうち辞書順先頭が既定値)。レスポンスの
+`available_duckdns_domains`で登録済み全ドメインのフルホスト名一覧を
+確認できる。
+
+**移植時の注意(2026-07-23更新)**: 実DuckDNSエンドポイント
+(`https://www.duckdns.org/update`)へダミーの無効トークンで実接続
+検証**済み**——`HTTP 200`+プレーンテキストボディ`KO`が実際に返る
+ことを確認し、`update_duckdns()`の`body.trim_start().starts_with("OK")`
+判定ロジックが実際のDuckDNSの応答形式(成功時`OK`、失敗時`KO`)と
+一致していることを裏取りできた。ただし**実DuckDNSアカウント作成・
+有効トークンでの成功系E2E検証は今回も未実施**(他社サービスの
+認証情報を代行取得しない既存方針により、ユーザー自身の作業として
+残る)。20件の上限は実DuckDNSサービス側の制約ではなく、本ソフトウェア
+独自の運用上限(マジックナンバー化を避けた定数`MAX_DUCKDNS_DOMAINS`)
+である点に注意。
+
+### 4.10 CORS(Cross-Origin Resource Sharing)対応(2026-07-23新設、既定無効・オプトイン)
+
+`open-easy-web`のようなブラウザ上WASMフロントエンドが、別オリジン
+(別ポート/別ホスト)から本サーバーの管理API(`/admin/*`)を`fetch()`で
+叩けるようにするミドルウェア。**既定で無効**——環境変数
+`OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS`が未設定ならCORSヘッダーを
+一切付与せず、既存動作を完全に維持する(オプトイン方式)。
+
+```bash
+# カンマ区切りで複数オリジンを許可できる
+OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS="http://localhost:8080,https://wizard.example.com" \
+./open-web-server
+```
+
+有効化すると、`middleware::cors`が`main.rs`の`route()`関数内で以下を
+行う:
+
+- **プリフライト(`OPTIONS` + `Access-Control-Request-Method`)**:
+  許可オリジンからのものであればルーティング(`dispatch`)より先に
+  `204 No Content`で即応答し、`Access-Control-Allow-Origin`/
+  `-Methods`(`GET, POST, PUT, DELETE, OPTIONS`)/`-Headers`
+  (`content-type, x-admin-token, authorization, idempotency-key`——
+  管理APIの`x-admin-token`を含む)を付与する。許可されていないオリジンの
+  プリフライトには何も付与せず`dispatch`へ素通りする(通常のルーティング
+  結果、多くの場合`404`または`405`になる)。
+- **通常リクエスト**: `dispatch`完了後(圧縮処理と同じ位置)に、リクエストの
+  `Origin`ヘッダーが許可リストに含まれる場合のみ同じCORSヘッダーを
+  レスポンスへ追加する。許可されていないオリジンにはヘッダーを一切
+  付けない(ブラウザ側のCORS enforcementに委ねる設計であり、サーバー側で
+  リクエスト自体を拒否するものではない——一般的なCORS実装と同じ)。
+
+**移植時の注意**: `open-easy-web`側は追加のコード変更不要(ブラウザの
+`fetch()`が標準のCORSプロトコルに従うだけ)。実HTTP経由の統合テスト2件
+(`main.rs`の`cors_headers_and_preflight_work_over_real_http`/
+`cors_headers_are_absent_by_default_over_real_http`)で、許可/拒否
+オリジンでのヘッダー有無・プリフライト応答・既定無効時の非干渉を
+検証済み。
+
+### 4.11 構造化アクセスログ+ローテーション(2026-07-24新設、既定無効・オプトイン)
+
+商用Webサーバー(Nginx/Apache)の運用ベストプラクティス(日英Web検索で
+確認: JSON構造化ログ+サイズ/日付ベースのローテーション+圧縮保持)を
+参考に、監査・分析用途の永続アクセスログを追加。既存の`tracing`ベースの
+リクエストログ(標準出力/OTLP向け、開発者用途)とは独立して並存する。
+
+```bash
+OPEN_WEB_SERVER_ACCESS_LOG_PATH=/var/log/open-web-server/access.log \
+OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES=10485760 \
+OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS=5 \
+./open-web-server
+```
+
+- `OPEN_WEB_SERVER_ACCESS_LOG_PATH`未設定なら完全に無効(ファイルI/Oを
+  一切行わない、既定動作に影響なし)。
+- 1行1リクエストのJSON Lines
+  (`{"ts":"2026-07-24T...","method":"GET","path":"/healthz","status":200,
+  "elapsed_ms":3,"remote_addr":"127.0.0.1:12345"}`)。
+- ファイルサイズが`OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES`(既定10MiB)を
+  超えると、`access.log`を`access.log.1.gz`へgzip圧縮しつつローテートし、
+  既存の`.1.gz`〜`.(N-1).gz`は`.2.gz`〜`.N.gz`へ世代シフトする
+  (`OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS`、既定5世代)。
+- ファイルI/Oは`tokio::task::spawn_blocking`へ退避、書き込み失敗は
+  リクエスト処理自体をブロックしない(`FileAuditLog`と同じ設計方針)。
+
+**移植時の注意**: 新規クレート依存は不要(`flate2`/`serde_json`は既存の
+`compression.rs`/API層で既に使用済み)。`crates/open-web-server-gateway/
+src/access_log.rs`単体で持ち出せる(`AppState.access_logger`フィールドと
+`main.rs`の`route()`/`accept_loop`/`accept_tls_loop`3箇所への配線が必要)。
+
+### 4.12 RS-LinkFusion(WAN/LAN/WiFiボンディング)との連携(2026-07-24、実機検証済み・追加コード不要)
+
+同一PCに`open-web-server`と`RS-LinkFusion`(`https://github.com/aon-co-jp/
+RS-LinkFusion`)を両方インストールし、複数回線をボンディングした上で
+Webサーバーを動かすシナリオは、**`open-web-server`側の追加実装なしで
+既に機能する**ことを実機検証済み(`open-web-server`はbindアドレスを
+環境変数で受け取るだけでネットワークインターフェースに関知しない設計
+のため)。
+
+```bash
+# 1) open-web-server をローカルの任意アドレスで起動
+OPEN_WEB_SERVER_BIND=127.0.0.1:18099 ./open-web-server
+
+# 2) RS-LinkFusion のボンディング受け口(TCPポートフォワードモード)
+rs-linkfusion serve --bind 127.0.0.1:15900 --target 127.0.0.1:18099 --key <hex鍵>
+
+# 3) RS-LinkFusion のボンディング接続元
+rs-linkfusion connect --listen 127.0.0.1:15199 --remote 127.0.0.1 --remote-port 15900 --key <hex鍵>
+
+# 4) ボンディング経由でopen-web-serverへ到達することを確認
+curl http://127.0.0.1:15199/healthz   # => "ok" (200)
+```
+
+**TUN仮想アダプタ方式(`gateway-serve`/`gateway-connect`、OSレベルの
+全トラフィックをボンディングする本命シナリオ)についても設計上は同様に
+動くはずだが、Windows実機での`wintun.dll`+管理者権限が必要なため今回の
+開発環境(非管理者権限)では未検証**——`OPEN_WEB_SERVER_BIND`をTUN
+仮想アダプタのIP(RS-LinkFusion既定`10.66.0.2`等)に向けるだけで動作する
+想定。詳細は`RS-LinkFusion/PORTING.md`側にも追記済み。
+
+### 4.13 Apache/Nginxヴァーチャルホストプロファイルの実行時切替+改善計画(2026-08-03新設)
+
+ユーザー指示「open-web-serverをJavaで言う所のApacheとNginx互換で、
+Tomcatの互換としてのRPoemの実用性と互換性と使いやすさなどを向上して」
+「インストール後もいつでも両方のプロファイルに対応可能に」への対応。
+
+**実装・デプロイ済み**: `PUT /admin/web-vhosts/:host/compat-mode`
+(`{"compat_mode": "apache"}`または`{"compat_mode": "nginx"}`)で、
+稼働中のvhostの`docroot`等を再送せず互換モードだけを安全に切り替え
+られる(`WebVhostRegistry::set_compat_mode()`、既存の
+`persist_path`永続化経由で再起動後も維持)。
+
+```bash
+curl -X PUT http://127.0.0.1:8080/admin/web-vhosts/audiocafe.tokyo/compat-mode \
+  -H "x-admin-token: <token>" -H "Content-Type: application/json" \
+  -d '{"compat_mode": "apache"}'
+```
+
+**改善計画(未着手、詳細・優先順位は[CLAUDE.md](CLAUDE.md)の
+2026-08-03 HANDOFF参照)**: (1) Apache互換の深掘り(`.htaccess`相当の
+リライトルール・Basic/Digest認証)、(2) Nginx互換の深掘り(brotli圧縮・
+レート制限・ロードバランシング)、(3) 実際のApache/Nginx設定ファイル
+そのものをパース/インポートする機能(大きめの新機能、要件再確認後に
+着手)、(4) RPoem(Tomcat相当)固有の価値の再定義(現状は
+open-web-serverのTenantRegistryと機能重複するため本番未デプロイ)。
+
+*English*: `PUT /admin/web-vhosts/:host/compat-mode` lets an
+operator switch a running vhost's Apache/Nginx compat mode at any
+time without resending `docroot` etc. (persisted, survives
+restarts). A broader improvement plan — deeper Apache/Nginx
+compatibility, real config-file parsing/import, and redefining
+RPoem's unique value as the Tomcat equivalent — is recorded (not yet
+started) in [CLAUDE.md](CLAUDE.md)'s 2026-08-03 HANDOFF entry.
+
+### 4.14 Nginx `limit_req`相当のリクエストレート制限(2026-08-03新設、既定無効・オプトイン)
+
+クライアントIPごとのトークンバケット方式レート制限
+(`rate_limit.rs`)。`OPEN_WEB_SERVER_RATE_LIMIT_RPS`(秒間許容
+リクエスト数)を設定した場合のみ有効、`OPEN_WEB_SERVER_RATE_LIMIT_
+BURST`(既定はRPSと同値)でバースト許容量を調整できる。超過分は
+Nginxの`nodelay`同様に待機させず即座に`429 Too Many Requests`で拒否。
+
+```bash
+OPEN_WEB_SERVER_RATE_LIMIT_RPS=10 OPEN_WEB_SERVER_RATE_LIMIT_BURST=20 ./open-web-server
+```
+
+送信元IPの判定は実TCP接続のピアアドレスのみを使い、`X-Forwarded-For`
+等のヘッダーは信用しない(偽装可能なため)。実HTTP経由の統合テスト
+(バースト超過時の429・未設定時は10連続リクエストでも拒否されない
+こと)で検証済み。詳細・正直な未着手事項は[CLAUDE.md](CLAUDE.md)の
+2026-08-03(続き)HANDOFF参照。
+
+*English*: Per-client-IP token-bucket rate limiting
+(`OPEN_WEB_SERVER_RATE_LIMIT_RPS`/`_BURST`, opt-in, disabled by
+default). Rejects with `429` immediately once burst is exhausted,
+matching Nginx's `limit_req nodelay` behavior. Only trusts the real
+TCP peer address. See CLAUDE.md's 2026-08-03 (続き) HANDOFF entry for
+details and honest gaps.
+
+### 4.15 Apache `.htaccess`のRewriteRule相当(2026-08-03新設)
+
+正規表現パターン→置換先のリライト/リダイレクトルール
+(`WebVhostConfig.rewrite_rules`、既定空)。登録順に評価し最初の
+マッチで確定(`[L]`常時暗黙適用)。
+
+```json
+{
+  "host": "example.com",
+  "docroot": "/var/www/example",
+  "rewrite_rules": [
+    {"pattern": "^/old\\.html$", "substitution": "/new.html", "redirect": false},
+    {"pattern": "^/legacy/(.*)$", "substitution": "/modern/$1", "redirect": true}
+  ]
+}
+```
+
+`redirect: false`は内部リライト(クライアントには見えず、以後の静的
+配信/PHP委譲へ書き換え後のパスをそのまま渡す)、`redirect: true`は
+外部`301`リダイレクト(`Location`ヘッダー)。実HTTP経由の統合テストで
+両方の経路を検証済み。詳細・正直な未着手事項は[CLAUDE.md](CLAUDE.md)の
+2026-08-03(続き2)HANDOFF参照。
+
+*English*: Regex pattern → substitution rewrite/redirect rules
+(`WebVhostConfig.rewrite_rules`, defaults to empty). Evaluated in
+order, first match wins. `redirect: false` rewrites the path
+internally (transparent to the client); `redirect: true` returns an
+external `301` with `Location`. See CLAUDE.md's 2026-08-03 (続き2)
+HANDOFF entry for details and honest gaps.
+
+### 4.16 実Apache/Nginx設定ファイルのvhostインポート(2026-08-03新設、基本部分のみ)
+
+ユーザー確認済みのスコープ「vhost定義の基本部分だけで良い」に基づき、
+`<VirtualHost>`/`server{}`ブロックからホスト名・ドキュメントルート・
+PHP-FPM接続先のみを抽出する最小パーサー。
+
+```bash
+curl -X POST http://127.0.0.1:8080/admin/web-vhosts/import \
+  -H "x-admin-token: <token>" -H "Content-Type: application/json" \
+  -d '{
+    "format": "apache",
+    "config": "<VirtualHost *:80>\n  ServerName mail.example.com\n  DocumentRoot \"/var/www/webmail\"\n</VirtualHost>"
+  }'
+```
+
+ドメイン・サブドメインの用途を問わない(メールサーバーのWebmail・
+ファイルサーバー管理画面・バックアップダッシュボード・DB管理パネル等)
+——Apache/Nginxのvhostブロックが共通して持つ汎用フィールドのみを
+見るため。`RewriteRule`等の複雑なディレクティブは無視される
+(エラーにはしない)。詳細は[CLAUDE.md](CLAUDE.md)の2026-08-03(続き4)
+HANDOFF参照。
+
+*English*: Minimal parser extracting only host, docroot, and PHP-FPM
+address from a real Apache/Nginx vhost block, per the user's
+explicit scope decision. Works for any domain/subdomain use case
+since it only reads generic vhost fields. See CLAUDE.md's 2026-08-03
+(続き4) HANDOFF entry for details.
+
+### 4.11 Android版(`android/`、2026-07-23〜24新設、3電源プロファイル対応)
+
+`android/`配下のKotlin/Gradleプロジェクトは、`open-web-server-gateway`
+本体をクロスコンパイルして起動するだけの単一Activityシェル。移植先で
+このAndroid版を使う場合の手順:
+
+```bash
+# 1) 対象ABIを両方クロスビルド(実機arm64-v8a + このマシンのx86_64 AVD)
+cargo ndk -t arm64-v8a build --release --bin open-web-server
+cargo ndk -t x86_64-linux-android build --release --bin open-web-server
+
+# 2) それぞれ`lib<任意名>.so`にリネームしてjniLibsへ配置
+#    (実行ファイルを.soの皮を被せてnativeLibraryDir配下に置く、という
+#    Termux等が使う既知の手法——`assets/`直下は最近のAndroidのW^X制約下
+#    では実行できないため)
+cp target/aarch64-linux-android/release/open-web-server \
+   android/app/src/main/jniLibs/arm64-v8a/libopenwebserver.so
+cp target/x86_64-linux-android/release/open-web-server \
+   android/app/src/main/jniLibs/x86_64/libopenwebserver.so
+
+# 3) ビルド(Windows、gradlewを使わずキャッシュ済みgradle配布物を直接叩く例)
+gradle assembleDebug --no-daemon
+```
+
+**実機能で踏んだ2つの罠(移植先でも同じことが起きるので明記)**:
+1. **ABI不一致**: `jniLibs`に対象デバイス/エミュレータのABIのバイナリが
+   無いと、`nativeLibraryDir`に何も展開されず`ProcessBuilder`の起動が
+   `binary exists: false`で失敗する。実機スマホ/タブレットは
+   `arm64-v8a`が主流だが、x86_64エミュレータで検証する場合は
+   `x86_64`も追加で必要。
+2. **ネイティブライブラリが展開されない(Android 6.0+既定)**:
+   `build.gradle.kts`に`packaging { jniLibs { useLegacyPackaging =
+   true } }`が無いと、ネイティブライブラリはAPK内から直接実行され
+   (`status=run-from-apk`)、`nativeLibraryDir`ディレクトリ自体には
+   一切展開されない。`ProcessBuilder`に実ファイルパスを渡す必要がある
+   本アプリの構成では必須の設定。
+
+**4電源プロファイル→組み合わせ選択(2026-07-26再設計)**
+(`PowerProfile.kt`/`ProfileSelectActivity.kt`): 当初は4値排他選択
+(1つだけ選ぶ)だったが、ユーザー指示によりRust側・Android側とも
+**独立したON/OFFフラグの組み合わせ**(省メモリ・省電力・常時電源接続の
+任意の組み合わせ、「通常」はどのフラグも立っていない状態として表現)
+へ再設計した。デスクトップ版`open-web-server-gateway::power_profile`の
+`PowerProfileFlags`/`effective_settings()`と同じ合成ルールをAndroid側
+(`ActiveProfiles`)にも実装している:
+- 🧠省メモリ: ログ保持行数・ヘルスチェック本文保持サイズを絞る
+  (`logBufferMaxLines`/`healthBodyPreviewMaxChars`)。**他のフラグの
+  状態に関わらず独立して常に適用される軸**。
+- 🔋省電力: `WakeLock`を取得せずポーリング間隔を延ばす(5分)。
+- 🔌常時電源接続: `PARTIAL_WAKE_LOCK`を保持しポーリング間隔を短縮する
+  (5秒)。**省電力と同時に有効な場合、意味論的に矛盾するため常時電源
+  接続がポーリング間隔軸を優先する**(電源に困らない前提の機器では
+  即応性を優先する方が実用的、という設計判断——デスクトップ版と同じ
+  優先順位、`PowerProfile.kt`の`ActiveProfiles`docに理由を明記)。
+  省メモリの独立軸には影響しない。
+- ⚖️通常: 上記3フラグをすべて外した状態(独立フラグではない)。
+
+ホーム画面には4つの専用アイコン(`activity-alias`、色分け+ラベル文字列
+でプロファイル名を明示)を引き続き用意しているが、複数フラグが同時に
+有効な場合はどれか1つの「代表アイコン」だけを表示する——優先順位は
+**省メモリ > 省電力 > 常時電源接続 > 通常**(`ActiveProfiles.
+representativeForIcon()`、理由: 低メモリ環境は端末動作自体への制約が
+最も直接的なため最優先で視認できるようにした)。`ProfileSelectActivity`
+(起動時選択画面)はボタン4択からチェックボックス3個(省メモリ/省電力/
+常時電源接続)+起動ボタンへ変更し、複数チェックした組み合わせで起動
+できる。
+
+**途中からの切替**: 稼働中の`MainActivity`の「プロファイル変更」ボタンから
+`switchProfileLive()`(チェックボックスによる複数選択ダイアログ)を
+呼ぶと、**アプリ・サーバープロセスを再起動せずに**プロファイルの組み合わせ
+を切り替えられる——`WakeLock`の取得/解放・ヘルスチェックポーリング間隔
+(次回待機から反映)・ログ保持サイズは即座に反映される。`OPEN_WEB_SERVER_
+ACCEL_BACKEND`環境変数(ハードウェアアクセラレータ指定、常時電源接続の
+有無のみに連動)のみ、`ProcessBuilder`起動時にしか渡せないため
+ネイティブサーバープロセスの再起動が必要(Activity自体は再起動しない)。
+デスクトップ(Windows/Linux)版にも同じ組み合わせ設計を`open-web-server-
+gateway::power_profile`(`PowerProfileFlags`)として実装し、`POST
+/admin/power-profile`(ペイロード`{"profiles": [...]}`、配列=組み合わせ
+選択)で再起動無しに切替できる(実際の挙動差は`ddns`/`free_domain`の
+バックグラウンドポーリング間隔調整のみ、詳細はCLAUDE.mdの2026-07-26
+HANDOFF参照)。他プロジェクトへ移植する場合、`power_profile.rs`は
+AppState以外への依存が無い独立モジュールなのでそのまま持ち出せる。
+
+**adbの`unauthorized`問題を踏んだ場合の対処**: ヘッドレス
+(`-no-window`)でエミュレータを起動すると`adb devices`が
+`unauthorized`のまま解消しないことがある(この開発環境で実際に発生)。
+GUI操作可能な環境であれば、`-no-window`を外してウィンドウ付きで起動し、
+完全ブートまで待つ(明示的な承認ダイアログのタップは不要だった)ことで
+解消した。
+
+**正直な制限事項**: 実機(物理スマホ/タブレット)での検証は未実施
+(x86_64エミュレータでのみ実証済み)。APK署名・Google Play配布・
+フォアグラウンドサービス化・Doze中のネットワークI/O制限自体の回避は
+スコープ外のまま。
+
+## 5. 動作確認
+
+```bash
+cd open-web-server
+cargo check --workspace
+cargo test --workspace     # 2026-07-20時点で84テストが全部通ればOK(gateway 46 /
+                           # ledger 20[+1 ignored、要ライブPostgreSQL] / wire 18)
+                           # 最新の内訳は CLAUDE.md の「現状」節を参照
+cargo run -p open-web-server-gateway
+```
+
+`aruaru-db`/`open-runo`の実プロセスと結合した本物のエンドツーエンド起動には
+それらのリポジトリの実行手順を参照(このリポジトリ単体にはMakefile/
+docker-composeは無い)。
+
+## 6. 命名規約(お引越し先でも守ること)
+
+- クレート/ディレクトリ: `open-web-server-*` — Rustパス: `open_web_server_*`
+- 環境変数: `OPEN_RUNO_ENDPOINT`(open-runoへの転送先エンドポイント)
+
+## 7. 詳細ドキュメント
+
+`CLAUDE.md`(方針・HANDOFF)/ `docs/architecture.md`(構成図・各層の説明)/
+`docs/integration.md`(open-runo/aruaru-dbとの結合方法)。
+
+## 8. 移植・拡張時の注意
+
+他プロジェクトへ移植・拡張する際、依存クレートの現状(バージョン・
+メンテナンス状況)や仕様の詳細で判断に迷う場合は、学習データからの
+推測だけに頼らず、実際に検索(日本語・英語の両方のGoogle検索、および
+GitHub上の実装状況調査)して裏付けを取ってから技術選定を行うことを
+推奨する。
+
+**パフォーマンス・並行処理**: 移植先でも、非同期(tokioマルチスレッド
+ランタイム)を基本としつつ、必要な場面(CPU負荷の高い計算・厳密な順序
+保証が必要な処理等)のみ同期処理を用いる方針を踏襲すること。
+`#[tokio::main]`のランタイムflavorが`current_thread`に固定されて
+いないか、async関数内でブロッキングI/O・CPU負荷処理を直接呼んでいないか
+(`tokio::task::spawn_blocking`へ退避すべき)、CPU律速な処理は`rayon`等
+でのデータ並列化を検討する価値があるか、を移植時にも確認するとよい。
+4層4重の通信・DB冗長化アーキテクチャ(本ファイル§4参照)を移植する際も、
+この並行処理方針は維持すること。
+
+**最先端追従の方針(2026-07-23追記)**: 移植時の日英Web検索で
+CockroachDB/TiKV等の最先端の実運用システムが既に対応済みと判明した
+設計ギャップが見つかった場合、「今のところは大丈夫」という報告に
+留めず、確認を求めず自動でそのまま実装に着手すること(ユーザー指示、
+正本は`open-raid-z/CLAUDE.md`・`PORTING.md`同日エントリ参照)。
+
+**ハードウェア非依存API + 安全なフォールバックパターン(移植元:
+`open-web-server-wire::accel`、2026-07-23新設)**: 将来対応予定の
+ハードウェア/バックエンド(GPU/NPU/専用アクセラレータ等)を`enum`の
+選択肢として先に定義し、未実装のものが選ばれてもpanicせず既定実装
+(CPU)へ安全にフォールバックしつつ`tracing::warn!`で可視化する。
+呼び出し側のAPIは将来ハードウェアが実装された時と同じ形のまま——
+実装が追いつくまでCPUが肩代わりする。存在しない能力を実装済みと
+偽らないための必須パターン。
+
+```rust
+pub enum AccelBackend { Cpu, Gpu, Npu, HardwareAccelerator }
+
+impl PayloadAccelerator {
+    pub fn new(backend: AccelBackend, cipher: PayloadCipher) -> Self {
+        let effective = match backend {
+            AccelBackend::Cpu => AccelBackend::Cpu,
+            other => { tracing::warn!(?other, "not implemented, falling back to Cpu"); AccelBackend::Cpu }
+        };
+        Self { backend: effective, cipher }
+    }
+}
+```
+
+**IOWN/APN×Smart-TCPハイブリッド適応制御**: [RS-SmartTCP](https://github.com/aon-co-jp/RS-SmartTCP)
+参照(RFC 6298/9002準拠のSRTT/RTTVAR EWMA、独立リポジトリとして移植
+可能)。
+
+**Apache/Tomcat互換の多言語アプリケーションサーバー対応(2026-07-23、
+ユーザー指示、正本は`open-raid-z/CLAUDE.md`同名節参照)**: このリポジトリ
+(`app_proxy`/`tenant_router`)を他プロジェクトへ移植する際、「JavaのApache
+のように動作し、Ruby on Rails/PHP+Laravel/Python+FastAPI等、言語を問わず
+バックエンドを指せる」という設計を維持すること。転送先はプレーンHTTPの
+ため、特定言語向けの専用実装(例: PHP専用の特別なプロキシロジック)を
+追加しないこと——`backend_addr`が単体でHTTPサーバーとして応答しさえ
+すれば、`TenantConfig`への登録だけで任意の言語・フレームワークを
+ホストできる、という汎用性こそがこのモジュールの価値。移植先で
+PHP-FPM/FastCGI等の本番グレード直結経路を追加する場合も、この
+汎用リバースプロキシ経路とは独立したオプトイン機能として実装し、
+既存の言語非依存パスを壊さないこと。
+
+## 9. リバースプロキシの接続レース耐性(2026-08-04追加)
+
+`proxy.rs::forward_to_stripped`は、動的登録直後のバックエンド(RPoem等の
+「分身の術」テナント)へ最初の1リクエストを送った際に接続が確立直後に
+切断される、という実際のE2E検証(open-web-server↔RPoem)で観測された
+レースに対応するため、**接続自体が確立できなかった/確立直後に処理されず
+切断されたケースに限り**、50ms待機後に1回だけ再送する
+(`request_with_one_retry_on_connect_failure`、
+`hyper_util::Error::is_connect()`だけでなく`hyper::Error::is_canceled()`/
+`is_closed()`/`is_incomplete_message()`まで判定を広げている点が肝)。
+**到達後のエラー応答(4xx/5xx)は再送しない**——冪等性が保証できない
+リクエストでも安全。移植先で同種のリバースプロキシを実装する場合、
+この区別(「到達しなかった」vs「到達してエラーが返った」)を守ること。
+
+## 10. Android版: root化端末での外付けストレージ対応(2026-08-04追加)
+
+`android/app/src/main/java/tokyo/runo/openwebserver/
+ExternalStorageConfig.kt`+`MainActivity.kt`の`startServerProcess()`
+拡張部分がパターン。**Android 10+のScoped Storageにより、root化して
+いない端末ではネイティブバイナリがUSB外部ストレージへ直接POSIXパスで
+読み書きできない**——この機能はroot化済み端末専用であり、`su -c id`で
+実際にroot到達性を確認できない場合は**内部ストレージへの黙示的な
+フォールバックをせず起動を拒否する**設計を維持すること(移植先でも
+「保存先を誤認したままユーザーが運用し続ける」事故を防ぐため、この
+安全側の拒否パターンは省略しないこと)。root起動時は`su -c`が非rootの
+起動元プロセス環境を継承しない前提で、全環境変数を`export`込みの
+1シェルコマンド文字列として組み立てる(`shellQuote()`によるシングル
+クォートエスケープ必須、コマンドインジェクション対策)。
+
+## russh 0.45→0.63系マイグレーションの移植ポイント(2026-08-25)
+
+`sftp.rs`(組み込みSFTPサーバー)を`russh`0.63.1へ上げた際の実体験
+(RUSTSEC-2026-0153/0154のHigh脆弱性修正)。同じ`russh`旧版を使う
+他リポジトリ(`aon-co-jp/open-english`の`vps_agent.rs`等)へ同種の
+アップグレードを移植する場合の要点:
+
+1. **鍵型が`russh::keys::key::{KeyPair, PublicKey}`から`ssh_key`
+   クレート由来の`russh::keys::{PrivateKey, PublicKey}`へ統合**
+   された。`KeyPair::generate_ed25519()`は
+   `PrivateKey::random(&mut rng, Algorithm::Ed25519)`
+   (`rng`は`russh::keys::key::safe_rng()`)に置き換える。
+2. **`safe_rng()`の返り値は`Send`ではない**——`.await`をまたいで
+   生かしたままにすると、それを含む`async fn`全体が`Send`でなくなり
+   `tokio::spawn`できずビルドが通らなくなる(実際に踏んだ落とし穴)。
+   鍵生成専用のブロックへ閉じ込めて即座にdropさせること。
+3. **`server::Handler`/`client::Handler`トレイトのメソッドが
+   `async fn`から`fn(...) -> impl Future<Output = ...> + Send`
+   (RPITIT)へ変わった**——`#[async_trait::async_trait]`マクロは
+   もう使えない(シグネチャが一致しなくなる)。`fn` + 本体を
+   `async move { ... }`で包む形へ書き換えること。
+4. **`server::Handler::channel_open_session`が`Result<bool, Error>`
+   から`reply: ChannelOpenHandle`を明示的に`.accept().await`/
+   `.reject(reason).await`する形へ変更**された。単なる型の
+   付け替えではなく、`reply`をdropしただけでも自動的に拒否される
+   設計への変更——旧APIの「boolを返し忘れて誤って通してしまう」
+   種類の潜在バグを構造的に防ぐ安全側の改善だと理解した上で移植先の
+   意味論を確認すること。
+5. **`client::Handler::check_server_key`が`&PublicKey`→
+   `&PublicKeyOrCertificate`、`authenticate_publickey`が
+   `Arc<KeyPair>`→`PrivateKeyWithHashAlg`引数・`bool`→
+   `AuthResult`(enum、`Success`/`Failure`)返り値へ変更**。
+6. **`Auth::Reject`に新フィールド`partial_success: bool`が必須化**
+   (通常の拒否では`false`を指定すればよい)。
+7. **移行の検証は「ビルドが通る」で終わらせないこと**: このリポジトリ
+   では既に実SSH/SFTPクライアントによるループバックE2Eテスト
+   (`real_sftp_client_roundtrip_over_loopback`)が用意されていたため、
+   これを実行して認証→ファイル操作の一気通貫が壊れていないことを
+   確認できた。同種のクライアント/サーバーコードを移植する場合、
+   型チェックが通っただけで「移行完了」と報告しないこと。
+
+## 11. open-web-server⇔RPoem「4層4重」連携の再検証(2026-09-30、破損なし)
+
+2026-08-04の実証(「9.」「10.」)から約2ヶ月後、ユーザーから現状の健全性を
+問われ`cargo test --workspace`をopen-web-server・RPoem双方で実行した。
+両方とも全テスト成功(open-web-server: `tenant_router`・`proxy`系を含む、
+RPoem: `ledger_fusion`のクロスリポジトリ統合テストを含む)。自動テストの
+範囲でリグレッションは無い。実バイナリ2プロセス同時起動の手動E2E手順
+(`RPoem/crates/open-runo-appserver/examples/e2e_stub_app.rs`)自体は今回
+未再実施。詳細はCLAUDE.mdの2026-09-30 HANDOFF参照。
+
+## JSON処理の使用方針: `parse_secure_sonic`(速い型+安全)と`sonic-rs`は使える所では全て使う(2026-10-14、ユーザー指示)
+正本は[`RS-JSON`](https://github.com/aon-co-jp/RS-JSON)(`README.md`・`PORTING.md`)。
+
+**方針**: JSONを読む所は、使える所では**全て** `rust-json`(RS-JSON)の `parse_secure_sonic`(`fast`機能、結果は`sonic_rs::Value`)を使う。
+`sonic-rs` を直接使える所(型付き構造体への読み込みなど)も同様。使えない所は `parse_secure`(結果は`serde_json::Value`)を使う。
+外部から来る信頼できない入力(HTTP本文・ネットワーク越しのファイル・アップロード)は、**必ずサイズ・深さ・重複キーの上限つき**で読む。
+
+**実測(7 MB・4万件)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms(約2.4倍速い、防御込み)** / `sonic-rs`そのまま 33 ms(約6倍、防御なし)。
+`serde_json::Value`に読む限りSIMDでもほぼ速くならない(188 ms)。**速さの源は、結果を連続した領域に詰め込む値の型**。
+
+**使える所 / 使えない所**
+- ✅ 読み取り中心で、JSONを大きく・頻繁に読む所(キャッシュJSON、設定、APIの応答、ログ、インデックス)。
+- ✅ 外部からの入力の入口(速さより防御が目的。`parse_secure`でも可)。
+- ⚠️ `serde_json::Value`を関数間で受け渡している既存コードは、型を`sonic_rs::Value`に直す書き換えが要る(`JsonValueTrait`/`JsonContainerTrait`のメソッド)。書き換えずに`serde_json::Value`へ読むと速くならない。
+- ❌ WASM(`rust_json::light`、依存ゼロ)、PHP/JavaScript側のJSON処理(Rustの部品は使えない)。
+- 注意: 依存先の`sonic-rs`は内部で`unsafe`を使う(自前コードに`unsafe`は無い)。小さなJSON(数KB)では体感差が出ない。速度目的の書き換えは、実測で効く所から。
+
+**導入**: `Cargo.toml`に `rust-json = { path = "../RS-JSON", features = ["fast"] }`。使用例は`RS-JSON/README.md`。
+
+**このリポジトリでの適用状況**: 未適用(方針のみ)。コードの切り替えは、JSONを大きく・頻繁に読む所から実測して順に行う。
+
+## JSON handling policy: use `parse_secure_sonic` (fast type + secure) and `sonic-rs` everywhere they can be used (2026-10-14, user instruction)
+The source of truth is [`RS-JSON`](https://github.com/aon-co-jp/RS-JSON) (`README.md`, `PORTING.md`).
+
+**Policy**: wherever JSON is read, use `parse_secure_sonic` from `rust-json` (RS-JSON, the `fast` feature; the result is `sonic_rs::Value`) **everywhere it can be used**.
+Use `sonic-rs` directly where possible too (e.g. reading into typed structs). Where it cannot be used, use `parse_secure` (result: `serde_json::Value`).
+Untrusted input from outside (HTTP bodies, files over the network, uploads) **must always be read with size / depth / duplicate-key limits**.
+
+**Measured (7 MB, 40,000 records)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms (about 2.4x faster, with the defences)** / raw `sonic-rs` 33 ms (about 6x, no defences).
+Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms). **The speed comes from the value type that packs the result into contiguous memory.**
+
+**Where it can / cannot be used**
+- ✅ Read-heavy code that parses large or frequent JSON (cache JSON, config, API responses, logs, indexes).
+- ✅ Entrances for outside input (the goal there is defence rather than speed; `parse_secure` is fine).
+- ⚠️ Existing code that passes `serde_json::Value` between functions needs its type changed to `sonic_rs::Value` (methods from `JsonValueTrait` / `JsonContainerTrait`). Reading into `serde_json::Value` without that change is not faster.
+- ❌ WASM (`rust_json::light`, zero dependencies) and the JSON handling on the PHP / JavaScript side (Rust components cannot be used there).
+- Note: the `sonic-rs` dependency uses `unsafe` internally (our own code has none). For small JSON (a few KB) the difference is not noticeable; do speed-motivated rewrites where measurements show a benefit.
+
+**Adoption**: in `Cargo.toml`, `rust-json = { path = "../RS-JSON", features = ["fast"] }`. Example in `RS-JSON/README.md`.
+
+**Status in this repository**: Not yet applied (policy only). Code will be switched over place by place, starting where measurements show large or frequent JSON reads.
+
+## API 方針: REST 全廃・gRPC / Connect へ (2026-11-04)
+
+### 日本語
+- **REST は全廃する。新しい API は REST で作らない。** ブラウザや `curl` から呼ぶ API は **Connect の単純呼び出し**(`POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON)、サービス間は **gRPC / gRPC-web**(RPoem の管理API `open_runo.admin.v1.Admin` と同じ流儀)。ストリーミングは、必要になってから。
+- **既存の REST は、触るときに順に移す。** 移したら旧 REST の経路は消す。移行が終わるまで残るが、**新規には追加しない**。
+- **JSON は RS-JSON に統一**する(読み込みは `from_str_secure` / `parse_secure` でサイズ・深さ・重複キーの上限つき、書き出しは `rust_json::fast`)。ブラウザの WASM に `prost` は入れない(サイズが増えるため)。
+- **例外(自分たちの API ではなく、相手の規格が決めているもの)**: ACME、OAuth/OIDC のコールバック、第三者(GitHub など)からの Webhook、ヘルスチェック、静的ファイル配信、OTLP など。これらは規格どおりの HTTP を受ける。
+- 参考実装: `RPoem`(`open_runo.admin.v1.Admin`)、`open-easy-web`(`server/src/connect.rs`、`proto/open_easy_web/admin/v1/admin.proto`)。
+- ※ このリポジトリのコードが既に方針どおりかどうかは、各リポジトリの現状による。この節は方針の記録であり、コードの変更を意味しない。
+
+### English
+- **REST is being abolished. New APIs are not built as REST.** APIs called from browsers or `curl` use **Connect unary calls** (`POST /<package>.<Service>/<Method>`, `content-type: application/json`, JSON body); service-to-service calls use **gRPC / gRPC-web** (the same style as RPoem's admin API `open_runo.admin.v1.Admin`). Streaming only when it is actually needed.
+- **Existing REST endpoints are migrated one by one, when they are touched.** The old REST route is removed once migrated. Until migration is finished they remain, but **no new ones are added**.
+- **JSON is unified on RS-JSON**: reading with `from_str_secure` / `parse_secure` (size, depth and duplicate-key limits), writing with `rust_json::fast`. `prost` is not put into browser WASM (it would grow the binary).
+- **Exceptions (shapes dictated by someone else's standard, not our own API)**: ACME, OAuth/OIDC callbacks, webhooks from third parties (e.g. GitHub), health checks, static file serving, OTLP, and so on. These accept plain HTTP as the standard requires.
+- Reference implementations: `RPoem` (`open_runo.admin.v1.Admin`) and `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Note: whether the code in a given repository already follows this policy depends on that repository. This section records the policy; it does not mean the code has been changed.
+
+### Deutsch (KI-Übersetzung, redaktionell überarbeitet; noch nicht von Muttersprachlern geprüft)
+- **REST wird vollständig abgeschafft; neue APIs entstehen nicht mehr als REST.** APIs, die aus dem Browser oder per `curl` aufgerufen werden, verwenden **unäre Connect-Aufrufe** (`POST /<Paket>.<Service>/<Methode>`, `content-type: application/json`, JSON-Body). Zwischen Diensten kommen **gRPC bzw. gRPC-web** zum Einsatz, im selben Stil wie die Admin-API von RPoem (`open_runo.admin.v1.Admin`). Streaming wird erst ergänzt, wenn es tatsächlich gebraucht wird.
+- **Bestehende REST-Endpunkte werden schrittweise umgestellt, und zwar immer dann, wenn man ohnehin an ihnen arbeitet.** Sobald ein Endpunkt umgestellt ist, wird die alte REST-Route entfernt. Bis zum Abschluss der Migration bleiben die übrigen bestehen, es werden aber **keine neuen mehr hinzugefügt**.
+- **JSON wird einheitlich über RS-JSON verarbeitet**: Gelesen wird mit `from_str_secure` bzw. `parse_secure` (mit Obergrenzen für Größe, Verschachtelungstiefe und doppelte Schlüssel), geschrieben mit `rust_json::fast`. `prost` wird nicht in das Browser-WASM aufgenommen, da es die Datei vergrößern würde.
+- **Ausnahmen (Schnittstellen, deren Form ein fremder Standard vorgibt und die nicht zu unserer eigenen API gehören)**: ACME, OAuth/OIDC-Callbacks, Webhooks von Drittanbietern (z. B. GitHub), Health-Checks, die Auslieferung statischer Dateien, OTLP und Ähnliches. Diese nehmen, wie vom jeweiligen Standard verlangt, gewöhnliches HTTP entgegen.
+- Referenzimplementierungen: `RPoem` (`open_runo.admin.v1.Admin`) und `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Hinweis: Ob der Code eines einzelnen Repositorys diese Richtlinie bereits erfüllt, hängt vom jeweiligen Repository ab. Dieser Abschnitt dokumentiert lediglich die Richtlinie; er besagt nicht, dass der Code schon angepasst wurde.
+
+### Русский (перевод выполнен с помощью ИИ и отредактирован; носителями языка пока не проверен)
+- **От REST мы полностью отказываемся; новые API больше не создаются в стиле REST.** API, к которым обращаются из браузера или через `curl`, используют **унарные вызовы Connect** (`POST /<пакет>.<Service>/<Method>`, `content-type: application/json`, тело запроса — JSON). Для взаимодействия между сервисами применяются **gRPC и gRPC-web** — в том же стиле, что и административный API RPoem (`open_runo.admin.v1.Admin`). Потоковая передача данных добавляется лишь тогда, когда в ней действительно возникает необходимость.
+- **Существующие REST-эндпоинты переводятся поэтапно — по мере того, как с ними приходится работать.** После перевода старый REST-маршрут удаляется. Пока миграция не завершена, оставшиеся эндпоинты сохраняются, но **новые не добавляются**.
+- **Работа с JSON унифицирована на основе RS-JSON**: чтение — через `from_str_secure` или `parse_secure` (с ограничениями на размер, глубину вложенности и повторяющиеся ключи), запись — через `rust_json::fast`. `prost` в браузерный WASM не включается, поскольку это увеличило бы размер файла.
+- **Исключения (интерфейсы, форму которых определяет чужой стандарт, а не наш собственный API)**: ACME, обратные вызовы OAuth/OIDC, вебхуки сторонних сервисов (например, GitHub), проверки работоспособности, раздача статических файлов, OTLP и тому подобное. Такие интерфейсы принимают обычный HTTP, как того требует соответствующий стандарт.
+- Эталонные реализации: `RPoem` (`open_runo.admin.v1.Admin`) и `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Примечание: соответствует ли код конкретного репозитория этой политике, зависит от самого репозитория. Данный раздел лишь фиксирует политику и не означает, что код уже изменён.
+
+## API 方針の補足: 用語の整理と使い分け (2026-11-04)
+
+### 日本語
+**1つに統一するものではなく、別の層の話です。** 「REST の代わり」になるのは Connect・gRPC・GraphQL だけで、WASM は画面を作る技術です。
+
+| 用語 | 何か | REST の代わりか |
+|---|---|---|
+| REST | URL と HTTP メソッドで操作を表す API の作り方 | 全廃する側 |
+| **Connect** | `POST /サービス名/メソッド名` に JSON を送る形式。`curl` でもブラウザの `fetch` でも呼べる | はい(**採用**) |
+| **gRPC** | 同じ「サービス/メソッド」の考え方を、バイナリ(protobuf)と HTTP/2 で行う形式。速く、ストリーミングも得意 | はい(**サービス同士に採用**) |
+| gRPC-web | gRPC のブラウザ向けの変形版 | はい(必要なら) |
+| GraphQL | 欲しい項目を問い合わせる形式 | 一部だけ(**問い合わせ(読み取り)専用**) |
+| WASM | Rust をブラウザの中で動かす仕組み | いいえ(画面を作る技術) |
+
+- **ブラウザの画面や `curl` から呼ぶ API は Connect**(POST、JSON を RS-JSON で読み書き)。ブラウザの WASM は素の gRPC を話せず、Connect なら `fetch` のままで、`prost` を足さずに済む(画面のサイズも増えない)。
+- **サービス同士の通信(サーバー間、重い処理、ストリーミング)は gRPC。** 多くは Connect で足りるので、ストリーミングが必要になった所だけ gRPC に上げる。
+- **GraphQL は、まとめて問い合わせたいときの読み取り専用。** 書き込み(操作)には使わない。
+- **WASM は画面を作る技術として、そのまま使う。** 画面から呼ぶ API が Connect になっただけ。
+- 外部の規格が形を決めるもの(ACME、OAuth のコールバック、第三者の Webhook、ヘルスチェック、静的ファイル、OTLP)は、規格どおりの HTTP のまま。
+- **迷ったら Connect。**
+
+### English
+**These are not alternatives to unify; they sit at different layers.** Only Connect, gRPC and GraphQL can replace REST; WASM is a way to build the UI.
+
+| Term | What it is | Replaces REST? |
+|---|---|---|
+| REST | API style that expresses operations through URLs and HTTP methods | The thing being abolished |
+| **Connect** | `POST /Service/Method` with a JSON body; callable from `curl` and from a browser `fetch` | Yes (**adopted**) |
+| **gRPC** | The same service/method idea over binary (protobuf) and HTTP/2; fast, good at streaming | Yes (**for service-to-service**) |
+| gRPC-web | A browser-friendly variant of gRPC | Yes (if needed) |
+| GraphQL | A query language: ask for exactly the fields you want | Partly (**read-only queries**) |
+| WASM | Runs Rust inside the browser | No (a UI technology) |
+
+- **APIs called from browser screens or `curl` use Connect** (POST, JSON read and written with RS-JSON). Browser WASM cannot speak plain gRPC; with Connect it stays a `fetch`, and `prost` is not needed (the binary does not grow).
+- **Service-to-service calls (server to server, heavy work, streaming) use gRPC.** Connect is enough in most places; move a call to gRPC only where streaming is actually needed.
+- **GraphQL is read-only**, for queries that gather several pieces of data. It is not used for writes (operations).
+- **WASM stays as the way to build the UI.** The API it calls simply became Connect.
+- Interfaces whose shape an outside standard dictates (ACME, OAuth callbacks, third-party webhooks, health checks, static files, OTLP) stay plain HTTP.
+- **When in doubt, use Connect.**
+
+### Deutsch (KI-Übersetzung, sprachlich überarbeitet; noch nicht von Muttersprachlern geprüft)
+**Es geht nicht darum, eine einzige Technik auszuwählen – die Begriffe liegen auf unterschiedlichen Ebenen.** Als Ersatz für REST kommen nur Connect, gRPC und GraphQL in Frage; WASM dagegen ist eine Technik, mit der die Benutzeroberfläche gebaut wird.
+
+| Begriff | Was ist das? | Ersatz für REST? |
+|---|---|---|
+| REST | Ein API-Stil, bei dem Operationen über URLs und HTTP-Methoden ausgedrückt werden | wird abgeschafft |
+| **Connect** | `POST /Dienst/Methode` mit JSON im Body; aufrufbar mit `curl` ebenso wie mit `fetch` im Browser | ja (**gewählt**) |
+| **gRPC** | Dasselbe Prinzip aus Dienst und Methode, aber über binäres protobuf und HTTP/2; schnell und gut für Streaming geeignet | ja (**zwischen Diensten**) |
+| gRPC-web | Eine für den Browser angepasste Variante von gRPC | ja (bei Bedarf) |
+| GraphQL | Abfragesprache, mit der man genau die benötigten Felder anfordert | teilweise (**nur für lesende Abfragen**) |
+| WASM | Führt Rust-Code direkt im Browser aus | nein (Technik für die Oberfläche) |
+
+- **APIs, die von Browseroberflächen oder per `curl` aufgerufen werden, verwenden Connect** (POST; JSON wird mit RS-JSON gelesen und geschrieben). WASM im Browser kann kein reines gRPC sprechen. Mit Connect bleibt es bei einem gewöhnlichen `fetch`, und `prost` ist nicht nötig – die WASM-Datei wird dadurch nicht größer.
+- **Für die Kommunikation zwischen Diensten (Server zu Server, rechenintensive Aufgaben, Streaming) wird gRPC eingesetzt.** In den meisten Fällen reicht Connect aus; auf gRPC wird nur dort umgestellt, wo Streaming tatsächlich gebraucht wird.
+- **GraphQL dient ausschließlich lesenden Abfragen**, wenn mehrere Informationen gebündelt abgefragt werden sollen. Für Schreibzugriffe (Operationen) wird es nicht verwendet.
+- **WASM bleibt die Technik für die Oberfläche.** Geändert hat sich lediglich, dass die aufgerufene API nun auf Connect beruht.
+- Schnittstellen, deren Form durch einen externen Standard festgelegt ist (ACME, OAuth-Callbacks, Webhooks von Drittanbietern, Health-Checks, statische Dateien, OTLP), bleiben gewöhnliches HTTP.
+- **Im Zweifel: Connect.**
+
+### Русский (перевод выполнен с помощью ИИ и литературно отредактирован; носителями языка пока не проверен)
+**Это не варианты, из которых нужно выбрать один, а технологии разных уровней.** Заменить REST могут только Connect, gRPC и GraphQL; WASM же — это способ создания пользовательского интерфейса.
+
+| Термин | Что это | Заменяет REST? |
+|---|---|---|
+| REST | Стиль построения API, при котором операции выражаются через URL и HTTP-методы | отменяется |
+| **Connect** | `POST /Сервис/Метод` с телом в формате JSON; вызывается как из `curl`, так и из браузерного `fetch` | да (**выбран**) |
+| **gRPC** | Тот же принцип «сервис — метод», но поверх двоичного формата protobuf и HTTP/2; работает быстро и хорошо подходит для потоковой передачи | да (**для связи между сервисами**) |
+| gRPC-web | Адаптированный для браузера вариант gRPC | да (при необходимости) |
+| GraphQL | Язык запросов: клиент запрашивает ровно те поля, которые ему нужны | частично (**только запросы на чтение**) |
+| WASM | Позволяет выполнять код на Rust прямо в браузере | нет (технология для интерфейса) |
+
+- **API, которые вызываются из браузерных интерфейсов или через `curl`, строятся на Connect** (POST; JSON читается и записывается через RS-JSON). Браузерный WASM не умеет работать с «чистым» gRPC. С Connect достаточно обычного `fetch`, а `prost` не требуется — размер WASM-файла не увеличивается.
+- **Для обмена между сервисами (сервер — сервер, ресурсоёмкие задачи, потоковая передача) применяется gRPC.** В большинстве случаев достаточно Connect; на gRPC переходят только там, где потоковая передача действительно необходима.
+- **GraphQL используется только для чтения**, когда нужно получить сразу несколько связанных данных. Для записи (операций) он не применяется.
+- **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
+- Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
+- **Если есть сомнения — выбирайте Connect.**
+
+## 2026-11-05 依存更新 / Dependency update
+- sqlx 0.9（feature `runtime-tokio`+`tls-rustls-ring-webpki`）、russh 0.65・russh-sftp 3（`auth_publickey`が`VerifiedPublicKey`を受ける）、rand 0.10（`rand::rng()`・`Rng`・`RngExt::random_range`）、rcgen 0.14（`CertifiedKey.signing_key`）、reqwest 0.13（`rustls`・`form`・`query`）、sonic-rs 0.5、thiserror 2、toml 1。全featureでビルド成功、既定のworkspaceテストも成功。`rsa`は修正版なし（RUSTSEC-2023-0071）のまま。
+- 既知: `two_factor::tests::confirmed_enrollment_survives_reload_into_a_fresh_instance_via_disk` は`admin-2fa`有効で並列実行すると失敗する（更新前のmainでも同じ。単独では成功）。
+- Bumped sqlx/russh/russh-sftp/rand/rcgen/reqwest/sonic-rs/thiserror/toml; all features build, default workspace tests pass. rsa still has no fix. Known pre-existing flaky test under `admin-2fa`.
+
+## 2026-11-05 実バイナリでの結合試験(SFTP・2FA・証明書更新) / End-to-end tests against the real binary
+
+**日本語**: `crates/open-web-server-gateway/tests/e2e_real_binary.rs`(`cargo test -p open-web-server-gateway --features sftp,admin-2fa --test e2e_real_binary`)。実バイナリを子プロセスで起動し、外から実プロトコルで検証する。
+- **2FA**: 登録(管理者トークン必須)→TOTP確認→メールOTPを**実SMTP**(テスト内の最小SMTPサーバー)で受信→OTP+TOTPでログイン→発行キーで管理API→OTPの使い捨て→再起動後も登録が残る。
+- **SFTP**: 公開鍵(登録済み/未登録)・パスワード(正誤)・1MiB往復・rename・ルート外への脱出拒否・**再起動後もホスト鍵が同じ**。
+- 試験で見つけて直したもの: SFTPに`rename`/`fstat`/`setstat`/`fsetstat`が無かった(WinSCP/FileZillaの「一時名で送って改名」が失敗する)、SFTPのホスト鍵が起動のたびに変わっていた(`OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE`、既定`./sftp_host_key`に保存)、メール送信がSTARTTLS固定だった(`OPEN_WEB_SERVER_SMTP_SECURITY=starttls|tls|none`を追加。`none`は同一ホストの中継専用)、`two_factor`の単体テストが環境変数を共有して並列で落ちていた(`load_from_path`へ)。
+- **証明書の自動更新(VPS実機)**: 新バイナリ稼働中に`certbot renew --dry-run`を実行し、全14証明書が成功。`certbot-renew.timer`は稼働中。ACMEのHTTP-01自前実装は、2026-11-05に本番VPSで実Let's Encrypt(staging)から`www.nasa.tokyo`の証明書を取得・配信できることを確認(`acme`feature付きビルドで`Admin/ObtainTenantTlsViaAcme`、確認後に元の証明書とacme無しバイナリへ復元)。本番の更新手段はcertbotのまま。
+- **注意**: `setstat`/`fsetstat`はサイズ(切り詰め)・更新日時・権限(Unixのみ)を実ファイルへ反映する(WindowsとLinux(WSL)の両方で結合試験済み)。VPSではSFTPを有効にしていない(`OPEN_WEB_SERVER_SFTP_BIND`未設定)。
+
+**English**: `tests/e2e_real_binary.rs` spawns the real binary and drives 2FA (enroll → TOTP confirm → e-mail OTP received over a real SMTP socket → login → issued key opens the admin API → OTP is single-use → enrollment survives restart) and SFTP (public key / password, 1 MiB round trip, rename, traversal refused, host key stable across restarts). Found and fixed: missing SFTP `rename`/`fstat`/`setstat`/`fsetstat`, a host key regenerated on every start (now `OPEN_WEB_SERVER_SFTP_HOST_KEY_FILE`), STARTTLS-only SMTP (new `OPEN_WEB_SERVER_SMTP_SECURITY`), and an env-var race in the `two_factor` unit tests. On the VPS, `certbot renew --dry-run` succeeded for all 14 certificates under the new binary; the built-in ACME client is only unit-tested against a mock CA.
+
+## 2026-11-15 実プロセスE2E再確認(open-web-server → RPoem appserver)
+`open-web-server`(Connect版)から`e2e_stub_app`(RPoem)へHostルーティングで3回連続 HTTP 200 + `X-Served-By: RPoem-appserver` を確認。
+注意: スタブが登録するテナントは`e2e-rpoem.test`のみ。`domains.toml`のhostを別名(例 shop.test)にするとHost不一致でスタブが接続を閉じ502になる(不具合ではなく試験設定ミス)。`domains.toml`には`db_uri`が必須。
+*Re-verified: 3/3 requests returned 200 with X-Served-By; a 502 appears only if the Host does not match the stub's tenant `e2e-rpoem.test`.*
+
+
+## 2026-11-15 RPoem「分身の術」ホスティング(別アカウントでの再開用) / Bunshin hosting (resume on another account)
+
+### 日本語
+RPoem「分身の術」ホスティング(1VPSに1回入れ、全サイトを分身で非同期・マルチスレッド収容)の仕様・到達点・未了・**再開用メッセージ**は、正本の `open-easy-web/CLAUDE.md` と `open-easy-web/PORTING.md` 末尾の同名節、および `open-easy-web/docs/RPOEM_BUNSHIN_HOSTING_SPEC.md` にある。このリポジトリの該当部分: `crates/open-web-server-gateway/src/sites.rs`(`sites.toml`展開・ポート自動割当)、`tenant_router.rs`(`max_concurrent`・`managed_by`・セマフォ)、`state.rs`(`load_sites_from_env`)、feature `site-fleet`(コミット `a862f61`・`c971a38`、push済み)。
+
+### English
+The spec, status, open items and the **resume message** for RPoem "bunshin" hosting (install once per VPS, host every site with shadow-clone workers, async and multi-threaded) live in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`, and in `open-easy-web/docs/RPOEM_BUNSHIN_HOSTING_SPEC.md`. This repository's part: `crates/open-web-server-gateway/src/sites.rs` (`sites.toml` expansion, auto ports), `tenant_router.rs` (`max_concurrent`, `managed_by`, semaphore), `state.rs` (`load_sites_from_env`), feature `site-fleet` (commits `a862f61`, `c971a38`, pushed).
+
+## open-cpu の同梱と、アクセラレーターの扱い(2026-11-17)
+- **同梱済み(実行時に AVX-512BW > AVX2 > NEON > スカラーを自動選択、`OPEN_CPU_MAX_ISA`で上限指定可)**: MFastAPI(`--cpu`、長いクエリ文字列の探索)、RMojo(`rmojo cpu`、`str.find`/`str.count`)、open-web-server・open-easy-web(起動時の要約、`System/GetCpu`、FastCGIヘッダー走査)。実機はNEONをSnapdragon端末2台で、AVX-512BWはCIで確認(開発PCはAVX2まで)。
+- **2FastAPI**: 変換ツール(Python)で、実行時の計算処理を持たないため open-cpu は使わない。
+- **open-cuda / aruaru-llm / open-directx は同梱しない**: 共有基盤を1回だけVPSに入れ、各サイトはConnect/gRPCで呼ぶ方針(本ファイル冒頭の配備アーキテクチャ方針)に従う。
+- **ブラウザ(Windows/Linux/Mac/Android/iPhone)**: 計算はサーバー側で行うため、どの端末のブラウザからでも利用できる。RMojoのWASM(`wasm32-unknown-unknown`の`cargo check`は通過)は将来の遊び場候補。WASMでは open-cpu のSIMD自動選択は使わない。
+- **スマホのアクセラレーター化**: `open-cpu/remote`(`open-cpu-remote`)。実測では手元PCが速いため自動判断は「手元のみ」で、手元が非力な場合に効く。詳細は`open-cpu/remote/README.md`。
+
+## 2026-11-17 追記: 実プロセス通し確認の完了・再開用メッセージ更新(別アカウントでの再開用) / Real-process E2E done, resume message updated (resume on another account)
+
+### 日本語
+実プロセス通し確認(起動・転送・503上限・crash復帰)は完了。詳細・限界・次にやること・**最新の再開用メッセージ**は、正本の `open-easy-web/CLAUDE.md` と `open-easy-web/PORTING.md` 末尾の同名節にある。このリポジトリの該当部分: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs`(新規。`cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture` をWSLで)。
+
+### English
+The real-process E2E (start, forward, 503 limit, crash recovery) is done. Details, limits, next steps and the **latest resume message** are in the same-named section at the end of `open-easy-web/CLAUDE.md` and `open-easy-web/PORTING.md`. This repository's part: `crates/open-web-server-gateway/tests/e2e_site_fleet.rs` (new; run in WSL with `cargo test --offline -p open-web-server-gateway --features site-fleet --test e2e_site_fleet -- --nocapture`).
+
+## 2026-11-17 別アカウントでの再開用メモ(open-web-server⇔RPoem 実プロセスE2E・aruaru-vpn) / Resume memo for another account
+
+### 日本語
+- **到達点**: (1) open-web-server(Connect版)→RPoem `e2e_stub_app` の実プロセスE2Eを再確認(Host=`e2e-rpoem.test`、3/3で200+`X-Served-By: RPoem-appserver`)。502は`domains.toml`のhostがスタブのテナントと不一致だった試験設定ミスで、不具合ではない(`db_uri`も必須)。(2) aruaru-vpn: 証明書クローン・Mux・Chrome風フィンガープリント(RPoemの共有クレート`open-runo-tls-fingerprint`)まで実装・push済み。
+- **未了**: aruaru-vpn固定key_shareのプライバシー面のトレードオフ、翻訳のネイティブ検証(人手)、`PORTING.md` §20ロードマップ。RPoemの未追跡`RPoem/`・`target-crossui/`は別作業なのでコミットしない。
+- **注意**: cargoはPATHに`%USERPROFILE%\.cargo\bin`が必要。`cargo fmt --all`禁止(`-p <crate>`)。書き換え済みリポジトリで`git pull`しない。VPSは`/root/open-web-server`・`/root/RPoem`を`git pull --ff-only`(`/root/mirror-cache`は存在しない)。
+- **再開用メッセージ(そのまま貼り付け)**: 「再開するリポジトリは `F:\aruaru-vpn`・`F:\RPoem`・`F:\open-web-server`・`F:\runo`。各`PORTING.md`末尾『2026-11-17 別アカウントでの再開用メモ』を読み、未了(aruaru-vpnのプライバシー面・翻訳検証・§20)から着手してください。open-web-server→RPoemのE2Eは`RPoem/crates/open-runo-appserver/examples/e2e_stub_app.rs`をHost=`e2e-rpoem.test`で再現できます。」
+
+### English
+- **Status**: (1) The real-process E2E open-web-server (Connect) → RPoem `e2e_stub_app` was re-verified (Host `e2e-rpoem.test`, 3/3 returned 200 + `X-Served-By: RPoem-appserver`). The earlier 502 was a test-setup mistake (host in `domains.toml` did not match the stub's tenant; `db_uri` is required), not a bug. (2) aruaru-vpn: cert cloning, Mux and the Chrome-like fingerprint (shared RPoem crate `open-runo-tls-fingerprint`) are implemented and pushed.
+- **Open**: privacy trade-off of aruaru-vpn's fixed key_share, native-speaker translation review (human), `PORTING.md` §20 roadmap. Do not commit RPoem's untracked `RPoem/` and `target-crossui/` (other work).
+- **Pitfalls**: cargo needs `%USERPROFILE%\.cargo\bin` on PATH; never `cargo fmt --all` (use `-p <crate>`); never `git pull` in rewritten repos. On the VPS, `git pull --ff-only` in `/root/open-web-server` and `/root/RPoem` (`/root/mirror-cache` does not exist).
+- **Resume message (paste as-is)**: "Resume in `F:\aruaru-vpn`, `F:\RPoem`, `F:\open-web-server`, `F:\runo`. Read the section '2026-11-17 別アカウントでの再開用メモ' at the end of each `PORTING.md`, and start with the open items (aruaru-vpn privacy trade-off, translation review, §20). The open-web-server→RPoem E2E can be reproduced with `RPoem/crates/open-runo-appserver/examples/e2e_stub_app.rs` using Host `e2e-rpoem.test`."
+
+## 2026-11-17 Ledger の書き込み先を Admin/DbMutate へ変更 / Ledger now writes through Admin/DbMutate
+
+**日本語**: `open-web-server-ledger::Ledger` の送信先を、旧 `POST /internal/db/mutate` から RPoem の `POST /open_runo.admin.v1.Admin/DbMutate`(Connect、JSON本文は `MutationRequest`)へ変更した。認証は環境変数 `OPEN_RUNO_API_KEY` を `x-api-key` ヘッダに付ける(未設定だと401)。旧経路は認証なしだったので、`Ledger` を動かす全環境で設定が必要。`docs/integration.md` も更新。`cargo test -p open-web-server-ledger` 20件成功、RPoem 側の `ledger_fusion` で本物の `Ledger` から新経路への書き込みを確認。
+
+**English**: `open-web-server-ledger::Ledger` now posts to RPoem's `POST /open_runo.admin.v1.Admin/DbMutate` (Connect; the JSON body is `MutationRequest`) instead of the old `POST /internal/db/mutate`. Auth: the env var `OPEN_RUNO_API_KEY` is sent as the `x-api-key` header (unset gives 401). The old route needed no auth, so every environment that runs a `Ledger` must set it. `docs/integration.md` is updated. `cargo test -p open-web-server-ledger` passes (20), and RPoem's `ledger_fusion` verifies the real `Ledger` writing through the new route.
+
+## 2026-11-20 依存の更新(version-control通知) / Dependency update
+- **日本語**: lettre 0.11.23→0.11.24(RUSTSEC-2026-0560〜0565)、qrcode 0.14→0.15(`admin-2fa`)、sqlx 0.9.0→0.9.1でlibsqlite3-sys 0.37→0.40(RUSTSEC-2026-0459。SQLiteは使っておらずロックファイル上の記載のみ)。コードの変更は不要、`cargo test --workspace --locked --features open-web-server-gateway/admin-2fa` 295件成功。本番の再ビルド・差し替えは未実施。
+- **English**: lettre 0.11.23 -> 0.11.24 (RUSTSEC-2026-0560..0565), qrcode 0.14 -> 0.15 (`admin-2fa`), sqlx 0.9.0 -> 0.9.1 which allows libsqlite3-sys 0.37 -> 0.40 (RUSTSEC-2026-0459; SQLite is not used, it was only listed in the lock file). No code changes; 295 tests passed with `admin-2fa`. Production was not rebuilt or swapped.
+- **本番反映 / Production**: 本番反映(2026-11-20 13:4x JST): WSLでビルド(open-web-serverは本番機能セット`admin-2fa,domain-watchdog,fastcgi-client,ddns,sftp`、必要glibcは2.39まで)し、open-easy-web→open-web-serverの順に差し替えた。14ドメイン+主要パスの応答は差し替え前と同一、エラーログ0、両方ともlettre 0.11.24を確認。旧バイナリは`*.before-lettre-20261120`(ロールバック用)。注意: WSLのglibcが2.43になったので、今後も`objdump -T`で必要glibcが2.39以下か確かめてから配る。
+  Deployed (2026-11-20 ~13:4x JST): built in WSL (open-web-server with the production features `admin-2fa,domain-watchdog,fastcgi-client,ddns,sftp`; required glibc at most 2.39) and swapped open-easy-web, then open-web-server. Responses of 14 domains and key paths are identical to before, error log 0, both binaries contain lettre 0.11.24. Rollback binaries: `*.before-lettre-20261120`. Note: WSL now has glibc 2.43, so check with `objdump -T` that the binary needs at most 2.39 before shipping.
+- **2026-11-20 追記 / Update**: VPS向けのLinuxバイナリは WSL の `Ubuntu-24.04`(glibc 2.39)で作る。手順と検査は `runo` の `vps-build.sh`・`check-glibc.sh`。 / Build Linux binaries for the VPS in WSL `Ubuntu-24.04` (glibc 2.39); see `vps-build.sh` and `check-glibc.sh` in `runo`.

@@ -1,0 +1,44 @@
+# open-web-server
+
+## 基于 Rust + tokio/hyper 构建、确保计费物品和金融数据永不丢失的 Web 服务器
+
+open-web-server 是面向 3D 网游道具购买、信用卡支付等关键业务的 24/7/365 Web 服务器。
+使用 **Rust + tokio/hyper** 构建(路由/处理器的 API 形态与旧版 Poem 实现兼容，
+但自 2026-07-10 起已不再依赖 Poem 包本身)，通过四层防御架构与 aruaru-db、open-runo 协同工作，
+确保网络抖动、进程重启、重试都不会导致重复扣款或数据静默丢失。
+
+📖 其他语言: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
+
+## 五大支柱
+
+1. **四层防御通信**(`open-web-server-wire`)— TLS 1.3 + HKDF 双向认证 + ChaCha20-Poly1305 + seq/timestamp 防重放
+2. **不丢失的写入**(`open-web-server-ledger`)— 强制 Idempotency-Key 的 WAL 预写 + 三跳提交
+3. **与 aruaru-db / open-runo 紧密集成** — `客户端 → open-web-server → open-runo → aruaru-db`
+4. **UDP-IP 冗余通道**(`open-web-server-wire::udp_channel`,2026-07-11)— 与 TCP 权威提交并行,以加密+HMAC 方式尽力发送 UDP 即时通知(无重传,第一版实现)
+5. **目标架构:通信层与数据库写入的四重冗余**(2026-07-11修订)— 最终目标:通信层采用 TCP-IP + UDP-IP + QUIC/MPQUIC + MPTCP/SCTP 四种方式,数据库写入采用 PostgreSQL(ACID,即原子性、一致性、隔离性、持久性的事务保证特性) + aruaru-db + 多区域同步复制 + 独立审计日志四条路径。目前已实现 TCP-IP、UDP-IP,以及 ③QUIC(`quinn`,已用真实TLS1.3握手验证)与PostgreSQL WAL(`sqlx`,真实BEGIN/COMMIT,受限于沙盒环境无法连接真实PostgreSQL);④MPTCP/SCTP:经调查发现在Windows沙盒环境中内核级实现/验证不可行,已改用用户态替代方案(`aggligator`,`open-web-server-wire::mptcp_channel`,并非真正的内核MPTCP/SCTP)并通过真实回环TCP往返测试验证(2026-07-13);**④独立审计日志已实现**(`open-web-server-ledger::audit_log::FileAuditLog`,2026-07-13,SHA-256校验和的追加式文件,与WAL/aruaru-db技术独立,支持`scan_and_verify()`与`reconcile()`)。其余DB四重化路径(②aruaru-db、③多区域同步复制)尚未开始(详见 [README-Japan.md](README-Japan.md#6-目標アーキテクチャ-通信層dbの四重化) 与 [CLAUDE.md](CLAUDE.md))。**下一步新开发计划**:将 aruaru-db 的提交与 ZFS(open-raid-z)快照联动——虽未找到现成技术,但判断为可实现的新发现,计划下一阶段着手。
+
+6. **静态文件 + PHP 托管**(`static_files`/`php_server`/`web_vhost`,2026-07-20)— 面向 Apache+Nginx 混合交付引擎的第一步。按主机名映射到 docroot,静态资源直接从磁盘提供(含路径穿越防护),其余请求转发给按需启动的 `php -S` 子进程。已通过实际托管 `audiocafe.tokyo`(现有 PHP 网站)验证。
+
+## 电源/内存模式(可组合,2026-07-26)
+
+省内存、省电、正常、常插电这4种模式已从"只能选一个"重新设计为**可任意组合的独立开关**(省内存/省电/常插电,"正常"表示三者都未选中)。省内存+省电可以同时生效(轮询间隔延长与内存缓存收紧两个效果同时应用,互不覆盖)。省电+常插电在语义上矛盾:常插电会优先保留自己的短轮询间隔(设备不缺电时更看重响应速度),但不会影响省内存这个独立的内存优化轴。Windows/Linux(`power_profile.rs`)与Android(`PowerProfile.kt`)使用相同的组合逻辑,管理API从单一字符串改为数组`{"profiles": [...]}`。已通过真实`cargo test`验证;Android/Kotlin部分仅通过代码审查+Rust逻辑测试验证,真机/模拟器测试因`adb unauthorized`问题未能完成。
+
+## 快速开始
+
+```bash
+cargo run -p aruaru-server -- --data ./data --raft-id 1
+cargo run -p open-runo-gateway
+OPEN_RUNO_ENDPOINT=https://127.0.0.1:8443 cargo run -p open-web-server-gateway
+```
+
+## 项目结构(4 个 crate)
+
+`open-web-server-core`(领域模型/错误类型)、`open-web-server-wire`(四层防御通信)、
+`open-web-server-ledger`(幂等 WAL + 三跳提交)、`open-web-server-gateway`(tokio/hyper 网关,不依赖 Poem)。
+
+## License
+
+Apache-2.0

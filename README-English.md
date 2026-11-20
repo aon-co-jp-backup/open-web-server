@@ -1,0 +1,578 @@
+# open-web-server
+
+> 🎯 **aruaru-db × RPoem SET policy (2026-08-29)**: `aruaru-db`'s
+> `CLAUDE.md` opening note explains that aruaru-db only delivers "no
+> REST API needed, compatible with WunderGraph Cosmo's paid
+> Enterprise tier" when paired (SET) with RPoem — and warns against
+> building REST replacements aimlessly. This repo connects to
+> aruaru-db via dynamic tenant registration ("bunshin-no-jutsu") and
+> the 4-layer/4-redundant communication design; before proposing any
+> REST→GraphQL migration for its own admin API, always ask "does this
+> strengthen the aruaru-db+RPoem SET value?" first.
+
+> 📌 **Update (2026-08-25): security audit fixed known `russh`/`h2`
+> vulnerabilities**. The embedded SFTP server (`sftp` feature, off by
+> default) depended on `russh`, which had two High (CVSS 7.5)
+> vulnerabilities — upgraded to 0.63.1, following the server API's
+> breaking changes, with a real SSH/SFTP client E2E test confirming no
+> regressions. Also fixed a `h2` DoS vulnerability. See [CLAUDE.md](CLAUDE.md).
+
+> 📌 Pending task (2026-08-06): a plan exists to incorporate Toshiba SBM / DeepSeek techniques. See [CLAUDE.md](CLAUDE.md) for details.
+
+> **Updated 2026-07-25**: The dev-policy file (`CLAUDE.md`) heading was
+> renamed from "Development Policy & Dev Environment Rules" to
+> "Design Philosophy & Development Policy & Dev Environment Rules",
+> to more clearly separate the project's design philosophy (what we
+> value), development policy (how we work), and dev environment rules
+> (concrete operational conventions). See `CLAUDE.md` for details.
+
+
+## A Rust + tokio/hyper web server built so billed items and financial data are never lost
+
+open-web-server is a mission-critical, 24/7/365 web server designed for workloads like
+3D online game item purchases and credit-card financial transactions. Built directly on
+**Rust + tokio/hyper** (no web framework dependency), it works together with aruaru-db and open-runo through a four-layer
+defense architecture, so that network hiccups, process restarts, and retries never
+cause double-charging or silent data loss.
+
+> Note: the routing/handler API shape is kept compatible with the earlier Poem-based
+> implementation, but the package itself no longer depends on Poem (migrated to a direct
+> tokio/hyper implementation on 2026-07-10).
+
+📖 Other languages: [日本語](README-Japan.md) / [English](README-English.md) /
+[中文](README-Chinese.md) / [한국어](README-Korea.md) / [Español](README-Spain.md) /
+[Français](README-France.md) / [Deutsch](README-Germany.md) / [Italiano](README-Italy.md) /
+[Русский](README-Russia.md) / [العربية](README-Arabic.md)
+
+---
+
+> **2026-07-24 update**: migrating away from nginx in production, toward
+> open-web-server's own TLS termination (automatic ACME certificates) plus
+> `web_vhost`/`tenant_router`. Real Let's Encrypt certificates have been
+> obtained for every domain on the VPS; the final cutover (stopping nginx)
+> is still pending. See the HANDOFF checkpoint in `CLAUDE.md` for details
+> and next steps.
+
+---
+
+## Recent updates (2026-08-07)
+
+- Fixed a real Android tablet layout bug (`sw600dp`): the inner
+  `LinearLayout` in `layout-sw600dp/activity_main.xml` combined
+  `maxWidth="720dp"` with `layout_width="match_parent"`, which Android
+  ignores (`maxWidth` only applies when `layout_width="wrap_content"`).
+  Found via cross-repo audit after the sibling repo `RS-Sync` fixed and
+  verified the same pattern on a real device; changed to `wrap_content`
+  here too. Honest gap: not re-verified on an actual device/emulator in
+  this repo.
+
+## Why open-web-server Exists
+
+Typical billing/payment paths in web servers carry these residual risks:
+
+| Risk | Detail |
+|---|---|
+| Double charging | Client retries or timeouts cause the same payment to be executed twice |
+| Data loss | A write in flight is lost the instant the server process crashes |
+| Weak transport | Behind a load balancer that terminates TLS, data can flow in plaintext |
+| Impersonation | Service-to-service calls aren't re-verified as coming from the right peer |
+| Silent failure | A DB write fails, but the client is told it succeeded anyway |
+
+open-web-server addresses every one of these explicitly.
+
+## Three Pillars
+
+### 1. Four-layer defense transport (`open-web-server-wire`)
+
+Following the same approach as aruaru-db's `aruaru-wire`, every service-to-service
+call is protected by four independent layers.
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Layer 1 | TLS 1.3 (rustls) | Transport encryption |
+| Layer 2 | HKDF-based challenge/response | Mutual service authentication (anti-impersonation) |
+| Layer 3 | ChaCha20-Poly1305 (AEAD) | Application-layer payload encryption (stays encrypted even after TLS termination) |
+| Layer 4 | seq/timestamp replay guard (`replay_guard`, added 2026-07-11) | Rejects replay of already-valid ciphertext (prevents double-charging/double-granting) |
+
+### 2. Loss-proof writes (`open-web-server-ledger`)
+
+Every billing/payment request requires an `Idempotency-Key` and is committed in this order:
+
+1. Client sends the request with an idempotency key
+2. open-web-server appends it to a local write-ahead log (replayable after a process restart)
+3. Forwarded to aruaru-db via open-runo (the Graph Federation Gateway)
+4. aruaru-db commits it through Raft distributed consensus and issues a `commit_id`
+5. The client is never told "committed" until that `commit_id` comes back
+
+If the forward call fails partway through, it's retried automatically with exponential
+backoff. Resending the same idempotency key always returns the same result, so
+double-charging or double-granting cannot happen.
+
+### 3. Tight integration with aruaru-db and open-runo
+
+```text
+Client → open-web-server → open-runo → aruaru-db
+        (4-layer defense)  (4-layer defense)
+```
+
+- **open-web-server**: the client-facing entry point (REST/GraphQL, WAL pre-write)
+- **open-runo**: the Federation Gateway that centralizes auth, rate limiting, and audit logs
+- **aruaru-db**: the distributed Git-on-SQL database that issues an auditable hash for every commit
+
+See [`docs/architecture.md`](docs/architecture.md) and
+[`docs/integration.md`](docs/integration.md) for details.
+
+### 4. OpenTelemetry tracing (`open-web-server-gateway::telemetry`)
+
+The `grant_item`/`charge` handlers are instrumented with `tracing::instrument`
+spans, which are exported as OpenTelemetry traces via `tracing-opentelemetry`.
+
+- If `OTEL_EXPORTER_OTLP_ENDPOINT` is set, spans are shipped to a Collector
+  over OTLP/HTTP (protobuf) — intended for production/staging.
+- If unset, spans are written to stdout instead (a local-dev fallback for
+  when no Collector is running).
+
+This is the groundwork for tracing the full
+`Client → open-web-server → open-runo → aruaru-db` call chain as a single
+distributed trace once `open-runo`/`aruaru-db` wire up compatible exporters
+(their current status here is unverified).
+
+### 5. UDP-IP redundant transport path (`open-web-server-wire::udp_channel`, 2026-07-11)
+
+To make billing/financial transactions harder to lose in flight, mutations
+are now also sent over a best-effort UDP side channel **in parallel** with
+the existing TCP-authoritative path. This does not replace the four-layer
+defense transport (TLS / mutual auth / payload encryption / replay guard) — it's an
+orthogonal capability: redundancy of the transport path itself.
+
+- `open-web-server-ledger::Ledger::commit()` fires the UDP send via
+  `tokio::spawn` right after the WAL pre-write, as pure fire-and-forget.
+  The TCP-authoritative commit (`forward_with_retry`) is never blocked by
+  it, and the commit still succeeds even if the UDP send fails or the
+  destination is unreachable.
+- Datagrams are encrypted with `PayloadCipher` (ChaCha20-Poly1305 AEAD) and
+  authenticated with an HMAC-SHA256 tag per datagram, since UDP has no TLS
+  of its own.
+- The receiving side deduplicates by `IdempotencyKey` (`Deduplicator`), so
+  a mutation arriving over both TCP and UDP is never double-applied.
+
+**Honest scope limits**: there is no UDP retransmit — it is a pure
+send-and-hope "advance notice." Of the target "primary TCP + secondary TCP
++ UDP" triple-redundancy, this is a first cut covering only the single UDP
+path; a secondary TCP path is not implemented yet. Wiring an actual
+receiving-side listener into open-runo is also out of scope for this
+repository right now — this crate provides the sending side plus a
+verifiable receiving implementation for tests. See
+[`docs/architecture.md`](docs/architecture.md#冗長化された伝送経路-tcp-ip--udp-ip-open-web-server-wireudp_channel-2026-07-11)
+for details.
+
+### 6. Target architecture: quadruple-redundant transport and DB writes
+
+(Revised 2026-07-11: the original "triple-redundant TCP+UDP" concept was
+expanded to "quadruple-redundant" after research showed that a TCP+UDP-only
+approach isn't sufficient by current standards. This is a target
+architecture to be implemented incrementally, per user instruction — the
+following is the full end-state picture. See
+[`CLAUDE.md`](CLAUDE.md#拡張要件2026-07-11ユーザー指示目標アーキテクチャ実装は段階的に)
+for details and cited sources.)
+
+To keep billed items, financial data, securities data, and credit-card data
+in 3D online games from being lost over the network, `open-web-server`
+combines with `poem-cosmo-tauri` (or `open-runo`), `PostgreSQL`,
+`aruaru-db`, and `open-raid-z` toward the following target:
+
+- **Quadruple-redundant transport**: four transport methods with different
+  failure characteristics running in parallel — ① TCP-IP, ② UDP-IP,
+  ③ QUIC (ideally Multipath QUIC / MPQUIC), and ④ Multipath TCP (MPTCP) or
+  SCTP.
+- **Quadruple-redundant database writes**: the same transaction reflected
+  to four independent persistence targets — ① PostgreSQL (ACID —
+  atomicity, consistency, isolation, and durability transaction
+  guarantees), ② aruaru-db, ③ multi-region synchronous replication,
+  and ④ an independent audit/reconciliation transaction log.
+
+**Honest status as of 2026-07-12**: on the transport side, ① TCP-IP and
+② UDP-IP remain implemented, and **③ QUIC has now been implemented**
+(`open-web-server-wire::quic_channel`, built on the `quinn` crate, with
+built-in TLS 1.3 and a dev/test self-signed certificate helper; verified
+with a real TLS handshake and bidirectional stream round-trip over a real
+UDP socket in an integration test — this is single-path QUIC, not
+Multipath QUIC/MPQUIC, which remains out of scope). **④ MPTCP/SCTP was
+investigated and found genuinely infeasible to implement/verify on this
+Windows sandbox** (honest blocker: no native kernel MPTCP on Windows, no
+viable Windows SCTP stack). A user-space substitute serving the same
+purpose (physical-path multihoming) was implemented instead using the
+`aggligator` crate (`open-web-server-wire::mptcp_channel`, explicitly
+documented as not real kernel MPTCP/SCTP), verified with a real loopback
+TCP round-trip integration test (2026-07-13). On the DB side, **① PostgreSQL now has a first-cut write
+path** (`open-web-server-ledger::PostgresWal`, built on `sqlx`, with a
+real `BEGIN`/`COMMIT` transaction boundary and an idempotent
+`INSERT ... ON CONFLICT DO NOTHING` for the write-ahead append — **but
+this sandbox has no reachable live PostgreSQL instance, so the live-DB
+path itself is unverified**; only the SQL-construction logic is unit
+tested, plus an `#[ignore]`d integration test that runs only when
+`DATABASE_URL` is set). **④ an independent audit/reconciliation log is
+now implemented** (`open-web-server-ledger::audit_log::FileAuditLog`,
+2026-07-13): an append-only file, technically independent from
+PostgreSQL/aruaru-db/multi-region replication, that records one
+SHA-256-checksummed record per commit attempt. `scan_and_verify()`
+detects silent corruption; `reconcile()` cross-checks the audit log's
+key set against the WAL's committed-key set to flag entries missing
+from the WAL or duplicated within the audit log. Enabled via
+`Ledger::enable_audit_log(path)`; the append happens right after the
+WAL write and never blocks the authoritative path on failure. Verified
+with 4 tests covering round-trip file I/O, corruption detection,
+reconciliation reporting, and end-to-end wiring through
+`Ledger::commit`. **③ multi-region synchronous replication is now also
+implemented** (`open-web-server-ledger::multi_region::
+MultiRegionReplicator`, 2026-07-13): two or more real SQLite files stand
+in for "regions," and a commit writes **synchronously to every region,
+waiting for all acknowledgements before returning success** — the
+opposite of the UDP path's fire-and-forget model. The failure policy is
+explicit and chosen: the default is strict (any single region failure
+fails the whole commit), with an opt-in `with_quorum(n)` N-of-M
+degraded mode. Verified with 4 real-file-I/O tests covering the happy
+path, quorum degradation, and total-failure cases. **This means all
+four quadruple-redundant DB-write legs (①②③④) are now implemented**
+(① is the only one not verified against a live instance). **② the
+aruaru-db × ZFS-snapshot pairing is also now implemented**, on the
+`aruaru-db` side (`aruaru-dist::snapshot_pairing`, a real Raft commit
+triggering a real `open-raid-z` snapshot, verified against a real
+RAID-Z2 pool — see `aruaru-db`'s own `CLAUDE.md` for detail). The
+VersionLessAPI + Git-versioning hybrid already works on the write side
+(the `commit_id` is surfaced back to the client via `MutationReceipt`),
+but the read side — querying past state by `commit_id` — doesn't exist
+yet and needs coordination with `open-runo`'s API surface; that's the
+next concrete gap. Integration with `open-raid-z` as open-web-server's
+own disk-redundancy foundation is likewise not yet started.
+
+### 7. Static file + PHP serving (first step toward an Apache+Nginx hybrid delivery engine, 2026-07-20)
+
+`open-web-server-gateway` gained a "static file / PHP site" vhost
+mechanism (`static_files` / `php_server` / `web_vhost`), independent from
+the existing API-backend routing (`tenant_router`). Each hostname maps to
+a docroot; paths recognizable as static assets by extension are served
+directly from disk (with path-traversal protection), while everything
+else is proxied to a spawned `php -S` (PHP's built-in dev server)
+subprocess. This was verified end-to-end by actually serving
+`audiocafe.tokyo` (an existing PHP site) through this server over real
+HTTP (see this file's HANDOFF section for details). Vhosts can be
+declared via `web_vhosts.toml` (same TOML convention as `domains.toml`)
+or added dynamically via the admin API (`Connect Admin/UpsertWebVhost`).
+
+### 8. Embedded SFTP server + UPnP auto port-forwarding, and free DDNS domain automation (up to 20 domains, 2026-07-23)
+
+For home servers and other environments without a static IP, two
+independent, opt-in features (`sftp` / `upnp` / `ddns` Cargo features,
+all off by default) let `open-web-server` be reached and administered
+without depending on an external `sshd` or a paid domain:
+
+- **Embedded SFTP server** (`sftp.rs`, `russh` + `russh-sftp`, pure
+  Rust): public-key auth by default, path-traversal protection reused
+  from `static_files.rs`. **UPnP IGD auto port-forwarding** (`upnp.rs`,
+  `igd-next`) is an explicit opt-in helper (`OPEN_WEB_SERVER_UPNP_AUTO_FORWARD=true`)
+  that never blocks SFTP startup if it fails.
+- **Free DDNS domain automation** (`free_domain.rs`) picks
+  [DuckDNS](https://www.duckdns.org/) as the first-choice free provider
+  after an honest comparison: DuckDNS's update API is a single `GET`
+  request and, crucially, **has no expiry concept** — unlike No-IP's free
+  tier, which requires clicking a confirmation link by email every 30
+  days (disqualifying it from the "renews forever, unattended" goal).
+  Set `OPEN_WEB_SERVER_DUCKDNS_DOMAIN` / `OPEN_WEB_SERVER_DUCKDNS_TOKEN`
+  and the server auto-renews that hostname every 5 minutes whenever your
+  global IP changes.
+  - **Up to `MAX_DUCKDNS_DOMAINS` = 20 domains per instance**, managed
+    through a dynamic registry (`DomainRegistry`) that follows the same
+    `RwLock<HashMap<..>>` pattern as `tenant_router::TenantRegistry` —
+    domains can be added/removed at runtime, no restart required. A
+    21st distinct domain is rejected with an explicit `400 Bad Request`
+    (never a silent failure).
+  - `Connect Admin/SetupFreeDomain` registers one domain and
+    verifies connectivity immediately; call it again to register more
+    domains (up to the cap). `Connect Admin/ListFreeDomains` lists registered
+    domains and remaining capacity. `Connect Admin/RemoveFreeDomain`
+    deregisters one.
+  - `Connect Admin/GetSftpConnectionInfo` prefers a registered DuckDNS
+    hostname over a freshly-detected raw IP (optionally picked via
+    `?host=<domain>` when multiple domains are registered), so the
+    example SFTP command stays stable once set up.
+  - **Honest disclosure**: creating the DuckDNS account itself (OAuth
+    login via GitHub/Google/Reddit to obtain a token) is not automated
+    by this software — we do not acquire third-party credentials on a
+    user's behalf. Connectivity to the real DuckDNS service has not been
+    verified from this sandbox environment; the HTTP client logic is
+    covered by tests against a mock server (`wiremock`) instead. A
+    matching wizard UI (registered-domain list + add form) ships in
+    `open-easy-web`.
+
+---
+
+## Quick Start
+
+```bash
+# 1. Start aruaru-db
+cargo run -p aruaru-server -- --data ./data --raft-id 1
+
+# 2. Start open-runo
+cargo run -p open-runo-gateway
+
+# 3. Start open-web-server
+OPEN_RUNO_ENDPOINT=https://127.0.0.1:8443 cargo run -p open-web-server-gateway
+```
+
+```bash
+# Grant an item (idempotency key required)
+curl -X POST http://localhost:8080/api/v1/items/grant \
+  -H "Idempotency-Key: 11111111-1111-1111-1111-111111111111" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "11111111-1111-1111-1111-111111111111",
+    "account_id": "user-42",
+    "item_id": "sword_of_dawn",
+    "quantity": 1
+  }'
+```
+
+Send that same request again with the **same** `Idempotency-Key` and the item will
+not be granted twice — this is the §0 zero-loss mission working as intended. Once
+`db_commit_id` in the response is non-null, the write is durably committed in `aruaru-db`.
+
+Charging a card works the same way:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/transactions/charge \
+  -H "Idempotency-Key: 22222222-2222-2222-2222-222222222222" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "22222222-2222-2222-2222-222222222222",
+    "account_id": "user-42",
+    "amount_cents": 999,
+    "currency": "USD"
+  }'
+```
+
+Health check (no auth required): `curl http://localhost:8080/healthz`
+
+Environment variables: `OPEN_RUNO_ENDPOINT` (default `https://127.0.0.1:8443`),
+`OPEN_WEB_SERVER_BIND` (default `0.0.0.0:8080`).
+
+## Adding a New Endpoint (Minimal Example)
+
+Since there's no web framework, adding an endpoint is three steps: define a
+request/response type, write a handler function, add one line to `dispatch()`
+in `main.rs`. Here's a minimal example adding `GET /api/v1/items/status`:
+
+```rust
+// crates/open-web-server-gateway/src/handlers/items.rs
+
+/// `GET /api/v1/items/status?account_id=user-42`
+pub async fn item_status(state: Arc<AppState>, req: Request<Incoming>) -> Response<BoxBody> {
+    let account_id = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("account_id=")))
+        .unwrap_or_default()
+        .to_string();
+
+    // Replace with a real lookup via state.ledger or your own query path
+    json_response(StatusCode::OK, &serde_json::json!({ "account_id": account_id }))
+}
+```
+
+```rust
+// crates/open-web-server-gateway/src/main.rs, inside dispatch()
+
+match (method, path.as_str()) {
+    (Method::POST, "/api/v1/items/grant") => handlers::items::grant_item(state, req).await,
+    (Method::GET, "/api/v1/items/status") => handlers::items::item_status(state, req).await, // new
+    (Method::POST, "/api/v1/transactions/charge") => {
+        handlers::transactions::charge(state, req).await
+    }
+    (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok"),
+    _ => text_response(StatusCode::NOT_FOUND, "not found"),
+}
+```
+
+If your new endpoint is a mutating (POST/PUT) call that touches money or items,
+add its path prefix to the `needs_key` check in
+`crates/open-web-server-gateway/src/middleware/idempotency.rs` — otherwise it
+won't get the mandatory `Idempotency-Key` enforcement that the zero-loss
+mission (§0 in `docs/HYBRID_NETWORK_ARCHITECTURE.md`) depends on.
+
+## Project Layout
+
+```text
+open-web-server/
+├── crates/
+│   ├── open-web-server-core/     # domain models and error types
+│   ├── open-web-server-wire/     # 4-layer defense transport (TLS / mutual auth / payload encryption / replay guard)
+│   ├── open-web-server-ledger/   # idempotent WAL + 3-hop commit pipeline
+│   └── open-web-server-gateway/  # tokio/hyper web gateway (binary; Poem-API-compatible, no Poem dependency)
+├── docs/
+│   ├── architecture.md
+│   └── integration.md
+└── Cargo.toml (workspace)
+```
+
+## Roadmap
+
+- [ ] Extract `MutationRequest`/`MutationReceipt` into a shared `open-cosmo` crate
+  (check `open-runo`/`aruaru-db` progress on this before starting)
+- [ ] Add GraphQL endpoints (e.g. `async-graphql`)
+- [ ] Rust-to-WASM admin console matching the open-runo/aruaru-db admin UI
+  (the 2026-07-10 stack pivot means this is Rust/WASM, not Tauri)
+- [x] Tracing via OpenTelemetry (implemented on the `open-web-server-gateway`
+  side; true end-to-end tracing still depends on `open-runo`/`aruaru-db`
+  adopting compatible exporters)
+- [x] First cut of the UDP-IP redundant transport path
+  (`open-web-server-wire::udp_channel`; retransmit, a secondary TCP path,
+  and an open-runo-side receiving listener remain future work)
+- [x] **CORS support** (2026-07-23, `middleware::cors`, opt-in) — lets a
+  browser-side WASM frontend (e.g. `open-easy-web`'s domain-setup wizard)
+  call this server's admin API (`/admin/*`) from a different origin.
+  Disabled by default; set `OPEN_WEB_SERVER_CORS_ALLOWED_ORIGINS`
+  (comma-separated) to enable. Preflight (`OPTIONS`) requests from allowed
+  origins get an immediate `204` with
+  `Access-Control-Allow-Origin`/`-Methods`/`-Headers` (including
+  `x-admin-token`), and normal responses to allowed origins get the same
+  headers appended after dispatch. Verified with two real-HTTP integration
+  tests (`cors_headers_and_preflight_work_over_real_http`,
+  `cors_headers_are_absent_by_default_over_real_http`).
+- [x] **DuckDNS real-endpoint verification** (2026-07-23) — sent a real
+  request to `https://www.duckdns.org/update` with a dummy invalid token
+  from this sandbox; confirmed the real response is `HTTP 200` with a
+  plain-text body of `KO` on failure, matching the existing
+  `update_duckdns()` parsing logic (`body.trim_start().starts_with("OK")`).
+  A full success-path E2E with a real DuckDNS account/token is still
+  outside this project's automation scope (user's own action).
+- [x] **Android app with 3 power profiles, verified live on an emulator**
+  (started 2026-07-23, expanded 2026-07-24) — a single-Activity Kotlin
+  app under `android/` that launches the `cargo ndk`-cross-compiled
+  `open-web-server` binary (both `arm64-v8a` and `x86_64`, renamed to
+  `libopenwebserver.so` under `jniLibs/`, extracted to the app's
+  `nativeLibraryDir` via `useLegacyPackaging=true`) via `ProcessBuilder`,
+  then polls its own `GET /healthz` to prove the binary actually started
+  and responds. Adds three power profiles (🔋 power-save / ⚖️ normal /
+  🔌 always-on) selectable from a launch-time picker screen and from
+  three dedicated home-screen icons (`activity-alias`, color-coded with
+  explicit text labels); only the always-on profile holds a
+  `PARTIAL_WAKE_LOCK`. A one-tap button links out to the `open-easy-web`
+  wizard (since this app is meant to be used as a pair with it). **The
+  earlier adb `unauthorized` blocker is resolved**: launching the
+  emulator with a real (non-headless) window and letting it fully boot
+  cleared the state without needing to tap any approval dialog. Verified
+  live on the `Pixel_9_Pro` AVD: installed, launched via the always-on
+  icon, and screenshotted `GET /healthz -> 200 "ok"` in the app's own
+  log after the native binary started and the wake lock was acquired.
+  Two real bugs were found and fixed along the way: an ABI mismatch
+  (only `arm64-v8a` was bundled; the AVD is `x86_64`) and native libs
+  not being extracted to disk by default on modern Android
+  (`status=run-from-apk`). Foreground-service mode, APK signing/
+  distribution, and verification on a physical device remain out of
+  scope — see `CLAUDE.md`'s HANDOFF entry for the full verification
+  log and honest limitations.
+- [x] **Live (mid-session) power-profile switching on every platform**
+  (2026-07-26) — previously, changing profiles on Android required
+  `switchProfileAndRestart()` to kill and relaunch `MainActivity`. Added
+  a live-switch dialog (`showLiveProfileSwitchDialog()` /
+  `switchProfileLive()`) that changes the running app's `WakeLock`
+  state, health-poll interval (the poll loop now re-reads the current
+  profile every iteration instead of capturing it once at loop start),
+  and log-buffer sizing **without killing the server process or the
+  Activity**. Only the `OPEN_WEB_SERVER_ACCEL_BACKEND` env var (passed
+  at `ProcessBuilder` launch time) still requires a native-process
+  restart, which the live-switch flow honestly reports via a toast. On
+  desktop (Windows/Linux), added a new `power_profile.rs` module in
+  `open-web-server-gateway` sharing the exact same profile names/labels
+  as Android's `PowerProfile.kt` (`memory_saver`/`power_save`/`normal`/
+  `always_on`), switchable at runtime via `GET`/`POST
+  /admin/power-profile` (same `x-admin-token` admin-API auth pattern
+  used elsewhere). The one real, honestly-scoped behavioral knob wired
+  up so far: the `ddns`/`free_domain` background polling loops now
+  re-read the live profile every iteration instead of using a fixed
+  5-minute interval. A real-HTTP integration test proves the value
+  changes immediately on the same running process (no restart). Desktop
+  has no distinct "actually reduce memory" mechanism yet for
+  `memory_saver` — honestly scoped as naming/consistency only for now.
+  See `CLAUDE.md`'s 2026-07-26 HANDOFF for full detail.
+- [x] **Power profiles redesigned from exclusive choice to combinable
+  flags, on every platform** (2026-07-26, same day) — the 4 profiles
+  (memory-saver / power-save / normal / always-on) used to be a
+  single-choice pick. Redesigned into 3 independent boolean flags
+  (memory-saver / power-save / always-on); "normal" is not a flag —
+  it is simply "no flag active" (documented in code comments on both
+  sides). Any combination can now be active at once on Windows, Linux,
+  and Android: memory-saver + power-save composes both effects
+  simultaneously (each numeric setting takes the more conservative
+  value across active flags, e.g. poll interval stays extended *and*
+  the memory-cache factor stays reduced). Power-save + always-on is a
+  semantically contradictory combination; the resolution (documented
+  in `power_profile.rs`/`PowerProfile.kt`): always-on overrides only
+  power-save's battery-conservation axis (poll-interval extension) and
+  keeps its own short interval, since a permanently-powered device has
+  no battery concern — but this does **not** disable memory-saver's
+  independent memory-reduction axis if it's also selected. Desktop's
+  `power_profile.rs` exposes `PowerProfileFlags`/`effective_settings()`;
+  Android's `PowerProfile.kt` exposes the equivalent `ActiveProfiles`.
+  The admin API payload changed from a single string
+  (`{"profile": "power_save"}`) to an array
+  (`{"profiles": ["power_save", "memory_saver"]}`, empty array =
+  normal). Android's `ProfileSelectActivity` changed from 4 exclusive
+  buttons to 3 checkboxes + a launch button; the live-switch dialog is
+  now a multi-select checklist. The 4 launcher-icon aliases are kept,
+  but when multiple flags are active only one "representative" icon is
+  shown, chosen by priority: memory-saver > power-save > always-on >
+  normal (documented in `ActiveProfiles.representativeForIcon()`).
+  Verified with real `cargo test` runs (individual-flag behavior,
+  composed combinations, and the contradictory-combination resolution);
+  Android/Kotlin changes are verified by code review + the Rust-side
+  logic tests only — real device/emulator testing is blocked in this
+  environment by a known `adb unauthorized` issue and is honestly
+  reported as unverified. See `CLAUDE.md`'s 2026-07-26 HANDOFF for the
+  full test output and exact commit hash.
+- [x] **Structured access log with size-based rotation** (2026-07-24,
+  `access_log`, opt-in) — modeled on Nginx/Apache operational best
+  practices found via bilingual (JA/EN) web search: JSON Lines access
+  logs plus size/date-based rotation with compression. Disabled by
+  default; set `OPEN_WEB_SERVER_ACCESS_LOG_PATH` to enable. Rotates to
+  gzip-compressed `.1.gz`/`.2.gz`/... generations once
+  `OPEN_WEB_SERVER_ACCESS_LOG_MAX_BYTES` (default 10MiB) is exceeded,
+  keeping up to `OPEN_WEB_SERVER_ACCESS_LOG_MAX_BACKUPS` (default 5)
+  generations. File I/O runs on `spawn_blocking` and never blocks the
+  request path on write failure. Verified with 4 unit tests plus a real
+  binary run (`curl` against a live server with a tiny max-size,
+  confirming both the JSON lines and the gzip rotation on disk).
+- [x] **RS-LinkFusion (WAN/LAN/WiFi bonding) integration verified live**
+  (2026-07-24) — confirmed with a real 3-process test (this server +
+  RS-LinkFusion `serve` + RS-LinkFusion `connect`, real TCP sockets, `curl`
+  through the bonded tunnel) that **no code changes are needed**: this
+  server already binds to any address via `OPEN_WEB_SERVER_BIND` and has
+  no interface-specific logic. The TUN-adapter mode (`gateway-serve`/
+  `gateway-connect`, the scenario that bonds all OS-level traffic) needs
+  admin privileges on Windows and was not verified in this non-admin
+  sandbox — the same binding design should still apply.
+
+## License
+
+Apache-2.0
+
+## JSON handling policy: use `parse_secure_sonic` (fast type + secure) and `sonic-rs` everywhere they can be used (2026-10-14, user instruction)
+The source of truth is [`RS-JSON`](https://github.com/aon-co-jp/RS-JSON) (`README.md`, `PORTING.md`).
+
+**Policy**: wherever JSON is read, use `parse_secure_sonic` from `rust-json` (RS-JSON, the `fast` feature; the result is `sonic_rs::Value`) **everywhere it can be used**.
+Use `sonic-rs` directly where possible too (e.g. reading into typed structs). Where it cannot be used, use `parse_secure` (result: `serde_json::Value`).
+Untrusted input from outside (HTTP bodies, files over the network, uploads) **must always be read with size / depth / duplicate-key limits**.
+
+**Measured (7 MB, 40,000 records)**: `serde_json` 200 ms / `parse_secure` 217 ms / **`parse_secure_sonic` 83 ms (about 2.4x faster, with the defences)** / raw `sonic-rs` 33 ms (about 6x, no defences).
+Reading into `serde_json::Value` gives almost no speed-up even with SIMD (188 ms). **The speed comes from the value type that packs the result into contiguous memory.**
+
+**Where it can / cannot be used**
+- ✅ Read-heavy code that parses large or frequent JSON (cache JSON, config, API responses, logs, indexes).
+- ✅ Entrances for outside input (the goal there is defence rather than speed; `parse_secure` is fine).
+- ⚠️ Existing code that passes `serde_json::Value` between functions needs its type changed to `sonic_rs::Value` (methods from `JsonValueTrait` / `JsonContainerTrait`). Reading into `serde_json::Value` without that change is not faster.
+- ❌ WASM (`rust_json::light`, zero dependencies) and the JSON handling on the PHP / JavaScript side (Rust components cannot be used there).
+- Note: the `sonic-rs` dependency uses `unsafe` internally (our own code has none). For small JSON (a few KB) the difference is not noticeable; do speed-motivated rewrites where measurements show a benefit.
+
+**Adoption**: in `Cargo.toml`, `rust-json = { path = "../RS-JSON", features = ["fast"] }`. Example in `RS-JSON/README.md`.
+
+**Status in this repository**: Not yet applied (policy only). Code will be switched over place by place, starting where measurements show large or frequent JSON reads.
