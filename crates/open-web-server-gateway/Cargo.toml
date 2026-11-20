@@ -73,7 +73,7 @@ hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
 # TOTP登録用のQRコード生成(SVG出力、画像デコード用の追加依存を避けるため
 # ラスタ画像ではなくSVGで出力する)。
-qrcode = { version = "0.14", optional = true }
+qrcode = { version = "0.15", optional = true }
 rand = { workspace = true, optional = true }
 # メールOTP送信(admin-2fa feature向け)。rs-syncの`mail.rs`と同じ
 # クレート・同じ同期SMTPクライアント方式。
