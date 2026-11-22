@@ -391,10 +391,11 @@ impl russh_sftp::server::Handler for SftpSubsystem {
         *counter += 1;
         let handle_id = format!("dir-{}", *counter);
         self.handles.lock().await.insert(handle_id.clone(), resolved);
-        Ok(Handle { id, handle: handle_id })
+        Ok(Handle { id, handle: handle_id.into() })
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+    async fn readdir(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle) -> Result<Name, Self::Error> {
+        let handle = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         // SFTPプロトコルは「1回目のreaddirで全件返す→2回目の呼び出しで
         // Eofを返して終端」という往復を期待する(クライアント側は空リストを
         // 受け取るまで呼び続ける)。ハンドル自体は`close`まで生かしたまま、
@@ -464,10 +465,11 @@ impl russh_sftp::server::Handler for SftpSubsystem {
         *counter += 1;
         let handle_id = format!("file-{}", *counter);
         self.handles.lock().await.insert(handle_id.clone(), resolved);
-        Ok(Handle { id, handle: handle_id })
+        Ok(Handle { id, handle: handle_id.into() })
     }
 
-    async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<Data, Self::Error> {
+    async fn read(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle, offset: u64, len: u32) -> Result<Data, Self::Error> {
+        let handle = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         let handles = self.handles.lock().await;
         let Some(path) = handles.get(&handle) else {
             return Err(StatusCode::Failure);
@@ -487,7 +489,8 @@ impl russh_sftp::server::Handler for SftpSubsystem {
         Ok(Data { id, data: buf })
     }
 
-    async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, Self::Error> {
+    async fn write(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle, offset: u64, data: Vec<u8>) -> Result<Status, Self::Error> {
+        let handle = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         let handles = self.handles.lock().await;
         let Some(path) = handles.get(&handle) else {
             return Err(StatusCode::Failure);
@@ -506,7 +509,8 @@ impl russh_sftp::server::Handler for SftpSubsystem {
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
     }
 
-    async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+    async fn close(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle) -> Result<Status, Self::Error> {
+        let handle = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         self.handles.lock().await.remove(&handle);
         self.exhausted_dirs.lock().await.remove(&handle);
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
@@ -527,7 +531,8 @@ impl russh_sftp::server::Handler for SftpSubsystem {
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
     }
 
-    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+    async fn fstat(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle) -> Result<Attrs, Self::Error> {
+        let handle = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         let path = self.handles.lock().await.get(&handle).cloned().ok_or(StatusCode::NoSuchFile)?;
         Ok(Attrs { id, attrs: file_attributes_for(&path) })
     }
@@ -543,7 +548,8 @@ impl russh_sftp::server::Handler for SftpSubsystem {
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
     }
 
-    async fn fsetstat(&mut self, id: u32, handle: String, attrs: FileAttributes) -> Result<Status, Self::Error> {
+    async fn fsetstat(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle, attrs: FileAttributes) -> Result<Status, Self::Error> {
+        let handle = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         let path = self.handles.lock().await.get(&handle).cloned().ok_or(StatusCode::NoSuchFile)?;
         apply_attributes(&path, &attrs)?;
         Ok(Status { id, status_code: StatusCode::Ok, error_message: "ok".into(), language_tag: "en".into() })
