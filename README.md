@@ -1,3 +1,5 @@
+> Latest translations / 翻訳の最新版: [0-LATEST-TRANSLATIONS.md](0-LATEST-TRANSLATIONS.md)
+
 # open-web-server
 
 ## 管理API・公開API: REST 全廃 → Connect(POST、RS-JSON)(2026-11-04)
