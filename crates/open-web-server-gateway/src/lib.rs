@@ -1246,6 +1246,24 @@ mod tests {
         // 公開API は Idempotency-Key ヘッダが無ければ 400。
         let (st, _) = call(addr, Method::POST, "/open_web_server.api.v1.Api/GrantItem", json, false, b"{}".to_vec()).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
+        // 課金API は、Idempotency-Key があっても認証が無ければ 401(2026-11-26: 以前は認証なしで通った)。
+        {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(tcp);
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let r = Request::builder()
+                .method(Method::POST)
+                .uri("/open_web_server.api.v1.Api/GrantItem")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "k1")
+                .body(http_body_util::Full::new(bytes::Bytes::from_static(b"{}")))
+                .unwrap();
+            let resp = sender.send_request(r).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "Api/GrantItem must require auth");
+        }
         // 旧 REST の経路は、もう管理APIとして応答しない(トークンを付けても 404)。
         for (m, p) in [
             (Method::GET, "/admin/tenants"),

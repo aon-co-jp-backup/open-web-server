@@ -242,7 +242,10 @@ fn unimplemented_method(name: &str) -> Response<BoxBody> {
 
 #[allow(unused_variables)]
 async fn api(state: Arc<AppState>, req: Request<Bytes>, method: &str) -> Result<Response<BoxBody>, Response<BoxBody>> {
-    // 課金アイテム・金融データを扱う入口: `Idempotency-Key` ヘッダ必須(二重防御)。
+    // 課金アイテム・金融データを扱う入口: 認証必須(2026-11-26追加。以前は認証なしで公開から呼べた)。
+    // 管理APIと同じ `x-admin-token` または `Authorization: Bearer <KeyGuardianのキー>`。
+    handlers::tenants::check_admin_auth(&state, &req)?;
+    // `Idempotency-Key` ヘッダ必須(二重防御)。
     crate::middleware::idempotency::check(&req)?;
     Ok(match method {
         "GrantItem" => handlers::items::grant_item(state, req).await,
