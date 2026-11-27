@@ -5,7 +5,7 @@
 ## 管理API・公開API: REST 全廃 → Connect(POST、RS-JSON)(2026-11-04)
 
 旧 `GET/POST/PUT/DELETE /admin/...`・`/api/v1/...`・`/internal/db/state/...` はすべて削除した。呼び方は
-`POST /open_web_server.admin.v1.Admin/<Method>`(公開APIは `open_web_server.api.v1.Api/<Method>`)、
+`POST /open_web_server.admin.Admin/<Method>`(公開APIは `open_web_server.api.Api/<Method>`)、
 `content-type: application/json`、本文は JSON オブジェクト(空でも可)。認証は従来どおり `x-admin-token` または
 `Authorization: Bearer <KeyGuardianのキー>`。本文は RS-JSON の `parse_secure`(2MiB・深さ32・重複キー拒否)で検査する。
 成功は常に 200(配列は `{"items":[…]}`、文字だけの応答は `{"message":"…"}`)、失敗は `{"code":"…","message":"…"}`。
