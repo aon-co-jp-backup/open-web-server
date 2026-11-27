@@ -4,9 +4,9 @@
 //! `/internal/db/state/...` はすべてここへ移し、旧経路は削除した。
 //!
 //! 形式は `POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON オブジェクト:
-//! - 管理系: `POST /open_web_server.admin.v1.Admin/<Method>`(認証は従来どおり `x-admin-token` または
+//! - 管理系: `POST /open_web_server.admin.Admin/<Method>`(認証は従来どおり `x-admin-token` または
 //!   `Authorization: Bearer <KeyGuardianのキー>`。ログイン系の一部は認証なし)
-//! - 公開API(課金アイテム・決済): `POST /open_web_server.api.v1.Api/<Method>`(`Idempotency-Key` ヘッダ必須)
+//! - 公開API(課金アイテム・決済): `POST /open_web_server.api.Api/<Method>`(`Idempotency-Key` ヘッダ必須)
 //!
 //! 旧REST のパスパラメータ(`:host` など)とクエリ(`?host=`, `?path_prefix=`)は、本文のフィールドへ移した
 //! (`host` / `domain` / `base_domain` / `subdomain` / `path_prefix` / `target` / `key` / `commit_id`)。
@@ -30,8 +30,8 @@ use crate::handlers;
 use crate::response::{full_body, BoxBody};
 use crate::state::AppState;
 
-pub const ADMIN_PREFIX: &str = "/open_web_server.admin.v1.Admin/";
-pub const API_PREFIX: &str = "/open_web_server.api.v1.Api/";
+pub const ADMIN_PREFIX: &str = "/open_web_server.admin.Admin/";
+pub const API_PREFIX: &str = "/open_web_server.api.Api/";
 
 /// 本文の上限(PEM 証明書や Apache/Nginx 設定の取り込みを含めても十分な大きさ)。
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;

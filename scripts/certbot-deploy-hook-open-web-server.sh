@@ -27,7 +27,7 @@ for name in $RENEWED_DOMAINS; do
   if [ -n "$tlstok" ]; then
     # 2026-11-04: REST(POST /admin/tenants/:host/tls)から Connect の単純呼び出し(POST + JSON)へ。host は本文に入れる。
     body=$(jq -n --arg h "$name" --rawfile c "$RENEWED_LINEAGE/fullchain.pem" --rawfile k "$RENEWED_LINEAGE/privkey.pem" '{host:$h, cert_pem:$c, key_pem:$k}')
-    res=$(curl -s -w ' [HTTP %{http_code}]' -X POST "http://127.0.0.1/open_web_server.admin.v1.Admin/UpsertTenantTls" \
+    res=$(curl -s -w ' [HTTP %{http_code}]' -X POST "http://127.0.0.1/open_web_server.admin.Admin/UpsertTenantTls" \
       -H "$hdr" -H 'content-type: application/json' --data-binary "$body")
     case "$res" in *"[HTTP 200]") log "$name: 反映しました" ;; *) log "$name: 登録に失敗 $res"; rc=1 ;; esac
   else

@@ -882,7 +882,7 @@ mod tests {
         let issue_body = serde_json::json!({ "owner": "ci-test-caller" }).to_string();
         let issue_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/IssueKey")
+            .uri("/open_web_server.admin.Admin/IssueKey")
             .header("x-admin-token", "test-bootstrap-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(issue_body)))
@@ -899,7 +899,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let bearer_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListTenants")
+            .uri("/open_web_server.admin.Admin/ListTenants")
             .header("authorization", format!("Bearer {issued_key}"))
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -912,7 +912,7 @@ mod tests {
         let revoke_body = serde_json::json!({ "owner": "ci-test-caller" }).to_string();
         let revoke_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/RevokeKey")
+            .uri("/open_web_server.admin.Admin/RevokeKey")
             .header("x-admin-token", "test-bootstrap-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(revoke_body)))
@@ -923,7 +923,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let post_revoke_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListTenants")
+            .uri("/open_web_server.admin.Admin/ListTenants")
             .header("authorization", format!("Bearer {issued_key}"))
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -967,7 +967,7 @@ mod tests {
         let issue_body = serde_json::json!({ "owner": "restricted-caller", "roles": ["developer"] }).to_string();
         let issue_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/IssueKey")
+            .uri("/open_web_server.admin.Admin/IssueKey")
             .header("x-admin-token", "test-bootstrap-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(issue_body)))
@@ -982,7 +982,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let bearer_only_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListTenants")
+            .uri("/open_web_server.admin.Admin/ListTenants")
             .header("authorization", format!("Bearer {issued_key}"))
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -998,7 +998,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let static_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListTenants")
+            .uri("/open_web_server.admin.Admin/ListTenants")
             .header("x-admin-token", "test-bootstrap-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1036,7 +1036,7 @@ mod tests {
         });
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListTenants")
+            .uri("/open_web_server.admin.Admin/ListTenants")
             .header("x-admin-token", "test-bootstrap-secret-3")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1087,7 +1087,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetPowerProfile")
+            .uri("/open_web_server.admin.Admin/GetPowerProfile")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
@@ -1098,7 +1098,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let get_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetPowerProfile")
+            .uri("/open_web_server.admin.Admin/GetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1118,7 +1118,7 @@ mod tests {
         let set_body = serde_json::json!({ "profiles": ["power_save", "memory_saver"] }).to_string();
         let set_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/SetPowerProfile")
+            .uri("/open_web_server.admin.Admin/SetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(set_body)))
@@ -1139,7 +1139,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let get_req2 = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetPowerProfile")
+            .uri("/open_web_server.admin.Admin/GetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1154,7 +1154,7 @@ mod tests {
         let bad_body = serde_json::json!({ "profiles": ["quantum_saver"] }).to_string();
         let bad_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/SetPowerProfile")
+            .uri("/open_web_server.admin.Admin/SetPowerProfile")
             .header("x-admin-token", "test-power-profile-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(bad_body)))
@@ -1196,7 +1196,7 @@ mod tests {
             let bytes = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
             (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
         }
-        let svc = "/open_web_server.admin.v1.Admin/";
+        let svc = "/open_web_server.admin.Admin/";
         let json = Some("application/json");
 
         // 認証なし → 401(Connect の形)。
@@ -1244,7 +1244,7 @@ mod tests {
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert_eq!(b["code"], "unimplemented");
         // 公開API は Idempotency-Key ヘッダが無ければ 400。
-        let (st, _) = call(addr, Method::POST, "/open_web_server.api.v1.Api/GrantItem", json, false, b"{}".to_vec()).await;
+        let (st, _) = call(addr, Method::POST, "/open_web_server.api.Api/GrantItem", json, false, b"{}".to_vec()).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         // 課金API は、Idempotency-Key があっても認証が無ければ 401(2026-11-26: 以前は認証なしで通った)。
         {
@@ -1256,7 +1256,7 @@ mod tests {
             });
             let r = Request::builder()
                 .method(Method::POST)
-                .uri("/open_web_server.api.v1.Api/GrantItem")
+                .uri("/open_web_server.api.Api/GrantItem")
                 .header("content-type", "application/json")
                 .header("idempotency-key", "k1")
                 .body(http_body_util::Full::new(bytes::Bytes::from_static(b"{}")))
@@ -1313,7 +1313,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetSftpConnectionInfo")
+            .uri("/open_web_server.admin.Admin/GetSftpConnectionInfo")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
@@ -1325,7 +1325,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let auth_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetSftpConnectionInfo")
+            .uri("/open_web_server.admin.Admin/GetSftpConnectionInfo")
             .header("x-admin-token", "test-sftp-info-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1370,7 +1370,7 @@ mod tests {
 
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetSftpConnectionInfo")
+            .uri("/open_web_server.admin.Admin/GetSftpConnectionInfo")
             .header("x-admin-token", "test-duckdns-priority-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1423,7 +1423,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListFreeDomains")
+            .uri("/open_web_server.admin.Admin/ListFreeDomains")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
@@ -1433,7 +1433,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let list_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListFreeDomains")
+            .uri("/open_web_server.admin.Admin/ListFreeDomains")
             .header("x-admin-token", "test-ddns-domains-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1450,7 +1450,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let del_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/RemoveFreeDomain")
+            .uri("/open_web_server.admin.Admin/RemoveFreeDomain")
             .header("x-admin-token", "test-ddns-domains-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(r#"{"domain":"alpha"}"#)))
@@ -1462,7 +1462,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let del_missing_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/RemoveFreeDomain")
+            .uri("/open_web_server.admin.Admin/RemoveFreeDomain")
             .header("x-admin-token", "test-ddns-domains-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(r#"{"domain":"alpha"}"#)))
@@ -1582,7 +1582,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let preflight_req = Request::builder()
             .method(Method::OPTIONS)
-            .uri("/open_web_server.admin.v1.Admin/ListTenants")
+            .uri("/open_web_server.admin.Admin/ListTenants")
             .header("origin", "http://allowed.example:5173")
             .header("access-control-request-method", "POST")
             .header("access-control-request-headers", "x-admin-token, content-type")
@@ -1660,7 +1660,7 @@ mod tests {
         }).to_string();
         let register_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/UpsertRedirect")
+            .uri("/open_web_server.admin.Admin/UpsertRedirect")
             .header("x-admin-token", "test-redirect-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(register_body)))
@@ -1702,7 +1702,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let list_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListRedirects")
+            .uri("/open_web_server.admin.Admin/ListRedirects")
             .header("x-admin-token", "test-redirect-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -1717,7 +1717,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let delete_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/RemoveRedirect")
+            .uri("/open_web_server.admin.Admin/RemoveRedirect")
             .header("x-admin-token", "test-redirect-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(r#"{"host":"www.redirect-test.example"}"#)))
@@ -1971,7 +1971,7 @@ mod tests {
         let body = serde_json::json!({ "format": "apache", "config": apache_conf }).to_string();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ImportWebVhost")
+            .uri("/open_web_server.admin.Admin/ImportWebVhost")
             .header("x-admin-token", "test-import-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
@@ -2022,7 +2022,7 @@ mod tests {
         let body = serde_json::json!({ "format": "iis", "config": "whatever" }).to_string();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ImportWebVhost")
+            .uri("/open_web_server.admin.Admin/ImportWebVhost")
             .header("x-admin-token", "test-import-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
@@ -2033,7 +2033,7 @@ mod tests {
         let body = serde_json::json!({ "format": "nginx", "config": "server_name only.example;" }).to_string();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ImportWebVhost")
+            .uri("/open_web_server.admin.Admin/ImportWebVhost")
             .header("x-admin-token", "test-import-secret-2")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(body)))
@@ -2142,7 +2142,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let unauth_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetWatchdogStatus")
+            .uri("/open_web_server.admin.Admin/GetWatchdogStatus")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
             .unwrap();
@@ -2152,7 +2152,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let list_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListWatchdogExpectations")
+            .uri("/open_web_server.admin.Admin/ListWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -2168,7 +2168,7 @@ mod tests {
         let set_body = serde_json::json!({ "host": "audiocafe.tokyo", "expected_substrings": ["SPEC RPA-MG1000", "PASS LABS"] }).to_string();
         let set_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/SetWatchdogExpectations")
+            .uri("/open_web_server.admin.Admin/SetWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(set_body)))
@@ -2180,7 +2180,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let list_req2 = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListWatchdogExpectations")
+            .uri("/open_web_server.admin.Admin/ListWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -2199,7 +2199,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let status_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/GetWatchdogStatus")
+            .uri("/open_web_server.admin.Admin/GetWatchdogStatus")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -2215,7 +2215,7 @@ mod tests {
         let clear_body = serde_json::json!({ "host": "audiocafe.tokyo", "expected_substrings": [] }).to_string();
         let clear_req = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/SetWatchdogExpectations")
+            .uri("/open_web_server.admin.Admin/SetWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from(clear_body)))
@@ -2225,7 +2225,7 @@ mod tests {
         let mut sender = connect(addr).await;
         let list_req3 = Request::builder()
             .method(Method::POST)
-            .uri("/open_web_server.admin.v1.Admin/ListWatchdogExpectations")
+            .uri("/open_web_server.admin.Admin/ListWatchdogExpectations")
             .header("x-admin-token", "test-watchdog-secret")
             .header("content-type", "application/json")
             .body(http_body_util::Full::new(bytes::Bytes::from("{}")))
@@ -2286,19 +2286,19 @@ mod tests {
         let bad_pem = r#"{"host":"t.example","cert_pem":"x","key_pem":"y"}"#;
 
         // 正しいTLSトークン(ループバックから) → 認証は通り、PEM不正で400。
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/UpsertTenantTls", &[("x-tls-token", "tls-secret")], bad_pem).await, StatusCode::BAD_REQUEST);
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/RemoveTenantTls", &[("x-tls-token", "tls-secret")], r#"{"host":"t.example"}"#).await, StatusCode::OK);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/UpsertTenantTls", &[("x-tls-token", "tls-secret")], bad_pem).await, StatusCode::BAD_REQUEST);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/RemoveTenantTls", &[("x-tls-token", "tls-secret")], r#"{"host":"t.example"}"#).await, StatusCode::OK);
         // 間違ったTLSトークンは、静的トークンを併記してもフォールバックしない。
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/UpsertTenantTls", &[("x-tls-token", "nope"), ("x-admin-token", "adm-secret")], bad_pem).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/UpsertTenantTls", &[("x-tls-token", "nope"), ("x-admin-token", "adm-secret")], bad_pem).await, StatusCode::UNAUTHORIZED);
         // TLSトークンは他の管理エンドポイントでは使えない。
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/ListTenants", &[("x-tls-token", "tls-secret")], "{}").await, StatusCode::UNAUTHORIZED);
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/IssueKey", &[("x-tls-token", "tls-secret")], "{}").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/ListTenants", &[("x-tls-token", "tls-secret")], "{}").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/IssueKey", &[("x-tls-token", "tls-secret")], "{}").await, StatusCode::UNAUTHORIZED);
         // 静的トークンは(modeがanyの間は)従来通りTLSエンドポイントにも使える。
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/UpsertTenantTls", &[("x-admin-token", "adm-secret")], bad_pem).await, StatusCode::BAD_REQUEST);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/UpsertTenantTls", &[("x-admin-token", "adm-secret")], bad_pem).await, StatusCode::BAD_REQUEST);
 
         // TLSトークン未設定なら、ヘッダを付けても拒否(503)。
         std::env::remove_var("OPEN_WEB_SERVER_TLS_TOKEN");
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/UpsertTenantTls", &[("x-tls-token", "tls-secret")], bad_pem).await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/UpsertTenantTls", &[("x-tls-token", "tls-secret")], bad_pem).await, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -2308,7 +2308,7 @@ mod tests {
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_TOKEN", "adm-secret");
         std::env::set_var("OPEN_WEB_SERVER_TLS_TOKEN", "tls-secret");
         let addr = spawn_test_server().await;
-        let list = |tok: &'static str| async move { http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/ListTenants", &[("x-admin-token", tok)], "{}").await };
+        let list = |tok: &'static str| async move { http_status(addr, Method::POST, "/open_web_server.admin.Admin/ListTenants", &[("x-admin-token", tok)], "{}").await };
 
         // 既定(未設定)=any: 従来互換。
         assert_eq!(list("adm-secret").await, StatusCode::OK);
@@ -2320,7 +2320,7 @@ mod tests {
         // off: 正しいトークンでも拒否。TLSトークン経路は影響を受けない。
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE", "off");
         assert_eq!(list("adm-secret").await, StatusCode::FORBIDDEN);
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/RemoveTenantTls", &[("x-tls-token", "tls-secret")], r#"{"host":"t.example"}"#).await, StatusCode::OK);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/RemoveTenantTls", &[("x-tls-token", "tls-secret")], r#"{"host":"t.example"}"#).await, StatusCode::OK);
         // 再ビルド無しで any に戻せる。
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_STATIC_TOKEN_MODE", "any");
         assert_eq!(list("adm-secret").await, StatusCode::OK);
@@ -2334,13 +2334,13 @@ mod tests {
             std::env::remove_var(k);
         }
         let addr = spawn_test_server().await;
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/ListTenants", &[], "{}").await, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/ListTenants", &[("x-admin-token", "")], "{}").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/ListTenants", &[], "{}").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/ListTenants", &[("x-admin-token", "")], "{}").await, StatusCode::SERVICE_UNAVAILABLE);
         // 公開側(healthz)は影響を受けない。
         assert_eq!(http_status(addr, Method::GET, "/healthz", &[], "").await, StatusCode::OK);
 
         std::env::set_var("OPEN_WEB_SERVER_ADMIN_INSECURE_DEV", "true");
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/ListTenants", &[], "{}").await, StatusCode::OK);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/ListTenants", &[], "{}").await, StatusCode::OK);
     }
 
     #[cfg(feature = "admin-2fa")]
@@ -2353,22 +2353,22 @@ mod tests {
 
         // request-otp: 同一owner+IPは4回目で429。1〜3回目は(登録の有無に関わらず)200。
         for _ in 0..3 {
-            assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/RequestLoginOtp", &[], r#"{"owner":"nobody"}"#).await, StatusCode::OK);
+            assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/RequestLoginOtp", &[], r#"{"owner":"nobody"}"#).await, StatusCode::OK);
         }
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/RequestLoginOtp", &[], r#"{"owner":"nobody"}"#).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/RequestLoginOtp", &[], r#"{"owner":"nobody"}"#).await, StatusCode::TOO_MANY_REQUESTS);
 
         // 連続失敗5回で VerifyLogin は429(ロック)。
         let bad = r#"{"owner":"victim","email_otp":"000000","totp_code":"000000"}"#;
         for _ in 0..5 {
-            assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/VerifyLogin", &[], bad).await, StatusCode::UNAUTHORIZED);
+            assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/VerifyLogin", &[], bad).await, StatusCode::UNAUTHORIZED);
         }
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/VerifyLogin", &[], bad).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/VerifyLogin", &[], bad).await, StatusCode::TOO_MANY_REQUESTS);
 
         // reset は break-glass(静的トークン)必須。トークン無しは401、あれば(存在しないownerで)404。
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/Reset2fa", &[], r#"{"owner":"victim"}"#).await, StatusCode::UNAUTHORIZED);
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/Reset2fa", &[("x-admin-token", "adm-secret")], r#"{"owner":"victim"}"#).await, StatusCode::NOT_FOUND);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/Reset2fa", &[], r#"{"owner":"victim"}"#).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/Reset2fa", &[("x-admin-token", "adm-secret")], r#"{"owner":"victim"}"#).await, StatusCode::NOT_FOUND);
         // 未確認ownerの再登録は引き続き可能(確認済みの拒否は単体テストで検証)。
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/Enroll2fa", &[("x-admin-token", "adm-secret")], r#"{"owner":"newbie"}"#).await, StatusCode::OK);
-        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.v1.Admin/Enroll2fa", &[("x-admin-token", "adm-secret")], r#"{"owner":"newbie"}"#).await, StatusCode::OK);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/Enroll2fa", &[("x-admin-token", "adm-secret")], r#"{"owner":"newbie"}"#).await, StatusCode::OK);
+        assert_eq!(http_status(addr, Method::POST, "/open_web_server.admin.Admin/Enroll2fa", &[("x-admin-token", "adm-secret")], r#"{"owner":"newbie"}"#).await, StatusCode::OK);
     }
 }

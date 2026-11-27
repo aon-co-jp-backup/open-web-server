@@ -1,6 +1,6 @@
 //! `Idempotency-Key` ヘッダの必須化チェック。
 //!
-//! 課金アイテム・金融データを扱うエンドポイント (`open_web_server.api.v1.Api/*`(課金アイテム・決済))
+//! 課金アイテム・金融データを扱うエンドポイント (`open_web_server.api.Api/*`(課金アイテム・決済))
 //! では、クライアントが `Idempotency-Key` ヘッダを付けない限りリクエストを拒否する。
 //! ボディ内の `idempotency_key` と併用することで、Gateway層・アプリ層の二重防御にする。
 //!
@@ -47,14 +47,14 @@ mod tests {
 
     #[test]
     fn rejects_mutating_request_without_idempotency_key() {
-        let req = request("/open_web_server.api.v1.Api/GrantItem", None);
+        let req = request("/open_web_server.api.Api/GrantItem", None);
         assert!(check(&req).is_err());
     }
 
     #[test]
     fn allows_mutating_request_with_idempotency_key() {
         let req = request(
-            "/open_web_server.api.v1.Api/GrantItem",
+            "/open_web_server.api.Api/GrantItem",
             Some("11111111-1111-1111-1111-111111111111"),
         );
         assert!(check(&req).is_ok());

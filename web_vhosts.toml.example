@@ -7,12 +7,12 @@
 #
 # 起動後も再起動不要で追加/削除できる:
 #   (Connect の単純呼び出し: POST + JSON。REST は2026-11-04に全廃)
-#   curl -X POST http://localhost:8080/open_web_server.admin.v1.Admin/UpsertWebVhost \
+#   curl -X POST http://localhost:8080/open_web_server.admin.Admin/UpsertWebVhost \
 #     -H 'content-type: application/json' -H 'x-admin-token: <token>' \
 #     -d '{"host":"audiocafe.tokyo","docroot":"F:/open-runo/audiocafe.tokyo","php_enabled":true}'
-#   curl -X POST http://localhost:8080/open_web_server.admin.v1.Admin/RemoveWebVhost \
+#   curl -X POST http://localhost:8080/open_web_server.admin.Admin/RemoveWebVhost \
 #     -H 'content-type: application/json' -H 'x-admin-token: <token>' -d '{"host":"audiocafe.tokyo"}'
-#   curl -X POST http://localhost:8080/open_web_server.admin.v1.Admin/ListWebVhosts \
+#   curl -X POST http://localhost:8080/open_web_server.admin.Admin/ListWebVhosts \
 #     -H 'content-type: application/json' -H 'x-admin-token: <token>' -d '{}'
 #
 # compat_mode (2026-07-24追加、open-easy-webの「初回セットアップガイド」

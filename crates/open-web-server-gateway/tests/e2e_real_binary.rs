@@ -230,20 +230,20 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
     let auth = [("x-admin-token", admin)];
 
     // 登録: 管理者トークン無しは拒否
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/Enroll2fa", &[], r#"{"owner":"alice","email":"alice@example.test"}"#);
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/Enroll2fa", &[], r#"{"owner":"alice","email":"alice@example.test"}"#);
     assert!(st == 401 || st == 403, "enroll without token must be rejected, got {st}");
-    let (st, body) = http(port, "POST", "/open_web_server.admin.v1.Admin/Enroll2fa", &auth, r#"{"owner":"alice","email":"alice@example.test"}"#);
+    let (st, body) = http(port, "POST", "/open_web_server.admin.Admin/Enroll2fa", &auth, r#"{"owner":"alice","email":"alice@example.test"}"#);
     assert!(st == 200 || st == 201, "{body}");
     let secret = json_field(&body, "secret_base32");
 
     // 間違ったTOTPでは確認できない / 正しいコードで確認できる
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/Confirm2fa", &auth, r#"{"owner":"alice","code":"abcdef"}"#);
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/Confirm2fa", &auth, r#"{"owner":"alice","code":"abcdef"}"#);
     assert_eq!(st, 400);
-    let (st, body) = http(port, "POST", "/open_web_server.admin.v1.Admin/Confirm2fa", &auth, &format!(r#"{{"owner":"alice","code":"{}"}}"#, totp_now(&secret)));
+    let (st, body) = http(port, "POST", "/open_web_server.admin.Admin/Confirm2fa", &auth, &format!(r#"{{"owner":"alice","code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 200, "{body}");
 
     // メールOTPを請求 → 実SMTPで届いた本文からコードを取り出す
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/RequestLoginOtp", &[], r#"{"owner":"alice"}"#);
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/RequestLoginOtp", &[], r#"{"owner":"alice"}"#);
     assert_eq!(st, 200);
     let end = Instant::now() + Duration::from_secs(10);
     let otp = loop {
@@ -264,15 +264,15 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
     };
 
     // 片方が誤りなら拒否される
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"abcdef"}}"#));
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"abcdef"}}"#));
     assert_eq!(st, 401, "wrong TOTP must be rejected");
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"xxxxxx","totp_code":"{}"}}"#, totp_now(&secret)));
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"xxxxxx","totp_code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 401, "wrong email OTP must be rejected");
 
     // 失敗した検証は、そのメールOTPを失効させる(総当たり対策、admin-2fa-hardening)。
     // よって成功ケースの前にメールOTPを請求し直し、新しく届いたものを使う。
     let before = mails.lock().unwrap().len();
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/RequestLoginOtp", &[], r#"{"owner":"alice"}"#);
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/RequestLoginOtp", &[], r#"{"owner":"alice"}"#);
     assert_eq!(st, 200);
     let end = Instant::now() + Duration::from_secs(10);
     let otp = loop {
@@ -290,18 +290,18 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
     };
     wait_next_totp_step(); // 確認(Confirm2fa)で消費したステップの再利用は拒否されるため
     // 両方正しければBearerキーが発行され、それで管理APIに入れる
-    let (st, body) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"{}"}}"#, totp_now(&secret)));
+    let (st, body) = http(port, "POST", "/open_web_server.admin.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 200, "{body}");
     let key = json_field(&body, "key");
     let bearer = format!("Bearer {key}");
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/ListTenants", &[("authorization", &bearer)], "{}");
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/ListTenants", &[("authorization", &bearer)], "{}");
     assert_eq!(st, 200, "issued key must open the admin API");
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/ListTenants", &[], "{}");
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/ListTenants", &[], "{}");
     assert!(st == 401 || st == 403, "no credential must be rejected, got {st}");
 
     // メールOTPは使い捨て
     wait_next_totp_step(); // TOTP が新しいステップでも、メールOTPの使い捨てで拒否されることを確かめる
-    let (st, _) = http(port, "POST", "/open_web_server.admin.v1.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"{}"}}"#, totp_now(&secret)));
+    let (st, _) = http(port, "POST", "/open_web_server.admin.Admin/VerifyLogin", &[], &format!(r#"{{"owner":"alice","email_otp":"{otp}","totp_code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 401, "email OTP must be single-use");
 
     // 再起動しても登録が残る(ディスク永続化)
@@ -317,7 +317,7 @@ fn two_factor_login_end_to_end_over_real_http_and_smtp() {
     );
     wait_port(port2);
     wait_next_totp_step();
-    let (st, body) = http(port2, "POST", "/open_web_server.admin.v1.Admin/Confirm2fa", &auth, &format!(r#"{{"owner":"alice","code":"{}"}}"#, totp_now(&secret)));
+    let (st, body) = http(port2, "POST", "/open_web_server.admin.Admin/Confirm2fa", &auth, &format!(r#"{{"owner":"alice","code":"{}"}}"#, totp_now(&secret)));
     assert_eq!(st, 200, "enrollment must survive restart: {body}");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,4 +1,4 @@
-> 注記(2026-11-06): 本文のREST表記(`/admin/...`)は Connect の `POST /open_web_server.admin.v1.Admin/<Method>` に移行済み。読み替えは README の対応表を参照。
+> 注記(2026-11-06): 本文のREST表記(`/admin/...`)は Connect の `POST /open_web_server.admin.Admin/<Method>` に移行済み。読み替えは README の対応表を参照。
 
 # 管理API 2段階認証 設計書
 

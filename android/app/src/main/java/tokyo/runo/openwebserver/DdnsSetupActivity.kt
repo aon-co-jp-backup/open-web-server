@@ -33,7 +33,7 @@ import org.json.JSONObject
  * Rust本体(`crates/open-web-server-gateway/src/free_domain.rs`)が既に
  * 実装している「DuckDNSトークン登録・5分間隔でのIP自動更新・最大20ドメイン
  * 管理」機能を、起動中のローカルopen-web-serverプロセスの管理API
- * (`http://127.0.0.1:<port>/open_web_server.admin.v1.Admin/...`(Connect、POST + JSON))経由でこのアプリ内から使える
+ * (`http://127.0.0.1:<port>/open_web_server.admin.Admin/...`(Connect、POST + JSON))経由でこのアプリ内から使える
  * ようにする。管理APIそのもの・自動更新ループ自体はRust側が既に持っている
  * ため、このActivityは(a)トークン入力・登録、(b)登録済み一覧のポーリング
  * 表示、(c)削除、の3操作に徹する薄いUI層。
@@ -252,7 +252,7 @@ class DdnsApiClient(private val port: Int) {
 
     fun setupFreeDomain(adminToken: String, domain: String, token: String): String {
         return try {
-            val url = URL("${baseUrl()}/open_web_server.admin.v1.Admin/SetupFreeDomain")
+            val url = URL("${baseUrl()}/open_web_server.admin.Admin/SetupFreeDomain")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
@@ -286,7 +286,7 @@ class DdnsApiClient(private val port: Int) {
     /** @return (状態表示用の1行サマリ, ドメイン一覧) */
     fun listDomains(adminToken: String): Pair<String, List<DomainEntry>> {
         return try {
-            val url = URL("${baseUrl()}/open_web_server.admin.v1.Admin/ListFreeDomains")
+            val url = URL("${baseUrl()}/open_web_server.admin.Admin/ListFreeDomains")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
@@ -335,7 +335,7 @@ class DdnsApiClient(private val port: Int) {
 
     fun deleteDomain(adminToken: String, domain: String): String {
         return try {
-            val url = URL("${baseUrl()}/open_web_server.admin.v1.Admin/RemoveFreeDomain")
+            val url = URL("${baseUrl()}/open_web_server.admin.Admin/RemoveFreeDomain")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
